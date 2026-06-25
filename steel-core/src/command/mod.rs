@@ -9,10 +9,11 @@ pub mod requirement;
 pub mod sender;
 
 use steel_protocol::packets::game::{CCommandSuggestions, CCommands, CommandNode, SuggestionEntry};
+use steel_utils::translations;
 use text_components::{Modifier, TextComponent, format::Color};
 
 use crate::command::context::CommandContext;
-use crate::command::error::CommandError;
+use crate::command::error::{CommandError, CommandErrorFeedback};
 use crate::command::graph::{
     CommandGraph, CommandGraphError, CommandNodeBuilder, CommandParseError, CommandParseErrorKind,
     CommandResult,
@@ -219,30 +220,36 @@ impl CommandDispatcher {
         let result = self.dispatch_with_context(&command, &mut context);
 
         if let Err(error) = result {
-            let text = match error {
+            let feedback = match error {
                 CommandError::InvalidConsumption(s) => {
                     log::error!(
                         "Error while parsing command \"{command}\": {s:?} was consumed, but couldn't be parsed"
                     );
-                    TextComponent::const_plain("Internal error (See logs for details)")
+                    CommandErrorFeedback::single(TextComponent::const_plain(
+                        "Internal error (See logs for details)",
+                    ))
                 }
                 CommandError::InvalidRequirement => {
                     log::error!(
                         "Error while parsing command \"{command}\": a requirement that was expected was not met."
                     );
-                    TextComponent::const_plain("Internal error (See logs for details)")
+                    CommandErrorFeedback::single(TextComponent::const_plain(
+                        "Internal error (See logs for details)",
+                    ))
                 }
                 CommandError::PermissionDenied => {
                     log::warn!("Permission denied for command \"{command}\"");
-                    TextComponent::const_plain(
+                    CommandErrorFeedback::single(TextComponent::const_plain(
                         "I'm sorry, but you do not have permission to perform this command. Please contact the server administrator if you believe this is an error.",
-                    )
+                    ))
                 }
-                CommandError::CommandFailed(text_component) => *text_component,
+                CommandError::Parse(report) => report.into_feedback(),
+                CommandError::CommandFailed(text_component) => {
+                    CommandErrorFeedback::single(*text_component)
+                }
             };
 
-            // TODO: Use vanilla error messages
-            sender.send_message(&text.color(Color::Red));
+            Self::send_failure_feedback(&sender, feedback);
         }
     }
 
@@ -262,102 +269,142 @@ impl CommandDispatcher {
     ) -> Result<CommandResult, CommandError> {
         self.graph
             .parse(command, context)
-            .map_err(Self::parse_error_to_command_error)?
+            .map_err(|error| Self::parse_error_to_command_error(command, error))?
             .execute_with_dispatcher(context, |command, context| {
                 self.dispatch_with_context(command, context)
             })
     }
 
-    fn parse_error_to_command_error(error: CommandParseError) -> CommandError {
+    fn send_failure_feedback(sender: &CommandSender, feedback: CommandErrorFeedback) {
+        Self::send_failure_message(sender, feedback.primary);
+        if let Some(context) = feedback.context {
+            Self::send_failure_message(sender, context);
+        }
+    }
+
+    fn send_failure_message(sender: &CommandSender, message: TextComponent) {
+        sender.send_message(&TextComponent::new().color(Color::Red).add_child(message));
+    }
+
+    fn parse_error_to_command_error(input: &str, error: CommandParseError) -> CommandError {
         let cursor = error.cursor();
-        let message = match error.kind() {
-            CommandParseErrorKind::EmptyCommand => "Empty command".to_owned(),
-            CommandParseErrorKind::ExpectedWhitespace => "Expected whitespace".to_owned(),
-            CommandParseErrorKind::ExpectedArgument => "Expected argument".to_owned(),
+        CommandError::parse(Self::parse_error_message(error.kind()), input, cursor)
+    }
+
+    fn parse_error_message(kind: &CommandParseErrorKind) -> TextComponent {
+        match kind {
+            CommandParseErrorKind::EmptyCommand
+            | CommandParseErrorKind::UnknownCommand
+            | CommandParseErrorKind::IncompleteCommand => {
+                TextComponent::from(&translations::COMMAND_UNKNOWN_COMMAND)
+            }
+            CommandParseErrorKind::ExpectedWhitespace | CommandParseErrorKind::TrailingData => {
+                TextComponent::from(&translations::COMMAND_EXPECTED_SEPARATOR)
+            }
+            CommandParseErrorKind::ExpectedArgument => {
+                TextComponent::from(&translations::COMMAND_UNKNOWN_ARGUMENT)
+            }
             CommandParseErrorKind::ExpectedLiteral(literal) => {
-                format!("Expected literal '{literal}'")
+                translations::ARGUMENT_LITERAL_INCORRECT
+                    .message([TextComponent::from(literal.clone())])
+                    .into()
             }
-            CommandParseErrorKind::UnknownCommand => "Unknown command".to_owned(),
-            CommandParseErrorKind::IncompleteCommand => "Incomplete command".to_owned(),
-            CommandParseErrorKind::TrailingData => "Trailing data found".to_owned(),
-            CommandParseErrorKind::UnclosedQuote => "Unclosed quoted string".to_owned(),
-            CommandParseErrorKind::InvalidEscape(ch) => {
-                format!("Invalid escape sequence '\\{ch}'")
+            CommandParseErrorKind::UnclosedQuote => {
+                TextComponent::from(&translations::PARSING_QUOTE_EXPECTED_END)
             }
-            CommandParseErrorKind::InvalidBool(value) => {
-                format!("Invalid boolean '{value}'")
-            }
-            CommandParseErrorKind::InvalidAnchor(value) => {
-                format!("Invalid entity anchor '{value}'")
-            }
-            CommandParseErrorKind::InvalidInteger(value) => {
-                format!("Invalid integer '{value}'")
-            }
+            CommandParseErrorKind::InvalidEscape(ch) => translations::PARSING_QUOTE_ESCAPE
+                .message([TextComponent::from(ch.to_string())])
+                .into(),
+            CommandParseErrorKind::InvalidBool(value) => translations::PARSING_BOOL_INVALID
+                .message([TextComponent::from(value.clone())])
+                .into(),
+            CommandParseErrorKind::InvalidAnchor(value) => translations::ARGUMENT_ANCHOR_INVALID
+                .message([TextComponent::from(value.clone())])
+                .into(),
+            CommandParseErrorKind::InvalidInteger(value) => translations::PARSING_INT_INVALID
+                .message([TextComponent::from(value.clone())])
+                .into(),
             CommandParseErrorKind::IntegerTooLow { value, min } => {
-                format!("Integer {value} must be at least {min}")
+                translations::ARGUMENT_INTEGER_LOW
+                    .message([
+                        TextComponent::from(min.to_string()),
+                        TextComponent::from(value.to_string()),
+                    ])
+                    .into()
             }
             CommandParseErrorKind::IntegerTooHigh { value, max } => {
-                format!("Integer {value} must be at most {max}")
+                translations::ARGUMENT_INTEGER_BIG
+                    .message([
+                        TextComponent::from(max.to_string()),
+                        TextComponent::from(value.to_string()),
+                    ])
+                    .into()
             }
-            CommandParseErrorKind::InvalidFloat(value) => {
-                format!("Invalid float '{value}'")
-            }
-            CommandParseErrorKind::FloatTooLow { value, min } => {
-                format!("Float {value} must be at least {min}")
-            }
-            CommandParseErrorKind::FloatTooHigh { value, max } => {
-                format!("Float {value} must be at most {max}")
-            }
+            CommandParseErrorKind::InvalidFloat(value) => translations::PARSING_FLOAT_INVALID
+                .message([TextComponent::from(value.clone())])
+                .into(),
+            CommandParseErrorKind::FloatTooLow { value, min } => translations::ARGUMENT_FLOAT_LOW
+                .message([
+                    TextComponent::from(min.to_string()),
+                    TextComponent::from(value.to_string()),
+                ])
+                .into(),
+            CommandParseErrorKind::FloatTooHigh { value, max } => translations::ARGUMENT_FLOAT_BIG
+                .message([
+                    TextComponent::from(max.to_string()),
+                    TextComponent::from(value.to_string()),
+                ])
+                .into(),
             CommandParseErrorKind::InvalidGameMode(value) => {
-                format!("Invalid game mode '{value}'")
+                translations::ARGUMENT_GAMEMODE_INVALID
+                    .message([TextComponent::from(value.clone())])
+                    .into()
             }
-            CommandParseErrorKind::InvalidPlayer(value) => {
-                format!("Invalid player '{value}'")
+            CommandParseErrorKind::InvalidPlayer(_) => {
+                TextComponent::from(&translations::ARGUMENT_ENTITY_NOTFOUND_PLAYER)
             }
-            CommandParseErrorKind::InvalidEntity(value) => {
-                format!("Invalid entity '{value}'")
+            CommandParseErrorKind::InvalidEntity(_) => {
+                TextComponent::from(&translations::ARGUMENT_ENTITY_NOTFOUND_ENTITY)
+            }
+            CommandParseErrorKind::InvalidItem(value) => translations::ARGUMENT_ITEM_ID_INVALID
+                .message([TextComponent::from(value.clone())])
+                .into(),
+            CommandParseErrorKind::InvalidWorld(value) => translations::ARGUMENT_DIMENSION_INVALID
+                .message([TextComponent::from(value.clone())])
+                .into(),
+            CommandParseErrorKind::InvalidComponent(value) => {
+                translations::ARGUMENT_COMPONENT_INVALID
+                    .message([TextComponent::from(value.clone())])
+                    .into()
             }
             CommandParseErrorKind::InvalidEntityType(value) => {
-                format!("Invalid entity type '{value}'")
-            }
-            CommandParseErrorKind::InvalidItem(value) => {
-                format!("Invalid item '{value}'")
+                TextComponent::plain(format!("Invalid entity type '{value}'"))
             }
             CommandParseErrorKind::InvalidEnchantment(value) => {
-                format!("Invalid enchantment '{value}'")
+                TextComponent::plain(format!("Invalid enchantment '{value}'"))
             }
             CommandParseErrorKind::InvalidStructure(value) => {
-                format!("Invalid structure '{value}'")
+                TextComponent::plain(format!("Invalid structure '{value}'"))
             }
             CommandParseErrorKind::InvalidDomain(value) => {
-                format!("Invalid domain '{value}'")
-            }
-            CommandParseErrorKind::InvalidWorld(value) => {
-                format!("Invalid world '{value}'")
+                TextComponent::plain(format!("Invalid domain '{value}'"))
             }
             CommandParseErrorKind::InvalidVec3(value) => {
-                format!("Invalid position '{value}'")
+                TextComponent::plain(format!("Invalid position '{value}'"))
             }
             CommandParseErrorKind::InvalidBlockPos(value) => {
-                format!("Invalid block position '{value}'")
+                TextComponent::plain(format!("Invalid block position '{value}'"))
             }
             CommandParseErrorKind::InvalidRotation(value) => {
-                format!("Invalid rotation '{value}'")
-            }
-            CommandParseErrorKind::InvalidComponent(value) => {
-                format!("Invalid component '{value}'")
+                TextComponent::plain(format!("Invalid rotation '{value}'"))
             }
             CommandParseErrorKind::InvalidTime(value) => {
-                format!("Invalid time '{value}'")
+                TextComponent::plain(format!("Invalid time '{value}'"))
             }
             CommandParseErrorKind::MissingCommandContext(name) => {
-                format!("Missing command context '{name}'")
+                TextComponent::plain(format!("Missing command context '{name}'"))
             }
-        };
-
-        CommandError::CommandFailed(Box::new(TextComponent::plain(format!(
-            "{message} at position {cursor}"
-        ))))
+        }
     }
 
     /// Generates the `CCommands` packet visible to `context`.
@@ -410,11 +457,14 @@ impl CommandDispatcher {
 mod tests {
     use super::{CommandDispatcher, CommandRegistration};
     use crate::command::{
+        error::CommandError,
         graph::{CommandParseErrorKind, CommandResult, literal},
         requirement::{CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext},
     };
     use crate::permission::{PermissionEntry, PermissionKey, PermissionSegment, PermissionSet};
     use steel_registry::test_support::init_test_registry;
+    use steel_utils::translations;
+    use text_components::{TextComponent, content::Content};
 
     struct TestContext {
         permissions: PermissionSet,
@@ -450,6 +500,20 @@ mod tests {
                 )
             })),
         }
+    }
+
+    fn text_content(component: &TextComponent) -> &str {
+        let Content::Text { text } = &component.content else {
+            panic!("component should be plain text");
+        };
+        text
+    }
+
+    fn translation_key(component: &TextComponent) -> &str {
+        let Content::Translate(message) = &component.content else {
+            panic!("component should be translated");
+        };
+        &message.key
     }
 
     #[test]
@@ -538,5 +602,50 @@ mod tests {
             player_context_with_all(["minecraft.command.long", "minecraft.command.long.child"]);
         assert!(dispatcher.graph.parse("short child", &child_player).is_ok());
         assert!(dispatcher.graph.parse("alias child", &child_player).is_ok());
+    }
+
+    #[test]
+    fn parse_error_mapping_uses_vanilla_integer_bound_order() {
+        let error = super::CommandParseError::new(
+            CommandParseErrorKind::IntegerTooLow { value: 1, min: 5 },
+            5,
+        );
+
+        let CommandError::Parse(report) =
+            CommandDispatcher::parse_error_to_command_error("test 1", error)
+        else {
+            panic!("parse error should become structured feedback");
+        };
+        let feedback = report.into_feedback();
+        let Content::Translate(message) = &feedback.primary.content else {
+            panic!("primary message should be translated");
+        };
+        let args = message.args.as_ref().expect("integer low has arguments");
+
+        assert_eq!(message.key.as_ref(), translations::ARGUMENT_INTEGER_LOW.0);
+        assert_eq!(text_content(&args[0]), "5");
+        assert_eq!(text_content(&args[1]), "1");
+    }
+
+    #[test]
+    fn parse_error_mapping_uses_vanilla_parser_translations() {
+        assert_eq!(
+            translation_key(&CommandDispatcher::parse_error_message(
+                &CommandParseErrorKind::UnknownCommand
+            )),
+            translations::COMMAND_UNKNOWN_COMMAND.0
+        );
+        assert_eq!(
+            translation_key(&CommandDispatcher::parse_error_message(
+                &CommandParseErrorKind::TrailingData
+            )),
+            translations::COMMAND_EXPECTED_SEPARATOR.0
+        );
+        assert_eq!(
+            translation_key(&CommandDispatcher::parse_error_message(
+                &CommandParseErrorKind::InvalidBool("maybe".to_owned())
+            )),
+            translations::PARSING_BOOL_INVALID.0
+        );
     }
 }
