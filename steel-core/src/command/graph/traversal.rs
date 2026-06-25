@@ -1,0 +1,468 @@
+use std::sync::Arc;
+
+use steel_protocol::packets::game::SuggestionEntry;
+
+use super::{
+    CommandArgumentParser, CommandNode, CommandNodeKind, CommandParseError, CommandParseErrorKind,
+    CommandRedirectTarget, DynamicPermission, ParseResults, ParsedArguments, ParsedCommandAction,
+    ParsedRedirect, SuggestionResult, dynamic_permissions_allow,
+};
+use crate::command::{
+    reader::{CommandReader, StringMode},
+    requirement::CommandInputContext,
+};
+
+pub(super) fn parse_children(
+    input: &str,
+    reader: &mut CommandReader<'_>,
+    children: &[CommandNode],
+    arguments: ParsedArguments,
+    path: Vec<String>,
+    dynamic_permissions: Vec<DynamicPermission>,
+    context: &dyn CommandInputContext,
+) -> Result<ParseResults, CommandParseError> {
+    let mut best_error = None;
+    let mut usable_child_seen = false;
+
+    for child in children {
+        if !child.requirement.allows(context) {
+            continue;
+        }
+
+        usable_child_seen = true;
+        let mut child_reader = reader.clone();
+        let mut child_arguments = arguments.clone();
+        let mut child_path = path.clone();
+        let mut child_dynamic_permissions = dynamic_permissions.clone();
+
+        match child.parse_self(&mut child_reader, &mut child_arguments, context) {
+            Ok(()) => {
+                child_path.push(child.display_name().to_owned());
+                child_dynamic_permissions.extend(child.dynamic_permissions.iter().cloned());
+                match parse_after_node(
+                    input,
+                    child,
+                    &mut child_reader,
+                    child_arguments,
+                    child_path,
+                    child_dynamic_permissions,
+                    context,
+                ) {
+                    Ok(result) => return Ok(result),
+                    Err(error) => keep_best_error(&mut best_error, error),
+                }
+            }
+            Err(error) => keep_best_error(&mut best_error, error),
+        }
+    }
+
+    Err(best_error.unwrap_or_else(|| {
+        CommandParseError::new(
+            if usable_child_seen {
+                CommandParseErrorKind::ExpectedArgument
+            } else {
+                CommandParseErrorKind::UnknownCommand
+            },
+            reader.absolute_cursor(),
+        )
+    }))
+}
+
+fn parse_after_node(
+    input: &str,
+    node: &CommandNode,
+    reader: &mut CommandReader<'_>,
+    arguments: ParsedArguments,
+    path: Vec<String>,
+    dynamic_permissions: Vec<DynamicPermission>,
+    context: &dyn CommandInputContext,
+) -> Result<ParseResults, CommandParseError> {
+    if !reader.can_read() {
+        return node
+            .executable(input, arguments, path, dynamic_permissions)
+            .ok_or_else(|| {
+                CommandParseError::new(
+                    CommandParseErrorKind::IncompleteCommand,
+                    reader.absolute_cursor(),
+                )
+            });
+    }
+
+    if !reader.peek().is_some_and(char::is_whitespace) {
+        return Err(CommandParseError::new(
+            CommandParseErrorKind::TrailingData,
+            reader.absolute_cursor(),
+        ));
+    }
+
+    reader.expect_whitespace()?;
+    if !reader.can_read() {
+        return node
+            .executable(input, arguments, path, dynamic_permissions)
+            .ok_or_else(|| {
+                CommandParseError::new(
+                    CommandParseErrorKind::IncompleteCommand,
+                    reader.absolute_cursor(),
+                )
+            });
+    }
+
+    if node.redirect.is_some() {
+        return node.redirectable(
+            input,
+            arguments,
+            path,
+            dynamic_permissions,
+            reader.remaining().to_owned(),
+        );
+    }
+
+    if node.children.is_empty() {
+        return Err(CommandParseError::new(
+            CommandParseErrorKind::TrailingData,
+            reader.absolute_cursor(),
+        ));
+    }
+
+    parse_children(
+        input,
+        reader,
+        &node.children,
+        arguments,
+        path,
+        dynamic_permissions,
+        context,
+    )
+}
+
+fn keep_best_error(best_error: &mut Option<CommandParseError>, error: CommandParseError) {
+    if best_error
+        .as_ref()
+        .is_none_or(|best| error.is_better_than(best))
+    {
+        *best_error = Some(error);
+    }
+}
+
+pub(super) fn suggest_children(
+    reader: &CommandReader<'_>,
+    children: &[CommandNode],
+    arguments: ParsedArguments,
+    dynamic_permissions: Vec<DynamicPermission>,
+    context: &dyn CommandInputContext,
+    roots: &[CommandNode],
+    current_root_children: Option<&[CommandNode]>,
+) -> Option<SuggestionResult> {
+    if !dynamic_permissions_allow(&dynamic_permissions, &arguments, context).unwrap_or(false) {
+        return None;
+    }
+
+    let mut best_result = None;
+
+    for child in children {
+        if !child.requirement.allows(context) {
+            continue;
+        }
+
+        let child_root_children = current_root_children.or_else(|| {
+            matches!(&child.kind, CommandNodeKind::Literal(_)).then_some(child.children.as_slice())
+        });
+
+        if let Some(result) = child.suggest(
+            reader,
+            arguments.clone(),
+            dynamic_permissions.clone(),
+            context,
+            roots,
+            child_root_children,
+        ) {
+            keep_best_suggestion(&mut best_result, result);
+        }
+    }
+
+    best_result
+}
+
+fn keep_best_suggestion(best_result: &mut Option<SuggestionResult>, result: SuggestionResult) {
+    let Some(best) = best_result else {
+        *best_result = Some(result);
+        return;
+    };
+
+    if result.start > best.start {
+        *best = result;
+        return;
+    }
+
+    if result.start == best.start && result.length == best.length {
+        best.suggestions.extend(result.suggestions);
+    }
+}
+
+fn make_suggestion_result(
+    reader: &CommandReader<'_>,
+    suggestions: Vec<SuggestionEntry>,
+) -> Option<SuggestionResult> {
+    if suggestions.is_empty() {
+        return None;
+    }
+
+    let token = suggestion_token(reader);
+    Some(SuggestionResult {
+        suggestions,
+        start: token.start,
+        length: token.length,
+    })
+}
+
+fn filter_argument_suggestions_by_dynamic_permissions(
+    suggestions: Vec<SuggestionEntry>,
+    parser: &dyn CommandArgumentParser,
+    argument_name: &str,
+    arguments: &ParsedArguments,
+    dynamic_permissions: &[DynamicPermission],
+    context: &dyn CommandInputContext,
+) -> Vec<SuggestionEntry> {
+    if dynamic_permissions.is_empty() {
+        return suggestions;
+    }
+
+    suggestions
+        .into_iter()
+        .filter(|suggestion| {
+            let mut reader = CommandReader::new(&suggestion.text);
+            let Ok(value) = parser.parse(&mut reader, context) else {
+                return false;
+            };
+            reader.skip_whitespace();
+            if reader.can_read() {
+                return false;
+            }
+
+            let mut arguments = arguments.clone();
+            arguments.insert(argument_name, value);
+            dynamic_permissions_allow(dynamic_permissions, &arguments, context).unwrap_or(false)
+        })
+        .collect()
+}
+
+fn suggestion_token(reader: &CommandReader<'_>) -> SuggestionToken {
+    let remaining = reader.remaining();
+    let prefix = remaining
+        .chars()
+        .take_while(|ch| !ch.is_whitespace())
+        .collect::<String>();
+    let length = prefix.encode_utf16().count() as i32;
+    let is_at_end = remaining[prefix.len()..].is_empty();
+
+    SuggestionToken {
+        prefix,
+        start: reader.absolute_utf16_cursor() as i32,
+        length,
+        is_at_end,
+    }
+}
+
+struct SuggestionToken {
+    prefix: String,
+    start: i32,
+    length: i32,
+    is_at_end: bool,
+}
+
+impl CommandNode {
+    fn parse_self(
+        &self,
+        reader: &mut CommandReader<'_>,
+        arguments: &mut ParsedArguments,
+        context: &dyn CommandInputContext,
+    ) -> Result<(), CommandParseError> {
+        match &self.kind {
+            CommandNodeKind::Literal(expected) => {
+                let cursor = reader.absolute_cursor();
+                let actual = reader.read_string(StringMode::SingleWord)?;
+                if actual == *expected {
+                    Ok(())
+                } else {
+                    Err(CommandParseError::new(
+                        CommandParseErrorKind::ExpectedLiteral(expected.clone()),
+                        cursor,
+                    ))
+                }
+            }
+            CommandNodeKind::Argument { name, parser } => {
+                let value = parser.parse(reader, context)?;
+                arguments.insert(name, value);
+                Ok(())
+            }
+        }
+    }
+
+    fn executable(
+        &self,
+        input: &str,
+        arguments: ParsedArguments,
+        path: Vec<String>,
+        dynamic_permissions: Vec<DynamicPermission>,
+    ) -> Option<ParseResults> {
+        Some(ParseResults {
+            input: input.to_owned(),
+            arguments,
+            path,
+            dynamic_permissions,
+            action: ParsedCommandAction::Execute(Arc::clone(self.executor.as_ref()?)),
+        })
+    }
+
+    fn redirectable(
+        &self,
+        input: &str,
+        arguments: ParsedArguments,
+        path: Vec<String>,
+        dynamic_permissions: Vec<DynamicPermission>,
+        command: String,
+    ) -> Result<ParseResults, CommandParseError> {
+        let Some(redirect) = &self.redirect else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::TrailingData,
+                input.len(),
+            ));
+        };
+        let Some(current_root) = path.first().cloned() else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::IncompleteCommand,
+                input.len(),
+            ));
+        };
+
+        Ok(ParseResults {
+            input: input.to_owned(),
+            arguments,
+            path,
+            dynamic_permissions,
+            action: ParsedCommandAction::Redirect(ParsedRedirect {
+                target: redirect.target,
+                current_root,
+                command,
+                executor: Arc::clone(&redirect.executor),
+            }),
+        })
+    }
+
+    fn suggest(
+        &self,
+        reader: &CommandReader<'_>,
+        mut arguments: ParsedArguments,
+        mut dynamic_permissions: Vec<DynamicPermission>,
+        context: &dyn CommandInputContext,
+        roots: &[CommandNode],
+        current_root_children: Option<&[CommandNode]>,
+    ) -> Option<SuggestionResult> {
+        let token = suggestion_token(reader);
+        let direct_suggestions = match &self.kind {
+            CommandNodeKind::Literal(name)
+                if token.is_at_end && name.starts_with(&token.prefix) =>
+            {
+                dynamic_permissions_allow(&self.dynamic_permissions, &arguments, context)
+                    .ok()
+                    .filter(|allowed| *allowed)
+                    .and_then(|_| {
+                        make_suggestion_result(reader, vec![SuggestionEntry::new(name.clone())])
+                    })
+            }
+            CommandNodeKind::Argument { name, parser } if token.is_at_end => {
+                let suggestions = parser.suggest(&token.prefix, &arguments, context);
+                let suggestions = filter_argument_suggestions_by_dynamic_permissions(
+                    suggestions,
+                    parser.as_ref(),
+                    name,
+                    &arguments,
+                    &self.dynamic_permissions,
+                    context,
+                );
+                make_suggestion_result(reader, suggestions)
+            }
+            CommandNodeKind::Literal(_) | CommandNodeKind::Argument { .. } => None,
+        };
+
+        let mut parsed_reader = reader.clone();
+        if self
+            .parse_self(&mut parsed_reader, &mut arguments, context)
+            .is_err()
+        {
+            return direct_suggestions;
+        }
+
+        dynamic_permissions.extend(self.dynamic_permissions.iter().cloned());
+        if !dynamic_permissions_allow(&dynamic_permissions, &arguments, context).unwrap_or(false) {
+            return direct_suggestions;
+        }
+
+        let mut result = direct_suggestions;
+        if let Some(deeper) = self.suggest_after_successful_parse(
+            &mut parsed_reader,
+            arguments,
+            dynamic_permissions,
+            context,
+            roots,
+            current_root_children,
+        ) {
+            keep_best_suggestion(&mut result, deeper);
+        }
+        result
+    }
+
+    fn suggest_after_successful_parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        arguments: ParsedArguments,
+        dynamic_permissions: Vec<DynamicPermission>,
+        context: &dyn CommandInputContext,
+        roots: &[CommandNode],
+        current_root_children: Option<&[CommandNode]>,
+    ) -> Option<SuggestionResult> {
+        if !reader.can_read() {
+            return None;
+        }
+
+        if !reader.peek().is_some_and(char::is_whitespace) {
+            return None;
+        }
+
+        reader.skip_whitespace();
+        if let Some(redirect) = &self.redirect {
+            return match redirect.target {
+                CommandRedirectTarget::Current => current_root_children.and_then(|children| {
+                    suggest_children(
+                        reader,
+                        children,
+                        ParsedArguments::default(),
+                        Vec::new(),
+                        context,
+                        roots,
+                        current_root_children,
+                    )
+                }),
+                CommandRedirectTarget::All => suggest_children(
+                    reader,
+                    roots,
+                    ParsedArguments::default(),
+                    Vec::new(),
+                    context,
+                    roots,
+                    None,
+                ),
+            };
+        }
+
+        suggest_children(
+            reader,
+            &self.children,
+            arguments,
+            dynamic_permissions,
+            context,
+            roots,
+            current_root_children,
+        )
+    }
+}
