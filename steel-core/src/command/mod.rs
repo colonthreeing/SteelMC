@@ -63,18 +63,21 @@ impl CommandRegistration {
         Ok(self)
     }
 
-    fn resolved_permission(&self) -> Result<Option<PermissionKey>, CommandRegistrationError> {
+    fn permission_base(&self) -> Result<PermissionKey, CommandRegistrationError> {
         match &self.permission {
-            CommandPermissionMode::Auto => {
+            CommandPermissionMode::Auto | CommandPermissionMode::Public => {
                 let command_name = self
                     .root
                     .literal_name()
                     .ok_or(CommandRegistrationError::RootMustBeLiteral)?;
-                Ok(Some(command_permission_key(&self.namespace, command_name)?))
+                Ok(command_permission_key(&self.namespace, command_name)?)
             }
-            CommandPermissionMode::Public => Ok(None),
-            CommandPermissionMode::Override(permission) => Ok(Some(permission.clone())),
+            CommandPermissionMode::Override(permission) => Ok(permission.clone()),
         }
+    }
+
+    const fn has_root_permission(&self) -> bool {
+        !matches!(self.permission, CommandPermissionMode::Public)
     }
 }
 
@@ -246,14 +249,22 @@ impl CommandDispatcher {
         &mut self,
         registration: CommandRegistration,
     ) -> Result<(), CommandRegistrationError> {
-        let permission = registration.resolved_permission()?;
-        self.register_root(registration.root.clone(), permission.clone())?;
+        let permission_base = registration.permission_base()?;
+        let permission = registration
+            .has_root_permission()
+            .then(|| permission_base.clone());
+        let root = registration
+            .root
+            .clone()
+            .resolve_subcommand_permissions(&permission_base)?;
+        self.register_root(root, permission.clone())?;
         for alias in registration.aliases {
             let root = registration
                 .root
                 .clone()
                 .with_literal_name(alias.as_str())
-                .ok_or(CommandRegistrationError::RootMustBeLiteral)?;
+                .ok_or(CommandRegistrationError::RootMustBeLiteral)?
+                .resolve_subcommand_permissions(&permission_base)?;
             self.register_root(root, permission.clone())?;
         }
         Ok(())
@@ -468,11 +479,12 @@ impl CommandDispatcher {
 
 #[cfg(test)]
 mod tests {
+    use super::{CommandDispatcher, CommandRegistration};
     use crate::command::{
-        CommandDispatcher,
-        requirement::{CommandSourceKind, PermissionExpr, RequirementContext},
+        graph::{CommandParseErrorKind, CommandResult, literal},
+        requirement::{CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext},
     };
-    use crate::permission::{PermissionEntry, PermissionKey, PermissionSet};
+    use crate::permission::{PermissionEntry, PermissionKey, PermissionSegment, PermissionSet};
     use steel_registry::test_support::init_test_registry;
 
     struct TestContext {
@@ -489,6 +501,8 @@ mod tests {
         }
     }
 
+    impl CommandInputContext for TestContext {}
+
     fn player_context() -> TestContext {
         TestContext {
             permissions: PermissionSet::default(),
@@ -496,10 +510,16 @@ mod tests {
     }
 
     fn player_context_with(permission: &str) -> TestContext {
+        player_context_with_all([permission])
+    }
+
+    fn player_context_with_all<const N: usize>(permissions: [&str; N]) -> TestContext {
         TestContext {
-            permissions: PermissionSet::from_entries([PermissionEntry::allow(
-                PermissionKey::parse(permission).expect("test permission key parses"),
-            )]),
+            permissions: PermissionSet::from_entries(permissions.map(|permission| {
+                PermissionEntry::allow(
+                    PermissionKey::parse(permission).expect("test permission key parses"),
+                )
+            })),
         }
     }
 
@@ -530,5 +550,64 @@ mod tests {
         let experience_player = player_context_with("minecraft.command.experience");
         assert!(dispatcher.graph.has_root("xp", &experience_player));
         assert!(dispatcher.graph.has_root("experience", &experience_player));
+    }
+
+    #[test]
+    fn dispatcher_applies_derived_subcommand_permissions() {
+        init_test_registry();
+
+        let dispatcher = CommandDispatcher::new().expect("built-in commands register");
+        let tick_root_player = player_context_with("minecraft.command.tick");
+        assert!(dispatcher.graph.has_root("tick", &tick_root_player));
+
+        dispatcher
+            .graph
+            .parse("tick freeze", &tick_root_player)
+            .expect_err("subcommand permission should be required");
+
+        let tick_freeze_player =
+            player_context_with_all(["minecraft.command.tick", "minecraft.command.tick.freeze"]);
+        assert!(
+            dispatcher
+                .graph
+                .parse("tick freeze", &tick_freeze_player)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn derived_subcommand_permissions_use_root_permission_override() {
+        let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
+        let permission =
+            super::command_permission_key(&minecraft, "long").expect("permission key parses");
+        let mut dispatcher = CommandDispatcher::new_empty();
+
+        let registration = CommandRegistration::new(
+            literal("short").then(
+                literal("child")
+                    .requires_subcommand_permission()
+                    .executes(|_, _| Ok(CommandResult::success())),
+            ),
+            minecraft,
+        )
+        .permission(permission)
+        .alias("alias")
+        .expect("alias parses");
+
+        dispatcher
+            .register_command(registration)
+            .expect("command registers");
+
+        let root_player = player_context_with("minecraft.command.long");
+        let error = dispatcher
+            .graph
+            .parse("short child", &root_player)
+            .expect_err("subcommand should use overridden root permission");
+        assert_eq!(error.kind(), &CommandParseErrorKind::UnknownCommand);
+
+        let child_player =
+            player_context_with_all(["minecraft.command.long", "minecraft.command.long.child"]);
+        assert!(dispatcher.graph.parse("short child", &child_player).is_ok());
+        assert!(dispatcher.graph.parse("alias child", &child_player).is_ok());
     }
 }

@@ -16,21 +16,31 @@ pub fn command() -> CommandNodeBuilder {
     literal("tick")
         .then(literal("query").executes(query_tick))
         .then(
-            literal("rate").then(
+            literal("rate").requires_subcommand_permission().then(
                 argument("rate", FloatParser::bounded(Some(1.0), Some(10_000.0)))
                     .executes(set_tick_rate),
             ),
         )
-        .then(literal("freeze").executes(freeze_tick))
-        .then(literal("unfreeze").executes(unfreeze_tick))
+        .then(
+            literal("freeze")
+                .requires_subcommand_permission()
+                .executes(freeze_tick),
+        )
+        .then(
+            literal("unfreeze")
+                .requires_subcommand_permission()
+                .executes(unfreeze_tick),
+        )
         .then(
             literal("step")
+                .requires_subcommand_permission()
                 .executes(step_default)
                 .then(literal("stop").executes(stop_step))
                 .then(argument("time", TimeParser).executes(step_ticks)),
         )
         .then(
             literal("sprint")
+                .requires_subcommand_permission()
                 .then(literal("stop").executes(stop_sprint))
                 .then(argument("time", TimeParser).executes(sprint_ticks)),
         )

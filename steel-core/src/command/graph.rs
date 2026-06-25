@@ -22,7 +22,7 @@ use crate::command::{
     requirement::{CommandInputContext, Requirement, RequirementContext},
 };
 use crate::entity::LivingEntity;
-use crate::permission::{PermissionExpr, PermissionKey};
+use crate::permission::{PermissionExpr, PermissionKey, PermissionKeyError, PermissionSegment};
 use crate::player::Player;
 use crate::world::World;
 
@@ -208,6 +208,13 @@ pub enum CommandGraphError {
         /// Colliding literal name.
         name: String,
     },
+    /// A derived subcommand permission was requested on a non-literal node.
+    DerivedPermissionRequiresLiteral {
+        /// Node name.
+        name: String,
+    },
+    /// A derived subcommand permission produced an invalid permission key.
+    InvalidDerivedPermissionKey(PermissionKeyError),
 }
 
 impl fmt::Display for CommandGraphError {
@@ -225,7 +232,20 @@ impl fmt::Display for CommandGraphError {
                     "command literal '{name}' is already registered differently"
                 )
             }
+            Self::DerivedPermissionRequiresLiteral { name } => {
+                write!(
+                    f,
+                    "derived subcommand permission requires a literal node, got '{name}'"
+                )
+            }
+            Self::InvalidDerivedPermissionKey(error) => write!(f, "{error}"),
         }
+    }
+}
+
+impl From<PermissionKeyError> for CommandGraphError {
+    fn from(value: PermissionKeyError) -> Self {
+        Self::InvalidDerivedPermissionKey(value)
     }
 }
 
@@ -1437,6 +1457,7 @@ pub struct CommandNodeBuilder {
     children: Vec<CommandNodeBuilder>,
     executor: Option<CommandExecutor>,
     redirect: Option<CommandRedirect>,
+    derived_subcommand_permission: bool,
 }
 
 impl CommandNodeBuilder {
@@ -1464,6 +1485,18 @@ impl CommandNodeBuilder {
     #[must_use]
     pub fn requires_permission_expr(self, permission: PermissionExpr) -> Self {
         self.requires(Requirement::Permission(permission))
+    }
+
+    /// Adds a permission derived from the command's literal subcommand path.
+    ///
+    /// This must be used on a non-root literal node. The command registration
+    /// resolves it by appending this literal path to the root command permission.
+    /// For example, `tick freeze` derives `minecraft.command.tick.freeze`.
+    /// Use [`Self::requires_permission`] when a subcommand needs a custom key.
+    #[must_use]
+    pub const fn requires_subcommand_permission(mut self) -> Self {
+        self.derived_subcommand_permission = true;
+        self
     }
 
     /// Returns this literal node's name.
@@ -1531,6 +1564,62 @@ impl CommandNodeBuilder {
             redirect: self.redirect,
         })
     }
+
+    pub(crate) fn resolve_subcommand_permissions(
+        self,
+        root_permission: &PermissionKey,
+    ) -> Result<Self, CommandGraphError> {
+        self.resolve_subcommand_permissions_inner(root_permission, true)
+    }
+
+    fn resolve_subcommand_permissions_inner(
+        self,
+        parent_permission: &PermissionKey,
+        is_root: bool,
+    ) -> Result<Self, CommandGraphError> {
+        let Self {
+            kind,
+            mut requirement,
+            children,
+            executor,
+            redirect,
+            derived_subcommand_permission,
+        } = self;
+
+        let child_permission;
+        let current_permission = match &kind {
+            CommandNodeKind::Literal(name) if is_root => parent_permission,
+            CommandNodeKind::Literal(name) => {
+                let segment = PermissionSegment::parse(name.as_str())?;
+                child_permission = parent_permission.child(&segment)?;
+                &child_permission
+            }
+            CommandNodeKind::Argument { .. } => parent_permission,
+        };
+
+        if derived_subcommand_permission {
+            if is_root || !matches!(kind, CommandNodeKind::Literal(_)) {
+                return Err(CommandGraphError::DerivedPermissionRequiresLiteral {
+                    name: kind.display_name().to_owned(),
+                });
+            }
+            requirement = requirement.and(Requirement::Permission(PermissionExpr::key(
+                current_permission.to_owned(),
+            )));
+        }
+
+        Ok(Self {
+            kind,
+            requirement,
+            children: children
+                .into_iter()
+                .map(|child| child.resolve_subcommand_permissions_inner(current_permission, false))
+                .collect::<Result<Vec<_>, _>>()?,
+            executor,
+            redirect,
+            derived_subcommand_permission: false,
+        })
+    }
 }
 
 /// Creates a literal node builder.
@@ -1542,6 +1631,7 @@ pub fn literal(name: impl Into<String>) -> CommandNodeBuilder {
         children: Vec::new(),
         executor: None,
         redirect: None,
+        derived_subcommand_permission: false,
     }
 }
 
@@ -1560,6 +1650,7 @@ pub fn argument(
         children: Vec::new(),
         executor: None,
         redirect: None,
+        derived_subcommand_permission: false,
     }
 }
 
@@ -1831,6 +1922,12 @@ enum CommandNodeKind {
 }
 
 impl CommandNodeKind {
+    fn display_name(&self) -> &str {
+        match self {
+            Self::Literal(name) | Self::Argument { name, .. } => name,
+        }
+    }
+
     fn validate(&self) -> Result<(), CommandGraphError> {
         match self {
             Self::Literal(name) => validate_command_node_name(name).map_err(|source| {
@@ -1958,6 +2055,24 @@ mod tests {
             error,
             CommandGraphError::LiteralCollision {
                 name: "root".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn derived_subcommand_permission_requires_literal_node() {
+        let root_permission =
+            PermissionKey::parse("minecraft.command.root").expect("permission key parses");
+        let root =
+            literal("root").then(argument("target", BoolParser).requires_subcommand_permission());
+        let Err(error) = root.resolve_subcommand_permissions(&root_permission) else {
+            panic!("argument node permission marker should be rejected");
+        };
+
+        assert_eq!(
+            error,
+            CommandGraphError::DerivedPermissionRequiresLiteral {
+                name: "target".to_owned()
             }
         );
     }

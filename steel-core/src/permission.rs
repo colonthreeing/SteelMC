@@ -73,6 +73,16 @@ impl PermissionKey {
         &self.0
     }
 
+    /// Builds a child permission key by appending one non-wildcard segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when appending to this key would create an invalid
+    /// permission key, such as appending below a wildcard.
+    pub fn child(&self, segment: &PermissionSegment) -> Result<Self, PermissionKeyError> {
+        Self::parse(format!("{}.{}", self.0, segment.as_str()))
+    }
+
     /// Returns true when this key pattern matches `other`.
     #[must_use]
     pub fn matches(&self, other: &Self) -> bool {
@@ -639,6 +649,22 @@ mod tests {
         .expect("segments build key");
 
         assert_eq!(key.as_str(), "minecraft.command.give");
+    }
+
+    #[test]
+    fn permission_key_can_append_child_segments() {
+        let parent = key("minecraft.command.tick");
+        let child = parent
+            .child(&PermissionSegment::parse("freeze").expect("segment parses"))
+            .expect("child key parses");
+
+        assert_eq!(child.as_str(), "minecraft.command.tick.freeze");
+        assert_eq!(
+            key("minecraft.command.*")
+                .child(&PermissionSegment::parse("freeze").expect("segment parses"))
+                .err(),
+            Some(PermissionKeyError::WildcardNotFinal)
+        );
     }
 
     #[test]
