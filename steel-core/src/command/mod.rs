@@ -50,9 +50,9 @@ impl CommandDispatcher {
         dispatcher.graph.register_root(commands::list::command());
         dispatcher.register(commands::locate::command_handler());
         dispatcher.register(commands::give::command_handler());
-        dispatcher.register(commands::seed::command_handler());
+        dispatcher.graph.register_root(commands::seed::command());
         dispatcher.register(commands::setworldspawn::command_handler());
-        dispatcher.register(commands::stop::command_handler());
+        dispatcher.graph.register_root(commands::stop::command());
         dispatcher.register(commands::summon::command_handler());
         dispatcher.graph.register_root(commands::tellraw::command());
         dispatcher.register(commands::tick::command_handler());

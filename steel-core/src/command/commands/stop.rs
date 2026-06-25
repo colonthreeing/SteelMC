@@ -1,19 +1,18 @@
 //! Handler for the "stop" command.
-use crate::command::commands::{CommandExecutor, CommandHandlerBuilder, CommandHandlerDyn};
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
+use crate::command::graph::{CommandNodeBuilder, CommandResult, ParsedArguments, literal};
 
 /// Handler for the "stop" command.
 #[must_use]
-pub fn command_handler() -> impl CommandHandlerDyn {
-    CommandHandlerBuilder::new(&["stop"], "Stops the server.", "minecraft:command.stop")
-        .executes(StopCommandExecutor)
+pub fn command() -> CommandNodeBuilder {
+    literal("stop").executes(stop_server)
 }
 
-struct StopCommandExecutor;
-impl CommandExecutor<()> for StopCommandExecutor {
-    fn execute(&self, _args: (), context: &mut CommandContext) -> Result<(), CommandError> {
-        context.server.cancel_token.cancel();
-        Ok(())
-    }
+fn stop_server(
+    context: &mut CommandContext,
+    _: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    context.server.cancel_token.cancel();
+    Ok(CommandResult::success())
 }
