@@ -215,6 +215,11 @@ pub enum CommandGraphError {
     },
     /// A derived subcommand permission produced an invalid permission key.
     InvalidDerivedPermissionKey(PermissionKeyError),
+    /// Dynamic argument permissions require command registration metadata.
+    UnresolvedDynamicPermission {
+        /// Node name.
+        name: String,
+    },
 }
 
 impl fmt::Display for CommandGraphError {
@@ -239,6 +244,12 @@ impl fmt::Display for CommandGraphError {
                 )
             }
             Self::InvalidDerivedPermissionKey(error) => write!(f, "{error}"),
+            Self::UnresolvedDynamicPermission { name } => {
+                write!(
+                    f,
+                    "dynamic permission on command node '{name}' was not resolved during registration"
+                )
+            }
         }
     }
 }
@@ -474,6 +485,17 @@ pub trait FromParsedArgument: Sized {
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self>;
 }
 
+/// A parsed argument value that can become one permission path segment.
+pub trait CommandPermissionArgument: FromParsedArgument {
+    /// Converts this argument value to one permission segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the argument value cannot form a valid permission
+    /// segment.
+    fn permission_segment(&self) -> Result<PermissionSegment, PermissionKeyError>;
+}
+
 impl FromParsedArgument for bool {
     const TYPE_NAME: &'static str = "bool";
 
@@ -537,6 +559,12 @@ impl FromParsedArgument for GameType {
             return None;
         };
         Some(*value)
+    }
+}
+
+impl CommandPermissionArgument for GameType {
+    fn permission_segment(&self) -> Result<PermissionSegment, PermissionKeyError> {
+        PermissionSegment::parse(self.name())
     }
 }
 
@@ -675,6 +703,33 @@ pub enum ParsedArgumentError {
         /// Actual type name.
         actual: &'static str,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DynamicPermissionError {
+    ParsedArgument(ParsedArgumentError),
+    PermissionKey(PermissionKeyError),
+}
+
+impl fmt::Display for DynamicPermissionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ParsedArgument(error) => write!(f, "{error:?}"),
+            Self::PermissionKey(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl From<ParsedArgumentError> for DynamicPermissionError {
+    fn from(value: ParsedArgumentError) -> Self {
+        Self::ParsedArgument(value)
+    }
+}
+
+impl From<PermissionKeyError> for DynamicPermissionError {
+    fn from(value: PermissionKeyError) -> Self {
+        Self::PermissionKey(value)
+    }
 }
 
 /// Dynamic command argument parser.
@@ -987,6 +1042,55 @@ type CommandExecutor = Arc<
         + Send
         + Sync,
 >;
+type UnresolvedDynamicPermissionResolver = Arc<
+    dyn Fn(&PermissionKey, &ParsedArguments) -> Result<PermissionExpr, DynamicPermissionError>
+        + Send
+        + Sync,
+>;
+type DynamicPermissionResolver =
+    Arc<dyn Fn(&ParsedArguments) -> Result<PermissionExpr, DynamicPermissionError> + Send + Sync>;
+
+#[derive(Clone)]
+struct UnresolvedDynamicPermission {
+    resolver: UnresolvedDynamicPermissionResolver,
+}
+
+impl UnresolvedDynamicPermission {
+    fn argument<T>(name: String) -> Self
+    where
+        T: CommandPermissionArgument + 'static,
+    {
+        Self {
+            resolver: Arc::new(move |base_permission, arguments| {
+                let value = arguments.get::<T>(&name)?;
+                let segment = value.permission_segment()?;
+                Ok(PermissionExpr::key(base_permission.child(&segment)?))
+            }),
+        }
+    }
+
+    fn resolve(self, base_permission: &PermissionKey) -> DynamicPermission {
+        let base_permission = base_permission.to_owned();
+        let resolver = self.resolver;
+        DynamicPermission {
+            resolver: Arc::new(move |arguments| resolver(&base_permission, arguments)),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct DynamicPermission {
+    resolver: DynamicPermissionResolver,
+}
+
+impl DynamicPermission {
+    fn expression(
+        &self,
+        arguments: &ParsedArguments,
+    ) -> Result<PermissionExpr, DynamicPermissionError> {
+        (self.resolver)(arguments)
+    }
+}
 
 /// Target for redirecting graph execution after a node action runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1023,6 +1127,7 @@ pub struct ParseResults {
     input: String,
     arguments: ParsedArguments,
     path: Vec<String>,
+    dynamic_permissions: Vec<DynamicPermission>,
     action: ParsedCommandAction,
 }
 
@@ -1078,6 +1183,7 @@ impl ParseResults {
         context: &mut CommandContext,
         mut dispatch: impl FnMut(&str, &mut CommandContext) -> Result<CommandResult, CommandError>,
     ) -> Result<CommandResult, CommandError> {
+        self.check_dynamic_permissions(context)?;
         match &self.action {
             ParsedCommandAction::Execute(executor) => executor(context, &self.arguments),
             ParsedCommandAction::Redirect(redirect) => {
@@ -1091,6 +1197,22 @@ impl ParseResults {
                 }
             }
         }
+    }
+
+    fn check_dynamic_permissions(
+        &self,
+        context: &dyn RequirementContext,
+    ) -> Result<(), CommandError> {
+        for permission in &self.dynamic_permissions {
+            let expression = permission.expression(&self.arguments).map_err(|error| {
+                CommandError::InvalidConsumption(Some(format!("dynamic permission: {error}")))
+            })?;
+            if !context.has_permission(&expression) {
+                return Err(CommandError::PermissionDenied);
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -1224,6 +1346,7 @@ impl CommandGraph {
             &self.roots,
             ParsedArguments::default(),
             Vec::new(),
+            Vec::new(),
             context,
         )
     }
@@ -1235,6 +1358,7 @@ fn parse_children(
     children: &[CommandNode],
     arguments: ParsedArguments,
     path: Vec<String>,
+    dynamic_permissions: Vec<DynamicPermission>,
     context: &dyn CommandInputContext,
 ) -> Result<ParseResults, CommandParseError> {
     let mut best_error = None;
@@ -1249,16 +1373,19 @@ fn parse_children(
         let mut child_reader = reader.clone();
         let mut child_arguments = arguments.clone();
         let mut child_path = path.clone();
+        let mut child_dynamic_permissions = dynamic_permissions.clone();
 
         match child.parse_self(&mut child_reader, &mut child_arguments, context) {
             Ok(()) => {
                 child_path.push(child.display_name().to_owned());
+                child_dynamic_permissions.extend(child.dynamic_permissions.iter().cloned());
                 match parse_after_node(
                     input,
                     child,
                     &mut child_reader,
                     child_arguments,
                     child_path,
+                    child_dynamic_permissions,
                     context,
                 ) {
                     Ok(result) => return Ok(result),
@@ -1287,15 +1414,18 @@ fn parse_after_node(
     reader: &mut CommandReader<'_>,
     arguments: ParsedArguments,
     path: Vec<String>,
+    dynamic_permissions: Vec<DynamicPermission>,
     context: &dyn CommandInputContext,
 ) -> Result<ParseResults, CommandParseError> {
     if !reader.can_read() {
-        return node.executable(input, arguments, path).ok_or_else(|| {
-            CommandParseError::new(
-                CommandParseErrorKind::IncompleteCommand,
-                reader.absolute_cursor(),
-            )
-        });
+        return node
+            .executable(input, arguments, path, dynamic_permissions)
+            .ok_or_else(|| {
+                CommandParseError::new(
+                    CommandParseErrorKind::IncompleteCommand,
+                    reader.absolute_cursor(),
+                )
+            });
     }
 
     if !reader.peek().is_some_and(char::is_whitespace) {
@@ -1307,16 +1437,24 @@ fn parse_after_node(
 
     reader.expect_whitespace()?;
     if !reader.can_read() {
-        return node.executable(input, arguments, path).ok_or_else(|| {
-            CommandParseError::new(
-                CommandParseErrorKind::IncompleteCommand,
-                reader.absolute_cursor(),
-            )
-        });
+        return node
+            .executable(input, arguments, path, dynamic_permissions)
+            .ok_or_else(|| {
+                CommandParseError::new(
+                    CommandParseErrorKind::IncompleteCommand,
+                    reader.absolute_cursor(),
+                )
+            });
     }
 
     if node.redirect.is_some() {
-        return node.redirectable(input, arguments, path, reader.remaining().to_owned());
+        return node.redirectable(
+            input,
+            arguments,
+            path,
+            dynamic_permissions,
+            reader.remaining().to_owned(),
+        );
     }
 
     if node.children.is_empty() {
@@ -1326,7 +1464,15 @@ fn parse_after_node(
         ));
     }
 
-    parse_children(input, reader, &node.children, arguments, path, context)
+    parse_children(
+        input,
+        reader,
+        &node.children,
+        arguments,
+        path,
+        dynamic_permissions,
+        context,
+    )
 }
 
 fn keep_best_error(best_error: &mut Option<CommandParseError>, error: CommandParseError) {
@@ -1458,6 +1604,8 @@ pub struct CommandNodeBuilder {
     executor: Option<CommandExecutor>,
     redirect: Option<CommandRedirect>,
     derived_subcommand_permission: bool,
+    dynamic_permissions: Vec<UnresolvedDynamicPermission>,
+    resolved_dynamic_permissions: Vec<DynamicPermission>,
 }
 
 impl CommandNodeBuilder {
@@ -1496,6 +1644,23 @@ impl CommandNodeBuilder {
     #[must_use]
     pub const fn requires_subcommand_permission(mut self) -> Self {
         self.derived_subcommand_permission = true;
+        self
+    }
+
+    /// Adds a dynamic permission derived from a parsed argument value.
+    ///
+    /// The command registration resolves the base permission from this node's
+    /// literal path. At execution time, `argument_name` is read as `T`, converted
+    /// into one permission segment, and appended to that base.
+    #[must_use]
+    pub fn requires_argument_permission<T>(mut self, argument_name: impl Into<String>) -> Self
+    where
+        T: CommandPermissionArgument + 'static,
+    {
+        self.dynamic_permissions
+            .push(UnresolvedDynamicPermission::argument::<T>(
+                argument_name.into(),
+            ));
         self
     }
 
@@ -1552,6 +1717,11 @@ impl CommandNodeBuilder {
 
     fn build(self) -> Result<CommandNode, CommandGraphError> {
         self.kind.validate()?;
+        if !self.dynamic_permissions.is_empty() {
+            return Err(CommandGraphError::UnresolvedDynamicPermission {
+                name: self.kind.display_name().to_owned(),
+            });
+        }
         Ok(CommandNode {
             kind: self.kind,
             requirement: self.requirement,
@@ -1562,6 +1732,7 @@ impl CommandNodeBuilder {
                 .collect::<Result<Vec<_>, _>>()?,
             executor: self.executor,
             redirect: self.redirect,
+            dynamic_permissions: self.resolved_dynamic_permissions,
         })
     }
 
@@ -1584,6 +1755,8 @@ impl CommandNodeBuilder {
             executor,
             redirect,
             derived_subcommand_permission,
+            dynamic_permissions,
+            resolved_dynamic_permissions,
         } = self;
 
         let child_permission;
@@ -1608,6 +1781,13 @@ impl CommandNodeBuilder {
             )));
         }
 
+        let mut resolved_dynamic_permissions = resolved_dynamic_permissions;
+        resolved_dynamic_permissions.extend(
+            dynamic_permissions
+                .into_iter()
+                .map(|permission| permission.resolve(current_permission)),
+        );
+
         Ok(Self {
             kind,
             requirement,
@@ -1618,6 +1798,8 @@ impl CommandNodeBuilder {
             executor,
             redirect,
             derived_subcommand_permission: false,
+            dynamic_permissions: Vec::new(),
+            resolved_dynamic_permissions,
         })
     }
 }
@@ -1632,6 +1814,8 @@ pub fn literal(name: impl Into<String>) -> CommandNodeBuilder {
         executor: None,
         redirect: None,
         derived_subcommand_permission: false,
+        dynamic_permissions: Vec::new(),
+        resolved_dynamic_permissions: Vec::new(),
     }
 }
 
@@ -1651,6 +1835,8 @@ pub fn argument(
         executor: None,
         redirect: None,
         derived_subcommand_permission: false,
+        dynamic_permissions: Vec::new(),
+        resolved_dynamic_permissions: Vec::new(),
     }
 }
 
@@ -1660,6 +1846,7 @@ struct CommandNode {
     children: Vec<CommandNode>,
     executor: Option<CommandExecutor>,
     redirect: Option<CommandRedirect>,
+    dynamic_permissions: Vec<DynamicPermission>,
 }
 
 impl CommandNode {
@@ -1701,11 +1888,13 @@ impl CommandNode {
         input: &str,
         arguments: ParsedArguments,
         path: Vec<String>,
+        dynamic_permissions: Vec<DynamicPermission>,
     ) -> Option<ParseResults> {
         Some(ParseResults {
             input: input.to_owned(),
             arguments,
             path,
+            dynamic_permissions,
             action: ParsedCommandAction::Execute(Arc::clone(self.executor.as_ref()?)),
         })
     }
@@ -1715,6 +1904,7 @@ impl CommandNode {
         input: &str,
         arguments: ParsedArguments,
         path: Vec<String>,
+        dynamic_permissions: Vec<DynamicPermission>,
         command: String,
     ) -> Result<ParseResults, CommandParseError> {
         let Some(redirect) = &self.redirect else {
@@ -1734,6 +1924,7 @@ impl CommandNode {
             input: input.to_owned(),
             arguments,
             path,
+            dynamic_permissions,
             action: ParsedCommandAction::Redirect(ParsedRedirect {
                 target: redirect.target,
                 current_root,
@@ -1881,6 +2072,8 @@ impl CommandNode {
 
     fn can_merge_with(&self, other: &Self) -> bool {
         self.requirement == other.requirement
+            && self.dynamic_permissions.is_empty()
+            && other.dynamic_permissions.is_empty()
             && self.redirect.is_none()
             && other.redirect.is_none()
             && !(self.executor.is_some() && other.executor.is_some())
@@ -1953,6 +2146,8 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
 
+    use crate::command::parsers::GameModeParser;
+    use crate::command::{commands, error::CommandError};
     use crate::command::{
         graph::{
             AnchorParser, BoolParser, CommandGraph, CommandGraphError, CommandNodeBuilder,
@@ -1968,6 +2163,7 @@ mod tests {
     };
     use crate::permission::{PermissionEntry, PermissionSet};
     use steel_protocol::packets::game::CommandNode as ProtocolCommandNode;
+    use steel_utils::types::GameType;
 
     struct TestContext {
         source_kind: CommandSourceKind,
@@ -1994,9 +2190,13 @@ mod tests {
     }
 
     fn player_context_with(permission: PermissionKey) -> TestContext {
+        player_context_with_all([permission])
+    }
+
+    fn player_context_with_all<const N: usize>(permissions: [PermissionKey; N]) -> TestContext {
         TestContext {
             source_kind: CommandSourceKind::Player,
-            permissions: PermissionSet::from_entries([PermissionEntry::allow(permission)]),
+            permissions: PermissionSet::from_entries(permissions.map(PermissionEntry::allow)),
         }
     }
 
@@ -2075,6 +2275,49 @@ mod tests {
                 name: "target".to_owned()
             }
         );
+    }
+
+    #[test]
+    fn dynamic_argument_permission_requires_registration_resolution() {
+        let error = graph_registration_error(
+            literal("root").then(
+                argument("gamemode", GameModeParser)
+                    .requires_argument_permission::<GameType>("gamemode"),
+            ),
+        );
+
+        assert_eq!(
+            error,
+            CommandGraphError::UnresolvedDynamicPermission {
+                name: "gamemode".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn gamemode_requires_dynamic_value_permission() {
+        let root_permission =
+            PermissionKey::parse("minecraft.command.gamemode").expect("permission key parses");
+        let root = commands::gamemode::command()
+            .resolve_subcommand_permissions(&root_permission)
+            .expect("gamemode permissions resolve");
+        let graph = graph_with_root(root);
+        let result = graph
+            .parse("gamemode creative", &player_context())
+            .expect("gamemode parses");
+
+        let root_only = player_context_with(root_permission.clone());
+        assert!(matches!(
+            result.check_dynamic_permissions(&root_only),
+            Err(CommandError::PermissionDenied)
+        ));
+
+        let creative = player_context_with_all([
+            root_permission,
+            PermissionKey::parse("minecraft.command.gamemode.creative")
+                .expect("permission key parses"),
+        ]);
+        assert!(result.check_dynamic_permissions(&creative).is_ok());
     }
 
     #[test]

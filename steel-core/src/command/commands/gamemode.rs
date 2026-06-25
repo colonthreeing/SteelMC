@@ -18,6 +18,7 @@ use text_components::translation::Translation;
 pub fn command() -> CommandNodeBuilder {
     literal("gamemode").then(
         argument("gamemode", GameModeParser)
+            .requires_argument_permission::<GameType>("gamemode")
             .executes(set_own_game_mode)
             .then(argument("targets", PlayerParser::multiple()).executes(set_target_game_mode)),
     )
