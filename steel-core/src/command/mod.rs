@@ -46,7 +46,7 @@ impl CommandDispatcher {
             .graph
             .register_root(commands::gamemode::command());
         dispatcher.register(commands::gamerule::command_handler());
-        dispatcher.register(commands::kill::command_handler());
+        dispatcher.graph.register_root(commands::kill::command());
         dispatcher.graph.register_root(commands::list::command());
         dispatcher.register(commands::locate::command_handler());
         dispatcher.register(commands::give::command_handler());
@@ -231,6 +231,9 @@ impl CommandDispatcher {
             }
             CommandParseErrorKind::InvalidPlayer(value) => {
                 format!("Invalid player '{value}'")
+            }
+            CommandParseErrorKind::InvalidEntity(value) => {
+                format!("Invalid entity '{value}'")
             }
             CommandParseErrorKind::InvalidDomain(value) => {
                 format!("Invalid domain '{value}'")

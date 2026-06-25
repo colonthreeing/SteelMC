@@ -5,12 +5,12 @@ use std::sync::Arc;
 
 use text_components::TextComponent;
 
-use crate::command::arguments::entity::EntityArgument;
-use crate::command::commands::{
-    CommandExecutor, CommandHandlerBuilder, CommandHandlerDyn, argument,
-};
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
+use crate::command::graph::{
+    CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments, argument, literal,
+};
+use crate::command::parsers::EntityParser;
 use crate::entity::damage::DamageSource;
 use crate::entity::{Entity, LivingEntity};
 use crate::player::Player;
@@ -19,10 +19,10 @@ use steel_utils::translations;
 
 /// Creates the `/kill` command handler.
 #[must_use]
-pub fn command_handler() -> impl CommandHandlerDyn {
-    CommandHandlerBuilder::new(&["kill"], "Kills entities.", "minecraft:command.kill")
-        .executes(KillSelfExecutor)
-        .then(argument("targets", EntityArgument::multiple()).executes(KillTargetsExecutor))
+pub fn command() -> CommandNodeBuilder {
+    literal("kill")
+        .executes(kill_self)
+        .then(argument("targets", EntityParser::multiple()).executes(kill_targets))
 }
 
 /// `LivingEntity.kill()` — hurt with `genericKill` at `Float.MAX_VALUE`.
@@ -33,79 +33,79 @@ fn kill_player(player: &Player) {
     );
 }
 
-struct KillSelfExecutor;
+fn kill_self(
+    context: &mut CommandContext,
+    _: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let player = context
+        .sender
+        .get_player()
+        .ok_or(CommandError::InvalidRequirement)?;
 
-impl CommandExecutor<()> for KillSelfExecutor {
-    fn execute(&self, _args: (), context: &mut CommandContext) -> Result<(), CommandError> {
-        let player = context
-            .sender
-            .get_player()
-            .ok_or(CommandError::InvalidRequirement)?;
+    kill_player(player);
 
-        kill_player(player);
+    // TODO: use getDisplayName() (team formatting, hover event, UUID insertion)
+    context.sender.send_message(
+        &translations::COMMANDS_KILL_SUCCESS_SINGLE
+            .message([TextComponent::plain(player.gameprofile.name.clone())])
+            .into(),
+    );
 
-        // TODO: use getDisplayName() (team formatting, hover event, UUID insertion)
-        context.sender.send_message(
-            &translations::COMMANDS_KILL_SUCCESS_SINGLE
-                .message([TextComponent::plain(player.gameprofile.name.clone())])
-                .into(),
-        );
-
-        Ok(())
-    }
+    Ok(CommandResult::success())
 }
 
-struct KillTargetsExecutor;
+fn kill_targets(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let targets = arguments
+        .get::<Vec<Arc<dyn LivingEntity + Send + Sync>>>("targets")
+        .map_err(invalid_parsed_argument)?;
 
-impl CommandExecutor<((), Vec<Arc<dyn LivingEntity + Send + Sync>>)> for KillTargetsExecutor {
-    fn execute(
-        &self,
-        args: ((), Vec<Arc<dyn LivingEntity + Send + Sync>>),
-        context: &mut CommandContext,
-    ) -> Result<(), CommandError> {
-        let ((), targets) = args;
-
-        if targets.is_empty() {
-            return Err(CommandError::CommandFailed(Box::new(
-                TextComponent::const_plain("No entity was found"),
-            )));
-        }
-
-        let players = context.server.get_players();
-
-        let mut last_name = String::new();
-        let mut victim_count = 0;
-        for target in &targets {
-            let target_uuid = target.uuid();
-            if let Some(player) = players.iter().find(|p| p.uuid() == target_uuid) {
-                kill_player(player);
-                victim_count += 1;
-                last_name.clone_from(&player.gameprofile.name);
-            }
-            // TODO: non-player entities via Entity::kill() (remove with RemovalReason::KILLED)
-        }
-
-        if victim_count == 0 {
-            return Err(CommandError::CommandFailed(Box::new(
-                TextComponent::const_plain("No entity was found"),
-            )));
-        }
-
-        // TODO: use getDisplayName() (team formatting, hover event, UUID insertion)
-        if victim_count == 1 {
-            context.sender.send_message(
-                &translations::COMMANDS_KILL_SUCCESS_SINGLE
-                    .message([TextComponent::plain(last_name)])
-                    .into(),
-            );
-        } else {
-            context.sender.send_message(
-                &translations::COMMANDS_KILL_SUCCESS_MULTIPLE
-                    .message([TextComponent::plain(victim_count.to_string())])
-                    .into(),
-            );
-        }
-
-        Ok(())
+    if targets.is_empty() {
+        return Err(CommandError::CommandFailed(Box::new(
+            TextComponent::const_plain("No entity was found"),
+        )));
     }
+
+    let players = context.server.get_players();
+
+    let mut last_name = String::new();
+    let mut victim_count = 0;
+    for target in &targets {
+        let target_uuid = target.uuid();
+        if let Some(player) = players.iter().find(|p| p.uuid() == target_uuid) {
+            kill_player(player);
+            victim_count += 1;
+            last_name.clone_from(&player.gameprofile.name);
+        }
+        // TODO: non-player entities via Entity::kill() (remove with RemovalReason::KILLED)
+    }
+
+    if victim_count == 0 {
+        return Err(CommandError::CommandFailed(Box::new(
+            TextComponent::const_plain("No entity was found"),
+        )));
+    }
+
+    // TODO: use getDisplayName() (team formatting, hover event, UUID insertion)
+    if victim_count == 1 {
+        context.sender.send_message(
+            &translations::COMMANDS_KILL_SUCCESS_SINGLE
+                .message([TextComponent::plain(last_name)])
+                .into(),
+        );
+    } else {
+        context.sender.send_message(
+            &translations::COMMANDS_KILL_SUCCESS_MULTIPLE
+                .message([TextComponent::plain(victim_count.to_string())])
+                .into(),
+        );
+    }
+
+    Ok(CommandResult::success())
+}
+
+fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
+    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }

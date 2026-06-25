@@ -15,6 +15,7 @@ use crate::command::{
     reader::{CommandReader, StringMode},
     requirement::{CommandInputContext, Requirement, RequirementContext},
 };
+use crate::entity::LivingEntity;
 use crate::player::Player;
 use crate::world::World;
 
@@ -109,6 +110,8 @@ pub enum CommandParseErrorKind {
     InvalidGameMode(String),
     /// A player argument was invalid.
     InvalidPlayer(String),
+    /// An entity argument was invalid.
+    InvalidEntity(String),
     /// A domain argument was invalid.
     InvalidDomain(String),
     /// A world argument was invalid.
@@ -134,6 +137,7 @@ impl CommandParseErrorKind {
             | Self::FloatTooHigh { .. }
             | Self::InvalidGameMode(_)
             | Self::InvalidPlayer(_)
+            | Self::InvalidEntity(_)
             | Self::InvalidDomain(_)
             | Self::InvalidWorld(_)
             | Self::InvalidComponent(_)
@@ -166,6 +170,8 @@ pub enum ParsedArgument {
     GameMode(GameType),
     /// Player target argument.
     Players(Vec<Arc<Player>>),
+    /// Living entity target argument.
+    Entities(Vec<Arc<dyn LivingEntity + Send + Sync>>),
     /// Loaded world argument.
     World(Arc<World>),
     /// Text component argument.
@@ -182,6 +188,10 @@ impl fmt::Debug for ParsedArgument {
             Self::GameMode(value) => f.debug_tuple("GameMode").field(value).finish(),
             Self::Players(value) => f
                 .debug_struct("Players")
+                .field("count", &value.len())
+                .finish(),
+            Self::Entities(value) => f
+                .debug_struct("Entities")
                 .field("count", &value.len())
                 .finish(),
             Self::World(value) => f.debug_tuple("World").field(&value.key).finish(),
@@ -244,6 +254,7 @@ impl ParsedArgument {
             Self::String(_) => "string",
             Self::GameMode(_) => "gamemode",
             Self::Players(_) => "players",
+            Self::Entities(_) => "entities",
             Self::World(_) => "world",
             Self::Component(_) => "component",
         }
@@ -319,6 +330,17 @@ impl FromParsedArgument for Vec<Arc<Player>> {
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
         let ParsedArgument::Players(value) = value else {
+            return None;
+        };
+        Some(value.clone())
+    }
+}
+
+impl FromParsedArgument for Vec<Arc<dyn LivingEntity + Send + Sync>> {
+    const TYPE_NAME: &'static str = "entities";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::Entities(value) = value else {
             return None;
         };
         Some(value.clone())
