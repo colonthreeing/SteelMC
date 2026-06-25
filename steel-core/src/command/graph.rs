@@ -1,6 +1,6 @@
 //! Dynamic command graph, parsers, and structured parse results.
 
-use std::{fmt, sync::Arc};
+use std::{error::Error, fmt, sync::Arc};
 
 use glam::DVec3;
 use steel_protocol::packets::game::{
@@ -184,6 +184,81 @@ impl CommandParseErrorKind {
             Self::EmptyCommand => 0,
         }
     }
+}
+
+/// Invalid command graph registration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommandGraphError {
+    /// A literal node name is not parseable as one command token.
+    InvalidLiteralName {
+        /// Invalid literal name.
+        name: String,
+        /// Validation failure.
+        source: CommandNodeNameError,
+    },
+    /// An argument node name is invalid for protocol exposure and parsed argument lookup.
+    InvalidArgumentName {
+        /// Invalid argument name.
+        name: String,
+        /// Validation failure.
+        source: CommandNodeNameError,
+    },
+    /// A literal node collided with an existing literal that cannot be merged.
+    LiteralCollision {
+        /// Colliding literal name.
+        name: String,
+    },
+}
+
+impl fmt::Display for CommandGraphError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidLiteralName { name, source } => {
+                write!(f, "invalid command literal '{name}': {source}")
+            }
+            Self::InvalidArgumentName { name, source } => {
+                write!(f, "invalid command argument '{name}': {source}")
+            }
+            Self::LiteralCollision { name } => {
+                write!(
+                    f,
+                    "command literal '{name}' is already registered differently"
+                )
+            }
+        }
+    }
+}
+
+impl Error for CommandGraphError {}
+
+/// Invalid command node name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandNodeNameError {
+    /// The name is empty.
+    Empty,
+    /// The name contains whitespace, which cannot be matched as one command token.
+    ContainsWhitespace,
+}
+
+impl fmt::Display for CommandNodeNameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "name is empty"),
+            Self::ContainsWhitespace => write!(f, "name contains whitespace"),
+        }
+    }
+}
+
+impl Error for CommandNodeNameError {}
+
+fn validate_command_node_name(name: &str) -> Result<(), CommandNodeNameError> {
+    if name.is_empty() {
+        return Err(CommandNodeNameError::Empty);
+    }
+    if name.chars().any(char::is_whitespace) {
+        return Err(CommandNodeNameError::ContainsWhitespace);
+    }
+    Ok(())
 }
 
 /// A parsed command argument value.
@@ -1013,15 +1088,24 @@ impl CommandGraph {
     }
 
     /// Adds a root command node.
-    #[must_use]
-    pub fn with_root(mut self, root: CommandNodeBuilder) -> Self {
-        self.register_root(root);
-        self
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the node tree contains invalid names or collides
+    /// with an existing literal that cannot be merged.
+    pub fn with_root(mut self, root: CommandNodeBuilder) -> Result<Self, CommandGraphError> {
+        self.register_root(root)?;
+        Ok(self)
     }
 
     /// Adds a root command node.
-    pub fn register_root(&mut self, root: CommandNodeBuilder) {
-        merge_or_push_node(&mut self.roots, root.build());
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the node tree contains invalid names or collides
+    /// with an existing literal that cannot be merged.
+    pub fn register_root(&mut self, root: CommandNodeBuilder) -> Result<(), CommandGraphError> {
+        merge_or_push_node(&mut self.roots, root.build()?)
     }
 
     /// Returns true when this graph has a usable root literal named `name`.
@@ -1267,16 +1351,26 @@ fn suggest_children(
     best_result
 }
 
-fn merge_or_push_node(nodes: &mut Vec<CommandNode>, node: CommandNode) {
-    let Some(existing) = nodes
-        .iter_mut()
-        .find(|existing| existing.can_merge_with(&node))
+fn merge_or_push_node(
+    nodes: &mut Vec<CommandNode>,
+    node: CommandNode,
+) -> Result<(), CommandGraphError> {
+    let Some(existing_index) = nodes
+        .iter()
+        .position(|existing| existing.same_literal_name(&node).is_some())
     else {
         nodes.push(node);
-        return;
+        return Ok(());
     };
 
-    existing.merge(node);
+    let existing = &mut nodes[existing_index];
+    if !existing.can_merge_with(&node) {
+        return Err(CommandGraphError::LiteralCollision {
+            name: node.display_name().to_owned(),
+        });
+    }
+
+    existing.merge(node)
 }
 
 fn keep_best_suggestion(best_result: &mut Option<SuggestionResult>, result: SuggestionResult) {
@@ -1423,14 +1517,19 @@ impl CommandNodeBuilder {
         self
     }
 
-    fn build(self) -> CommandNode {
-        CommandNode {
+    fn build(self) -> Result<CommandNode, CommandGraphError> {
+        self.kind.validate()?;
+        Ok(CommandNode {
             kind: self.kind,
             requirement: self.requirement,
-            children: self.children.into_iter().map(Self::build).collect(),
+            children: self
+                .children
+                .into_iter()
+                .map(Self::build)
+                .collect::<Result<Vec<_>, _>>()?,
             executor: self.executor,
             redirect: self.redirect,
-        }
+        })
     }
 }
 
@@ -1700,14 +1799,25 @@ impl CommandNode {
             )
     }
 
-    fn merge(&mut self, other: Self) {
+    fn same_literal_name(&self, other: &Self) -> Option<&str> {
+        match (&self.kind, &other.kind) {
+            (CommandNodeKind::Literal(left), CommandNodeKind::Literal(right)) if left == right => {
+                Some(left)
+            }
+            _ => None,
+        }
+    }
+
+    fn merge(&mut self, other: Self) -> Result<(), CommandGraphError> {
         if self.executor.is_none() {
             self.executor = other.executor;
         }
 
         for child in other.children {
-            merge_or_push_node(&mut self.children, child);
+            merge_or_push_node(&mut self.children, child)?;
         }
+
+        Ok(())
     }
 }
 
@@ -1720,6 +1830,25 @@ enum CommandNodeKind {
     },
 }
 
+impl CommandNodeKind {
+    fn validate(&self) -> Result<(), CommandGraphError> {
+        match self {
+            Self::Literal(name) => validate_command_node_name(name).map_err(|source| {
+                CommandGraphError::InvalidLiteralName {
+                    name: name.to_owned(),
+                    source,
+                }
+            }),
+            Self::Argument { name, .. } => validate_command_node_name(name).map_err(|source| {
+                CommandGraphError::InvalidArgumentName {
+                    name: name.to_owned(),
+                    source,
+                }
+            }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{
@@ -1729,9 +1858,10 @@ mod tests {
 
     use crate::command::{
         graph::{
-            AnchorParser, BoolParser, CommandGraph, CommandParseErrorKind, CommandRedirectTarget,
-            CommandResult, FloatParser, IntegerParser, ParsedCommandAction, StringParser,
-            SuggestionResult, argument, literal,
+            AnchorParser, BoolParser, CommandGraph, CommandGraphError, CommandNodeBuilder,
+            CommandNodeNameError, CommandParseErrorKind, CommandRedirectTarget, CommandResult,
+            FloatParser, IntegerParser, ParsedCommandAction, StringParser, SuggestionResult,
+            argument, literal,
         },
         reader::StringMode,
         requirement::{
@@ -1781,9 +1911,60 @@ mod tests {
             .collect()
     }
 
+    fn graph_with_root(root: CommandNodeBuilder) -> CommandGraph {
+        CommandGraph::new()
+            .with_root(root)
+            .expect("test command root registers")
+    }
+
+    fn graph_registration_error(root: CommandNodeBuilder) -> CommandGraphError {
+        match CommandGraph::new().with_root(root) {
+            Ok(_) => panic!("test command root should be rejected"),
+            Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn registration_rejects_invalid_node_names() {
+        let error = graph_registration_error(literal("bad name"));
+        assert_eq!(
+            error,
+            CommandGraphError::InvalidLiteralName {
+                name: "bad name".to_owned(),
+                source: CommandNodeNameError::ContainsWhitespace
+            }
+        );
+
+        let error = graph_registration_error(literal("root").then(argument("", BoolParser)));
+        assert_eq!(
+            error,
+            CommandGraphError::InvalidArgumentName {
+                name: String::new(),
+                source: CommandNodeNameError::Empty
+            }
+        );
+    }
+
+    #[test]
+    fn registration_rejects_unmergeable_literal_collisions() {
+        let graph = graph_with_root(literal("root").executes(|_, _| Ok(CommandResult::success())));
+        let Err(error) =
+            graph.with_root(literal("root").executes(|_, _| Ok(CommandResult::success())))
+        else {
+            panic!("duplicate executable root should be rejected");
+        };
+
+        assert_eq!(
+            error,
+            CommandGraphError::LiteralCollision {
+                name: "root".to_owned()
+            }
+        );
+    }
+
     #[test]
     fn parses_literal_and_integer_argument() {
-        let graph = CommandGraph::new().with_root(
+        let graph = graph_with_root(
             literal("give").then(
                 argument("count", IntegerParser::bounded(Some(1), Some(64)))
                     .executes(|_, _| Ok(CommandResult::success())),
@@ -1801,7 +1982,7 @@ mod tests {
     #[test]
     fn parses_named_arguments_for_executors() {
         let graph =
-            CommandGraph::new().with_root(literal("flag").then(
+            graph_with_root(literal("flag").then(
                 argument("enabled", BoolParser).executes(|_, _| Ok(CommandResult::success())),
             ));
 
@@ -1814,7 +1995,7 @@ mod tests {
 
     #[test]
     fn parses_bounded_float_argument() {
-        let graph = CommandGraph::new().with_root(
+        let graph = graph_with_root(
             literal("speed").then(
                 argument("value", FloatParser::bounded(Some(0.0), Some(30.0)))
                     .executes(|_, _| Ok(CommandResult::success())),
@@ -1841,7 +2022,7 @@ mod tests {
 
     #[test]
     fn quoted_string_argument_keeps_spaces() {
-        let graph = CommandGraph::new().with_root(
+        let graph = graph_with_root(
             literal("say").then(
                 argument("message", StringParser::new(StringMode::QuotablePhrase))
                     .executes(|_, _| Ok(CommandResult::success())),
@@ -1860,7 +2041,7 @@ mod tests {
 
     #[test]
     fn redirect_node_captures_remaining_command_tail() {
-        let graph = CommandGraph::new().with_root(literal("execute").then(
+        let graph = graph_with_root(literal("execute").then(
             literal("run").redirects(CommandRedirectTarget::All, |_, _| {
                 Ok(CommandResult::success())
             }),
@@ -1881,8 +2062,7 @@ mod tests {
 
     #[test]
     fn trailing_data_is_distinct_from_incomplete_command() {
-        let graph = CommandGraph::new()
-            .with_root(literal("list").executes(|_, _| Ok(CommandResult::success())));
+        let graph = graph_with_root(literal("list").executes(|_, _| Ok(CommandResult::success())));
 
         let error = graph
             .parse("list extra", &player_context())
@@ -1894,7 +2074,7 @@ mod tests {
 
     #[test]
     fn branch_errors_prefer_farthest_cursor() {
-        let graph = CommandGraph::new().with_root(
+        let graph = graph_with_root(
             literal("root")
                 .then(literal("foo").executes(|_, _| Ok(CommandResult::success())))
                 .then(
@@ -1920,7 +2100,7 @@ mod tests {
     fn requirements_hide_unusable_nodes() {
         let denied = Arc::new(AtomicBool::new(false));
         let denied_in_executor = Arc::clone(&denied);
-        let graph = CommandGraph::new().with_root(
+        let graph = graph_with_root(
             literal("admin")
                 .requires(Requirement::Permission(PermissionExpr::key(
                     PermissionKey::parse("steel.admin").expect("key parses"),
@@ -1941,12 +2121,15 @@ mod tests {
 
     #[test]
     fn usage_hides_unusable_roots() {
-        let graph =
-            CommandGraph::new()
-                .with_root(literal("open"))
-                .with_root(literal("admin").requires(Requirement::Permission(
-                    PermissionExpr::key(PermissionKey::parse("steel.admin").expect("key parses")),
-                )));
+        let graph = CommandGraph::new()
+            .with_root(literal("open"))
+            .expect("open root registers")
+            .with_root(
+                literal("admin").requires(Requirement::Permission(PermissionExpr::key(
+                    PermissionKey::parse("steel.admin").expect("key parses"),
+                ))),
+            )
+            .expect("admin root registers");
         let mut nodes = vec![ProtocolCommandNode::new_root()];
         let mut root_children = Vec::new();
 
@@ -1972,7 +2155,7 @@ mod tests {
 
     #[test]
     fn root_suggestions_include_partial_literals() {
-        let graph = CommandGraph::new().with_root(literal("list"));
+        let graph = graph_with_root(literal("list"));
 
         let result = graph
             .suggest("li", &player_context())
@@ -1985,7 +2168,7 @@ mod tests {
 
     #[test]
     fn slash_root_suggestions_keep_client_offset() {
-        let graph = CommandGraph::new().with_root(literal("list"));
+        let graph = graph_with_root(literal("list"));
 
         let result = graph
             .suggest("/li", &player_context())
@@ -1998,7 +2181,7 @@ mod tests {
 
     #[test]
     fn child_literal_suggestions_use_child_range() {
-        let graph = CommandGraph::new().with_root(literal("list").then(literal("uuids")));
+        let graph = graph_with_root(literal("list").then(literal("uuids")));
 
         let result = graph
             .suggest("list u", &player_context())
@@ -2011,7 +2194,7 @@ mod tests {
 
     #[test]
     fn trailing_space_suggests_children() {
-        let graph = CommandGraph::new().with_root(literal("list").then(literal("uuids")));
+        let graph = graph_with_root(literal("list").then(literal("uuids")));
 
         let result = graph
             .suggest("list ", &player_context())
@@ -2024,15 +2207,14 @@ mod tests {
 
     #[test]
     fn trailing_space_after_leaf_has_no_stale_suggestion() {
-        let graph = CommandGraph::new().with_root(literal("list").then(literal("uuids")));
+        let graph = graph_with_root(literal("list").then(literal("uuids")));
 
         assert!(graph.suggest("list uuids ", &player_context()).is_none());
     }
 
     #[test]
     fn bool_parser_suggests_values() {
-        let graph =
-            CommandGraph::new().with_root(literal("flag").then(argument("enabled", BoolParser)));
+        let graph = graph_with_root(literal("flag").then(argument("enabled", BoolParser)));
 
         let result = graph
             .suggest("flag f", &player_context())
@@ -2060,7 +2242,9 @@ mod tests {
     fn duplicate_literal_roots_merge_child_branches() {
         let graph = CommandGraph::new()
             .with_root(literal("root").then(literal("one")))
-            .with_root(literal("root").then(literal("two")));
+            .expect("first root branch registers")
+            .with_root(literal("root").then(literal("two")))
+            .expect("second root branch registers");
 
         let root_result = graph
             .suggest("ro", &player_context())
@@ -2078,14 +2262,15 @@ mod tests {
 
     #[test]
     fn redirect_to_all_suggests_dispatcher_roots() {
-        let graph =
-            CommandGraph::new()
-                .with_root(literal("give"))
-                .with_root(literal("execute").then(
-                    literal("run").redirects(CommandRedirectTarget::All, |_, _| {
-                        Ok(CommandResult::success())
-                    }),
-                ));
+        let graph = CommandGraph::new()
+            .with_root(literal("give"))
+            .expect("give root registers")
+            .with_root(literal("execute").then(
+                literal("run").redirects(CommandRedirectTarget::All, |_, _| {
+                    Ok(CommandResult::success())
+                }),
+            ))
+            .expect("execute root registers");
 
         let result = graph
             .suggest("execute run gi", &player_context())
@@ -2098,7 +2283,7 @@ mod tests {
 
     #[test]
     fn redirect_to_current_suggests_current_root_children() {
-        let graph = CommandGraph::new().with_root(
+        let graph = graph_with_root(
             literal("execute")
                 .then(
                     literal("anchored").then(

@@ -14,7 +14,8 @@ use text_components::{Modifier, TextComponent, format::Color};
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandGraph, CommandNodeBuilder, CommandParseError, CommandParseErrorKind, CommandResult,
+    CommandGraph, CommandGraphError, CommandNodeBuilder, CommandParseError, CommandParseErrorKind,
+    CommandResult,
 };
 use crate::command::requirement::RequirementContext;
 use crate::command::sender::CommandSender;
@@ -90,6 +91,8 @@ pub enum CommandRegistrationError {
     RootMustBeLiteral,
     /// A command or alias produced an invalid permission key.
     InvalidPermissionKey(PermissionKeyError),
+    /// The command graph rejected a node registration.
+    InvalidGraph(CommandGraphError),
 }
 
 impl fmt::Display for CommandRegistrationError {
@@ -97,6 +100,7 @@ impl fmt::Display for CommandRegistrationError {
         match self {
             Self::RootMustBeLiteral => write!(f, "command root must be a literal node"),
             Self::InvalidPermissionKey(error) => write!(f, "{error}"),
+            Self::InvalidGraph(error) => write!(f, "{error}"),
         }
     }
 }
@@ -106,6 +110,12 @@ impl Error for CommandRegistrationError {}
 impl From<PermissionKeyError> for CommandRegistrationError {
     fn from(value: PermissionKeyError) -> Self {
         Self::InvalidPermissionKey(value)
+    }
+}
+
+impl From<CommandGraphError> for CommandRegistrationError {
+    fn from(value: CommandGraphError) -> Self {
+        Self::InvalidGraph(value)
     }
 }
 
@@ -237,24 +247,29 @@ impl CommandDispatcher {
         registration: CommandRegistration,
     ) -> Result<(), CommandRegistrationError> {
         let permission = registration.resolved_permission()?;
-        self.register_root(registration.root.clone(), permission.clone());
+        self.register_root(registration.root.clone(), permission.clone())?;
         for alias in registration.aliases {
             let root = registration
                 .root
                 .clone()
                 .with_literal_name(alias.as_str())
                 .ok_or(CommandRegistrationError::RootMustBeLiteral)?;
-            self.register_root(root, permission.clone());
+            self.register_root(root, permission.clone())?;
         }
         Ok(())
     }
 
-    fn register_root(&mut self, root: CommandNodeBuilder, permission: Option<PermissionKey>) {
+    fn register_root(
+        &mut self,
+        root: CommandNodeBuilder,
+        permission: Option<PermissionKey>,
+    ) -> Result<(), CommandRegistrationError> {
         let root = match permission {
             Some(permission) => root.requires_permission(permission),
             None => root,
         };
-        self.graph.register_root(root);
+        self.graph.register_root(root)?;
+        Ok(())
     }
 
     /// Executes a command.
