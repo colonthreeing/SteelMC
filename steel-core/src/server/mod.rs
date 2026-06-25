@@ -377,7 +377,7 @@ pub struct Server {
     pub worlds: WorldMap,
     /// The tick rate manager for the server.
     pub tick_rate_manager: SyncRwLock<TickRateManager>,
-    /// Saves and dispatches commands to appropriate handlers.
+    /// Parses and dispatches commands.
     pub command_dispatcher: SyncRwLock<CommandDispatcher>,
     /// Jobs resumed from a known point in the server game tick.
     pub jobs: ServerJobQueue,
