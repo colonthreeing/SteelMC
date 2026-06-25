@@ -41,6 +41,10 @@ fn nanos_to_ms_string(nanos: u64) -> String {
     format!("{:.1}", nanos as f64 / 1_000_000.0)
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Command executors use a shared fallible callback signature."
+)]
 fn query_tick(
     context: &mut CommandContext,
     _: &ParsedArguments,
@@ -151,6 +155,10 @@ fn set_tick_rate(
     Ok(CommandResult::success())
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Command executors use a shared fallible callback signature."
+)]
 fn freeze_tick(
     context: &mut CommandContext,
     _: &ParsedArguments,
@@ -179,6 +187,10 @@ fn freeze_tick(
     Ok(CommandResult::success())
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Command executors use a shared fallible callback signature."
+)]
 fn unfreeze_tick(
     context: &mut CommandContext,
     _: &ParsedArguments,

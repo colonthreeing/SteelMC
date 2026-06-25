@@ -46,6 +46,10 @@ fn difficulty_display_name(difficulty: Difficulty) -> &'static Translation<0> {
     }
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Command executors use a shared fallible callback signature."
+)]
 fn query_difficulty(
     context: &mut CommandContext,
     _: &ParsedArguments,

@@ -161,6 +161,10 @@ fn add_levels(
     Ok(CommandResult::success())
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Command executors use a shared fallible callback signature."
+)]
 fn clear_sender(
     context: &mut CommandContext,
     _: &ParsedArguments,

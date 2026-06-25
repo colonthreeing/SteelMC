@@ -13,6 +13,10 @@ pub fn command() -> CommandNodeBuilder {
     literal("seed").executes(send_seed)
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Command executors use a shared fallible callback signature."
+)]
 fn send_seed(
     context: &mut CommandContext,
     _: &ParsedArguments,

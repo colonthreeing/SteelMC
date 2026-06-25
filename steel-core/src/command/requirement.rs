@@ -212,9 +212,10 @@ impl BitOr for PermissionExpr {
 }
 
 /// A non-permission or permission-backed command requirement.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Requirement {
     /// The node is always usable.
+    #[default]
     Always,
     /// The source must be a player.
     Player,
@@ -265,12 +266,6 @@ impl Requirement {
             }
             (left, right) => Self::All(vec![left, right]),
         }
-    }
-}
-
-impl Default for Requirement {
-    fn default() -> Self {
-        Self::Always
     }
 }
 

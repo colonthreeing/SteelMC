@@ -78,7 +78,7 @@ impl<'a> CommandReader<'a> {
 
     /// Returns true when there is input left to read.
     #[must_use]
-    pub fn can_read(&self) -> bool {
+    pub const fn can_read(&self) -> bool {
         self.cursor < self.input.len()
     }
 

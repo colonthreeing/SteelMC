@@ -1082,7 +1082,7 @@ impl CommandArgumentParser for ComponentParser {
             )
         })?;
 
-        Ok(ParsedArgument::Component(component))
+        Ok(ParsedArgument::Component(Box::new(component)))
     }
 
     fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {

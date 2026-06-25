@@ -51,7 +51,7 @@ impl CommandParseError {
         self.cursor
     }
 
-    fn is_better_than(&self, other: &Self) -> bool {
+    const fn is_better_than(&self, other: &Self) -> bool {
         self.cursor > other.cursor
             || self.cursor == other.cursor && self.kind.precedence() > other.kind.precedence()
     }
@@ -221,7 +221,7 @@ pub enum ParsedArgument {
     /// Rotation argument.
     Rotation((f32, f32)),
     /// Text component argument.
-    Component(TextComponent),
+    Component(Box<TextComponent>),
 }
 
 /// Structure command argument value: either one structure or a structure tag.
@@ -561,7 +561,7 @@ impl FromParsedArgument for TextComponent {
         let ParsedArgument::Component(value) = value else {
             return None;
         };
-        Some(value.clone())
+        Some(value.as_ref().clone())
     }
 }
 
@@ -930,8 +930,8 @@ pub struct ParseResults {
     action: ParsedCommandAction,
 }
 
-impl std::fmt::Debug for ParseResults {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for ParseResults {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ParseResults")
             .field("input", &self.input)
             .field("arguments", &self.arguments)
@@ -980,7 +980,7 @@ impl ParseResults {
     pub fn execute_with_dispatcher(
         &self,
         context: &mut CommandContext,
-        mut dispatch: impl FnMut(&str, &mut CommandContext) -> Result<(), CommandError>,
+        mut dispatch: impl FnMut(&str, &mut CommandContext) -> Result<CommandResult, CommandError>,
     ) -> Result<CommandResult, CommandError> {
         match &self.action {
             ParsedCommandAction::Execute(executor) => executor(context, &self.arguments),
@@ -989,13 +989,10 @@ impl ParseResults {
                 match redirect.target {
                     CommandRedirectTarget::Current => {
                         let command = format!("{} {}", redirect.current_root, redirect.command);
-                        dispatch(&command, context)?;
+                        dispatch(&command, context)
                     }
-                    CommandRedirectTarget::All => {
-                        dispatch(&redirect.command, context)?;
-                    }
+                    CommandRedirectTarget::All => dispatch(&redirect.command, context),
                 }
-                Ok(CommandResult::success())
             }
         }
     }
@@ -1017,13 +1014,13 @@ impl CommandGraph {
     /// Adds a root command node.
     #[must_use]
     pub fn with_root(mut self, root: CommandNodeBuilder) -> Self {
-        self.roots.push(root.build());
+        self.register_root(root);
         self
     }
 
     /// Adds a root command node.
     pub fn register_root(&mut self, root: CommandNodeBuilder) {
-        self.roots.push(root.build());
+        merge_or_push_node(&mut self.roots, root.build());
     }
 
     /// Returns true when this graph has a usable root literal named `name`.
@@ -1082,7 +1079,14 @@ impl CommandGraph {
         let mut reader = CommandReader::with_offset(input_without_slash, cursor_offset);
         reader.skip_whitespace();
 
-        suggest_children(&reader, &self.roots, ParsedArguments::default(), context)
+        suggest_children(
+            &reader,
+            &self.roots,
+            ParsedArguments::default(),
+            context,
+            &self.roots,
+            None,
+        )
     }
 
     /// Parses `input` for `context`.
@@ -1234,6 +1238,8 @@ fn suggest_children(
     children: &[CommandNode],
     arguments: ParsedArguments,
     context: &dyn CommandInputContext,
+    roots: &[CommandNode],
+    current_root_children: Option<&[CommandNode]>,
 ) -> Option<SuggestionResult> {
     let mut best_result = None;
 
@@ -1242,12 +1248,34 @@ fn suggest_children(
             continue;
         }
 
-        if let Some(result) = child.suggest(reader, arguments.clone(), context) {
+        let child_root_children = current_root_children.or_else(|| {
+            matches!(&child.kind, CommandNodeKind::Literal(_)).then_some(child.children.as_slice())
+        });
+
+        if let Some(result) = child.suggest(
+            reader,
+            arguments.clone(),
+            context,
+            roots,
+            child_root_children,
+        ) {
             keep_best_suggestion(&mut best_result, result);
         }
     }
 
     best_result
+}
+
+fn merge_or_push_node(nodes: &mut Vec<CommandNode>, node: CommandNode) {
+    let Some(existing) = nodes
+        .iter_mut()
+        .find(|existing| existing.can_merge_with(&node))
+    else {
+        nodes.push(node);
+        return;
+    };
+
+    existing.merge(node);
 }
 
 fn keep_best_suggestion(best_result: &mut Option<SuggestionResult>, result: SuggestionResult) {
@@ -1495,6 +1523,8 @@ impl CommandNode {
         reader: &CommandReader<'_>,
         mut arguments: ParsedArguments,
         context: &dyn CommandInputContext,
+        roots: &[CommandNode],
+        current_root_children: Option<&[CommandNode]>,
     ) -> Option<SuggestionResult> {
         let token = suggestion_token(reader);
         let direct_suggestions = match &self.kind {
@@ -1518,9 +1548,13 @@ impl CommandNode {
         }
 
         let mut result = direct_suggestions;
-        if let Some(deeper) =
-            self.suggest_after_successful_parse(&mut parsed_reader, arguments, context)
-        {
+        if let Some(deeper) = self.suggest_after_successful_parse(
+            &mut parsed_reader,
+            arguments,
+            context,
+            roots,
+            current_root_children,
+        ) {
             keep_best_suggestion(&mut result, deeper);
         }
         result
@@ -1531,6 +1565,8 @@ impl CommandNode {
         reader: &mut CommandReader<'_>,
         arguments: ParsedArguments,
         context: &dyn CommandInputContext,
+        roots: &[CommandNode],
+        current_root_children: Option<&[CommandNode]>,
     ) -> Option<SuggestionResult> {
         if !reader.can_read() {
             return None;
@@ -1541,7 +1577,37 @@ impl CommandNode {
         }
 
         reader.skip_whitespace();
-        suggest_children(reader, &self.children, arguments, context)
+        if let Some(redirect) = &self.redirect {
+            return match redirect.target {
+                CommandRedirectTarget::Current => current_root_children.and_then(|children| {
+                    suggest_children(
+                        reader,
+                        children,
+                        ParsedArguments::default(),
+                        context,
+                        roots,
+                        current_root_children,
+                    )
+                }),
+                CommandRedirectTarget::All => suggest_children(
+                    reader,
+                    roots,
+                    ParsedArguments::default(),
+                    context,
+                    roots,
+                    None,
+                ),
+            };
+        }
+
+        suggest_children(
+            reader,
+            &self.children,
+            arguments,
+            context,
+            roots,
+            current_root_children,
+        )
     }
 
     fn usage(
@@ -1587,6 +1653,27 @@ impl CommandNode {
             }
         };
     }
+
+    fn can_merge_with(&self, other: &Self) -> bool {
+        self.requirement == other.requirement
+            && self.redirect.is_none()
+            && other.redirect.is_none()
+            && !(self.executor.is_some() && other.executor.is_some())
+            && matches!(
+                (&self.kind, &other.kind),
+                (CommandNodeKind::Literal(left), CommandNodeKind::Literal(right)) if left == right
+            )
+    }
+
+    fn merge(&mut self, other: Self) {
+        if self.executor.is_none() {
+            self.executor = other.executor;
+        }
+
+        for child in other.children {
+            merge_or_push_node(&mut self.children, child);
+        }
+    }
 }
 
 enum CommandNodeKind {
@@ -1606,9 +1693,9 @@ mod tests {
 
     use crate::command::{
         graph::{
-            BoolParser, CommandGraph, CommandParseErrorKind, CommandRedirectTarget, CommandResult,
-            FloatParser, IntegerParser, ParsedCommandAction, StringParser, SuggestionResult,
-            argument, literal,
+            AnchorParser, BoolParser, CommandGraph, CommandParseErrorKind, CommandRedirectTarget,
+            CommandResult, FloatParser, IntegerParser, ParsedCommandAction, StringParser,
+            SuggestionResult, argument, literal,
         },
         reader::StringMode,
         requirement::{
@@ -1886,5 +1973,73 @@ mod tests {
         assert_eq!(suggestion_texts(&result), vec!["false".to_owned()]);
         assert_eq!(result.start, 5);
         assert_eq!(result.length, 1);
+    }
+
+    #[test]
+    fn duplicate_literal_roots_merge_child_branches() {
+        let graph = CommandGraph::new()
+            .with_root(literal("root").then(literal("one")))
+            .with_root(literal("root").then(literal("two")));
+
+        let root_result = graph
+            .suggest("ro", &player_context())
+            .expect("root suggestion");
+        assert_eq!(suggestion_texts(&root_result), vec!["root".to_owned()]);
+
+        let child_result = graph
+            .suggest("root ", &player_context())
+            .expect("child suggestions");
+        assert_eq!(
+            suggestion_texts(&child_result),
+            vec!["one".to_owned(), "two".to_owned()]
+        );
+    }
+
+    #[test]
+    fn redirect_to_all_suggests_dispatcher_roots() {
+        let graph =
+            CommandGraph::new()
+                .with_root(literal("give"))
+                .with_root(literal("execute").then(
+                    literal("run").redirects(CommandRedirectTarget::All, |_, _| {
+                        Ok(CommandResult::success())
+                    }),
+                ));
+
+        let result = graph
+            .suggest("execute run gi", &player_context())
+            .expect("redirect target suggestion");
+
+        assert_eq!(suggestion_texts(&result), vec!["give".to_owned()]);
+        assert_eq!(result.start, 12);
+        assert_eq!(result.length, 2);
+    }
+
+    #[test]
+    fn redirect_to_current_suggests_current_root_children() {
+        let graph = CommandGraph::new().with_root(
+            literal("execute")
+                .then(
+                    literal("anchored").then(
+                        argument("anchor", AnchorParser)
+                            .redirects(CommandRedirectTarget::Current, |_, _| {
+                                Ok(CommandResult::success())
+                            }),
+                    ),
+                )
+                .then(
+                    literal("run").redirects(CommandRedirectTarget::All, |_, _| {
+                        Ok(CommandResult::success())
+                    }),
+                ),
+        );
+
+        let result = graph
+            .suggest("execute anchored eyes ru", &player_context())
+            .expect("current redirect suggestion");
+
+        assert_eq!(suggestion_texts(&result), vec!["run".to_owned()]);
+        assert_eq!(result.start, 22);
+        assert_eq!(result.length, 2);
     }
 }

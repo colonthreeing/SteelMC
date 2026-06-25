@@ -41,6 +41,10 @@ pub fn command() -> CommandNodeBuilder {
     command
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Command executors use a shared fallible callback signature."
+)]
 fn query_rule(
     context: &mut CommandContext,
     rule: GameRuleRef,
@@ -85,6 +89,10 @@ fn set_int_rule(
     set_rule(context, rule, GameRuleValue::Int(value), value.to_string())
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Command executors use a shared fallible callback signature."
+)]
 fn set_rule(
     context: &mut CommandContext,
     rule: GameRuleRef,

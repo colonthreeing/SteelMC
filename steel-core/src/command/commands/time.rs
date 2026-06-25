@@ -54,6 +54,10 @@ enum TimeQuery {
     Gametime,
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Command executors use a shared fallible callback signature."
+)]
 fn query_time(
     context: &mut CommandContext,
     query: TimeQuery,

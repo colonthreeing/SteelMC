@@ -30,7 +30,11 @@ pub fn command() -> CommandNodeBuilder {
         .then(literal("rotated").then(
             argument("rot", RotationParser).redirects(CommandRedirectTarget::Current, set_rotation),
         ))
-        .then(literal("run").redirects(CommandRedirectTarget::All, run_command))
+        .then(
+            literal("run").redirects(CommandRedirectTarget::All, |_, _| {
+                Ok(CommandResult::success())
+            }),
+        )
 }
 
 fn set_anchor(
@@ -54,13 +58,6 @@ fn set_rotation(
             .map_err(invalid_parsed_argument)?,
     );
 
-    Ok(CommandResult::success())
-}
-
-fn run_command(
-    _context: &mut CommandContext,
-    _arguments: &ParsedArguments,
-) -> Result<CommandResult, CommandError> {
     Ok(CommandResult::success())
 }
 

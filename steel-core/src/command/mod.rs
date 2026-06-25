@@ -13,7 +13,9 @@ use text_components::{Modifier, TextComponent, format::Color};
 
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
-use crate::command::graph::{CommandGraph, CommandParseError, CommandParseErrorKind};
+use crate::command::graph::{
+    CommandGraph, CommandParseError, CommandParseErrorKind, CommandResult,
+};
 use crate::command::requirement::{CommandSourceKind, PermissionExpr, RequirementContext};
 use crate::command::sender::CommandSender;
 use crate::player::Player;
@@ -74,7 +76,7 @@ impl CommandDispatcher {
 
     /// Creates a new command dispatcher with no commands.
     #[must_use]
-    pub fn new_empty() -> Self {
+    pub const fn new_empty() -> Self {
         CommandDispatcher {
             graph: CommandGraph::new(),
         }
@@ -119,7 +121,7 @@ impl CommandDispatcher {
         &self,
         command: &str,
         context: &mut CommandContext,
-    ) -> Result<(), CommandError> {
+    ) -> Result<CommandResult, CommandError> {
         self.execute_graph(command, context)
     }
 
@@ -127,14 +129,13 @@ impl CommandDispatcher {
         &self,
         command: &str,
         context: &mut CommandContext,
-    ) -> Result<(), CommandError> {
+    ) -> Result<CommandResult, CommandError> {
         self.graph
             .parse(command, context)
             .map_err(Self::parse_error_to_command_error)?
             .execute_with_dispatcher(context, |command, context| {
                 self.dispatch_with_context(command, context)
             })
-            .map(|_| ())
     }
 
     fn parse_error_to_command_error(error: CommandParseError) -> CommandError {
@@ -230,6 +231,7 @@ impl CommandDispatcher {
     }
 
     /// Generates the `CCommands` packet, containing the usage information of every registered commands.
+    #[must_use]
     pub fn get_commands(&self) -> CCommands {
         let mut nodes = Vec::with_capacity(1);
         nodes.push(CommandNode::new_root());

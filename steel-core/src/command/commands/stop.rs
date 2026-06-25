@@ -9,6 +9,10 @@ pub fn command() -> CommandNodeBuilder {
     literal("stop").executes(stop_server)
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Command executors use a shared fallible callback signature."
+)]
 fn stop_server(
     context: &mut CommandContext,
     _: &ParsedArguments,

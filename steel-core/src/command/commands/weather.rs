@@ -49,6 +49,10 @@ impl WeatherCommand {
     }
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Command executors use a shared fallible callback signature."
+)]
 fn execute_weather(
     context: &mut CommandContext,
     command: WeatherCommand,
