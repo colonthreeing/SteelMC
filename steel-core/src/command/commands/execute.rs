@@ -15,8 +15,8 @@
 use crate::command::context::{CommandContext, EntityAnchor};
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    AnchorParser, CommandNodeBuilder, CommandRedirectTarget, CommandResult, ParsedArgumentError,
-    ParsedArguments, argument, literal,
+    AnchorParser, CommandNodeBuilder, CommandRedirectTarget, CommandResult, ParsedArguments,
+    argument, literal,
 };
 use crate::command::parsers::RotationParser;
 use crate::command::{CommandRegistration, CommandRegistrationError};
@@ -48,7 +48,7 @@ fn set_anchor(
 ) -> Result<CommandResult, CommandError> {
     context.anchor = arguments
         .get::<EntityAnchor>("anchor")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
 
     Ok(CommandResult::success())
 }
@@ -60,12 +60,8 @@ fn set_rotation(
     context.rotation = Some(
         arguments
             .get::<(f32, f32)>("rot")
-            .map_err(invalid_parsed_argument)?,
+            .map_err(super::invalid_parsed_argument)?,
     );
 
     Ok(CommandResult::success())
-}
-
-fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
-    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }

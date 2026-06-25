@@ -15,8 +15,7 @@ use crate::chunk::chunk_request::{
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments,
-    StructureArgumentValue, argument, literal,
+    CommandNodeBuilder, CommandResult, ParsedArguments, StructureArgumentValue, argument, literal,
 };
 use crate::command::parsers::StructureParser;
 use crate::command::sender::CommandSender;
@@ -47,7 +46,7 @@ fn locate_structure_argument(
 ) -> Result<CommandResult, CommandError> {
     let structure = arguments
         .get::<StructureArgumentValue>("structure")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
 
     locate_structure(structure, context)?;
 
@@ -101,10 +100,6 @@ fn locate_structure(
     };
     context.server.jobs.spawn(job);
     Ok(())
-}
-
-fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
-    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }
 
 enum LocatePhase {

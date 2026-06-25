@@ -2,8 +2,8 @@
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    BoolParser, CommandNodeBuilder, CommandResult, IntegerParser, ParsedArgumentError,
-    ParsedArguments, argument, literal,
+    BoolParser, CommandNodeBuilder, CommandResult, IntegerParser, ParsedArguments, argument,
+    literal,
 };
 use crate::command::{CommandRegistration, CommandRegistrationError};
 use steel_registry::REGISTRY;
@@ -77,7 +77,7 @@ fn set_bool_rule(
 ) -> Result<CommandResult, CommandError> {
     let value = arguments
         .get::<bool>("value")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
 
     set_rule(context, rule, GameRuleValue::Bool(value), value.to_string())
 }
@@ -89,7 +89,7 @@ fn set_int_rule(
 ) -> Result<CommandResult, CommandError> {
     let value = arguments
         .get::<i32>("value")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
 
     set_rule(context, rule, GameRuleValue::Int(value), value.to_string())
 }
@@ -119,8 +119,4 @@ fn set_rule(
     );
 
     Ok(CommandResult::success())
-}
-
-fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
-    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }

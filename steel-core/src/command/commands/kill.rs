@@ -8,7 +8,7 @@ use text_components::TextComponent;
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments, argument, literal,
+    CommandNodeBuilder, CommandResult, ParsedArguments, argument, literal,
 };
 use crate::command::parsers::EntityParser;
 use crate::command::{CommandRegistration, CommandRegistrationError};
@@ -65,7 +65,7 @@ fn kill_targets(
 ) -> Result<CommandResult, CommandError> {
     let targets = arguments
         .get::<Vec<Arc<dyn LivingEntity + Send + Sync>>>("targets")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
 
     if targets.is_empty() {
         return Err(CommandError::failure("No entity was found"));
@@ -105,8 +105,4 @@ fn kill_targets(
     }
 
     Ok(CommandResult::success())
-}
-
-fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
-    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }

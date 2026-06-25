@@ -5,8 +5,7 @@ use std::sync::Arc;
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    BoolParser, CommandNodeBuilder, CommandResult, FloatParser, ParsedArgumentError,
-    ParsedArguments, argument, literal,
+    BoolParser, CommandNodeBuilder, CommandResult, FloatParser, ParsedArguments, argument, literal,
 };
 use crate::command::parsers::PlayerParser;
 use crate::command::sender::CommandSender;
@@ -81,7 +80,7 @@ fn set_target_fly(
     let targets = targets(arguments)?;
     let value = arguments
         .get::<bool>("value")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
     set_fly(&targets, value);
 
     Ok(CommandResult::success())
@@ -140,17 +139,13 @@ fn set_sender_flying_speed(
 fn targets(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
     arguments
         .get::<Vec<Arc<Player>>>("target")
-        .map_err(invalid_parsed_argument)
+        .map_err(super::invalid_parsed_argument)
 }
 
 fn speed(arguments: &ParsedArguments) -> Result<f32, CommandError> {
     arguments
         .get::<f32>("speed")
-        .map_err(invalid_parsed_argument)
-}
-
-fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
-    CommandError::InvalidConsumption(Some(format!("{error:?}")))
+        .map_err(super::invalid_parsed_argument)
 }
 
 fn toggle_fly(targets: &[Arc<Player>]) {

@@ -10,10 +10,7 @@ use crate::{
     command::{
         context::CommandContext,
         error::CommandError,
-        graph::{
-            CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments, argument,
-            literal,
-        },
+        graph::{CommandNodeBuilder, CommandResult, ParsedArguments, argument, literal},
         parsers::{PlayerParser, RotationParser, Vec3Parser},
     },
     entity::Entity,
@@ -122,30 +119,26 @@ fn teleport_sender_to_location_with_rotation(
 fn targets(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
     arguments
         .get::<Vec<Arc<Player>>>("targets")
-        .map_err(invalid_parsed_argument)
+        .map_err(super::invalid_parsed_argument)
 }
 
 fn destination(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
     arguments
         .get::<Vec<Arc<Player>>>("destination")
-        .map_err(invalid_parsed_argument)
+        .map_err(super::invalid_parsed_argument)
 }
 
 fn position(arguments: &ParsedArguments) -> Result<DVec3, CommandError> {
     arguments
         .get::<DVec3>("position")
         .or_else(|_| arguments.get::<DVec3>("location"))
-        .map_err(invalid_parsed_argument)
+        .map_err(super::invalid_parsed_argument)
 }
 
 fn rotation(arguments: &ParsedArguments) -> Result<(f32, f32), CommandError> {
     arguments
         .get::<(f32, f32)>("rotation")
-        .map_err(invalid_parsed_argument)
-}
-
-fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
-    CommandError::InvalidConsumption(Some(format!("{error:?}")))
+        .map_err(super::invalid_parsed_argument)
 }
 
 fn teleport_to_pos(

@@ -2,7 +2,7 @@
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments, argument, literal,
+    CommandNodeBuilder, CommandResult, ParsedArguments, argument, literal,
 };
 use crate::command::parsers::{ComponentParser, PlayerParser};
 use crate::command::sender::CommandSender;
@@ -30,10 +30,10 @@ fn send_tellraw(
 ) -> Result<CommandResult, CommandError> {
     let targets = arguments
         .get::<Vec<Arc<Player>>>("targets")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
     let message = arguments
         .get::<TextComponent>("message")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
 
     let sender = match &context.sender {
         CommandSender::Player(player) => &player.gameprofile.name,
@@ -46,8 +46,4 @@ fn send_tellraw(
     }
 
     Ok(CommandResult::success())
-}
-
-fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
-    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }

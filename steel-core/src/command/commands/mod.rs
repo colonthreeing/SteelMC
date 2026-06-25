@@ -1,6 +1,8 @@
 //! Command implementations.
 
-use crate::command::{CommandRegistration, CommandRegistrationError};
+use crate::command::{
+    CommandRegistration, CommandRegistrationError, error::CommandError, graph::ParsedArgumentError,
+};
 
 pub mod clear;
 pub mod difficulty;
@@ -27,6 +29,10 @@ pub mod weather;
 pub mod xp;
 
 type RegistrationFactory = fn() -> Result<CommandRegistration, CommandRegistrationError>;
+
+fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
+    CommandError::InvalidConsumption(Some(format!("{error:?}")))
+}
 
 const BUILT_IN_COMMANDS: &[RegistrationFactory] = &[
     clear::registration,

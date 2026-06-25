@@ -11,8 +11,7 @@ use crate::{
         context::CommandContext,
         error::CommandError,
         graph::{
-            CommandNodeBuilder, CommandResult, IntegerParser, ParsedArgumentError, ParsedArguments,
-            argument, literal,
+            CommandNodeBuilder, CommandResult, IntegerParser, ParsedArguments, argument, literal,
         },
         parsers::PlayerParser,
     },
@@ -185,17 +184,13 @@ fn clear_targets(
 fn players(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
     arguments
         .get::<Vec<Arc<Player>>>("target")
-        .map_err(invalid_parsed_argument)
+        .map_err(super::invalid_parsed_argument)
 }
 
 fn amount(arguments: &ParsedArguments) -> Result<i32, CommandError> {
     arguments
         .get::<i32>("amount")
-        .map_err(invalid_parsed_argument)
-}
-
-fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
-    CommandError::InvalidConsumption(Some(format!("{error:?}")))
+        .map_err(super::invalid_parsed_argument)
 }
 
 #[derive(Clone, Copy)]

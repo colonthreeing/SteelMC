@@ -16,8 +16,7 @@ use crate::{
         context::CommandContext,
         error::CommandError,
         graph::{
-            CommandNodeBuilder, CommandResult, IntegerParser, ParsedArgumentError, ParsedArguments,
-            argument, literal,
+            CommandNodeBuilder, CommandResult, IntegerParser, ParsedArguments, argument, literal,
         },
         parsers::{EnchantmentParser, PlayerParser},
     },
@@ -154,23 +153,19 @@ fn enchant(
 fn targets(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
     arguments
         .get::<Vec<Arc<Player>>>("targets")
-        .map_err(invalid_parsed_argument)
+        .map_err(super::invalid_parsed_argument)
 }
 
 fn enchantment(arguments: &ParsedArguments) -> Result<EnchantmentRef, CommandError> {
     arguments
         .get::<EnchantmentRef>("enchantment")
-        .map_err(invalid_parsed_argument)
+        .map_err(super::invalid_parsed_argument)
 }
 
 fn level(arguments: &ParsedArguments) -> Result<i32, CommandError> {
     arguments
         .get::<i32>("level")
-        .map_err(invalid_parsed_argument)
-}
-
-fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
-    CommandError::InvalidConsumption(Some(format!("{error:?}")))
+        .map_err(super::invalid_parsed_argument)
 }
 
 /// Builds a display name matching vanilla's `Enchantment.getFullname`:

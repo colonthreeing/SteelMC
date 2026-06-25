@@ -11,8 +11,7 @@ use crate::{
         context::CommandContext,
         error::CommandError,
         graph::{
-            CommandNodeBuilder, CommandResult, IntegerParser, ParsedArgumentError, ParsedArguments,
-            argument, literal,
+            CommandNodeBuilder, CommandResult, IntegerParser, ParsedArguments, argument, literal,
         },
         parsers::{ItemParser, PlayerParser},
         sender::CommandSender,
@@ -162,23 +161,19 @@ fn clear_targets_with_max_amount(
 fn targets(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
     arguments
         .get::<Vec<Arc<Player>>>("targets")
-        .map_err(invalid_parsed_argument)
+        .map_err(super::invalid_parsed_argument)
 }
 
 fn item(arguments: &ParsedArguments) -> Result<ItemRef, CommandError> {
     arguments
         .get::<ItemRef>("item")
-        .map_err(invalid_parsed_argument)
+        .map_err(super::invalid_parsed_argument)
 }
 
 fn max_amount(arguments: &ParsedArguments) -> Result<i32, CommandError> {
     arguments
         .get::<i32>("maxCount")
-        .map_err(invalid_parsed_argument)
-}
-
-fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
-    CommandError::InvalidConsumption(Some(format!("{error:?}")))
+        .map_err(super::invalid_parsed_argument)
 }
 
 fn clear_messages(

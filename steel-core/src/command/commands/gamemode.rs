@@ -2,8 +2,8 @@
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandNodeBuilder, CommandPermissionArgument, CommandResult, ParsedArgumentError,
-    ParsedArguments, argument, literal,
+    CommandNodeBuilder, CommandPermissionArgument, CommandResult, ParsedArguments, argument,
+    literal,
 };
 use crate::command::parsers::{GameModeParser, PlayerParser};
 use crate::command::requirement::RequirementContext;
@@ -94,7 +94,7 @@ fn set_own_game_mode(
 ) -> Result<CommandResult, CommandError> {
     let gamemode = arguments
         .get::<GameType>("gamemode")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
 
     let player = context
         .sender
@@ -112,10 +112,10 @@ fn set_target_game_mode(
 ) -> Result<CommandResult, CommandError> {
     let gamemode = arguments
         .get::<GameType>("gamemode")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
     let targets = arguments
         .get::<Vec<Arc<Player>>>("targets")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
 
     let mode_translation = get_gamemode_translation(gamemode);
 
@@ -141,10 +141,6 @@ fn set_target_game_mode(
     }
 
     Ok(CommandResult::success())
-}
-
-fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
-    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }
 
 /// Retrieves the translation for a `GameType`

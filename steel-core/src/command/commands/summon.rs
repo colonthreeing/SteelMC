@@ -13,7 +13,7 @@ use text_components::translation::TranslatedMessage;
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments, argument, literal,
+    CommandNodeBuilder, CommandResult, ParsedArguments, argument, literal,
 };
 use crate::command::parsers::{EntitySummonParser, Vec3Parser};
 use crate::command::{CommandRegistration, CommandRegistrationError};
@@ -53,17 +53,13 @@ fn summon_at_pos(
 fn entity_type(arguments: &ParsedArguments) -> Result<EntityTypeRef, CommandError> {
     arguments
         .get::<EntityTypeRef>("entity")
-        .map_err(invalid_parsed_argument)
+        .map_err(super::invalid_parsed_argument)
 }
 
 fn position(arguments: &ParsedArguments) -> Result<DVec3, CommandError> {
     arguments
         .get::<DVec3>("pos")
-        .map_err(invalid_parsed_argument)
-}
-
-fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
-    CommandError::InvalidConsumption(Some(format!("{error:?}")))
+        .map_err(super::invalid_parsed_argument)
 }
 
 fn summon_entity(

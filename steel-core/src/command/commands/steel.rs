@@ -7,7 +7,7 @@ use text_components::TextComponent;
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments, argument, literal,
+    CommandNodeBuilder, CommandResult, ParsedArguments, argument, literal,
 };
 use crate::command::parsers::{PlayerParser, WorldParser};
 use crate::command::{CommandRegistration, CommandRegistrationError};
@@ -37,10 +37,10 @@ fn teleport_to_world(
 ) -> Result<CommandResult, CommandError> {
     let targets = arguments
         .get::<Vec<Arc<Player>>>("targets")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
     let world = arguments
         .get::<Arc<World>>("world")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
     let dim_name = &world.key;
     let count = targets.len();
 
@@ -81,8 +81,4 @@ fn teleport_to_world(
     context.sender.send_message(&TextComponent::from(msg));
 
     Ok(CommandResult::success())
-}
-
-fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
-    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }

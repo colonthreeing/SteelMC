@@ -3,7 +3,7 @@
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments, argument, literal,
+    CommandNodeBuilder, CommandResult, ParsedArguments, argument, literal,
 };
 use crate::command::parsers::DomainParser;
 use crate::command::{CommandRegistration, CommandRegistrationError};
@@ -25,7 +25,7 @@ fn switch_domain(
 ) -> Result<CommandResult, CommandError> {
     let domain = arguments
         .get::<String>("domain")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
     let player = context
         .sender
         .get_player()
@@ -40,8 +40,4 @@ fn switch_domain(
         "Switching to domain {domain}"
     )));
     Ok(CommandResult::success())
-}
-
-fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
-    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }

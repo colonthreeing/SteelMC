@@ -8,9 +8,7 @@ use crate::command::{CommandRegistration, CommandRegistrationError};
 use crate::command::{
     context::CommandContext,
     error::CommandError,
-    graph::{
-        CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments, argument, literal,
-    },
+    graph::{CommandNodeBuilder, CommandResult, ParsedArguments, argument, literal},
     parsers::TimeParser,
 };
 use crate::world::World;
@@ -95,7 +93,7 @@ fn set_parsed_time(
 ) -> Result<CommandResult, CommandError> {
     let time = arguments
         .get::<i32>("time")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
     apply_time(context, TimeOperation::Set, time)
 }
 
@@ -105,7 +103,7 @@ fn add_time(
 ) -> Result<CommandResult, CommandError> {
     let time = arguments
         .get::<i32>("time")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
     apply_time(context, TimeOperation::Add, time)
 }
 
@@ -186,8 +184,4 @@ fn advance_time(world: &World) -> Result<bool, CommandError> {
         .get_game_rule(&ADVANCE_TIME)
         .as_bool()
         .ok_or_else(|| CommandError::failure("gamerule advance_time should always be a bool"))
-}
-
-fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
-    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }

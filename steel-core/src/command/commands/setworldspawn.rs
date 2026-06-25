@@ -9,9 +9,7 @@ use crate::command::{CommandRegistration, CommandRegistrationError};
 use crate::command::{
     context::CommandContext,
     error::CommandError,
-    graph::{
-        CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments, argument, literal,
-    },
+    graph::{CommandNodeBuilder, CommandResult, ParsedArguments, argument, literal},
     parsers::{BlockPosParser, RotationParser},
 };
 use crate::level_data::RespawnData;
@@ -45,7 +43,7 @@ fn set_spawn_at_pos(
 ) -> Result<CommandResult, CommandError> {
     let pos = arguments
         .get::<BlockPos>("pos")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
 
     set_spawn(context, pos, (0.0, 0.0))
 }
@@ -56,10 +54,10 @@ fn set_spawn_at_pos_rotation(
 ) -> Result<CommandResult, CommandError> {
     let pos = arguments
         .get::<BlockPos>("pos")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
     let rotation = arguments
         .get::<(f32, f32)>("rotation")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
 
     set_spawn(context, pos, rotation)
 }
@@ -99,10 +97,6 @@ fn set_spawn(
 
 fn command_failed(error: String) -> CommandError {
     CommandError::failure(error)
-}
-
-fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
-    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }
 
 fn translated<const N: usize>(key: &'static str, args: [TextComponent; N]) -> TextComponent {

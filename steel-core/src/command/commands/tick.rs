@@ -5,8 +5,7 @@ use text_components::TextComponent;
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandNodeBuilder, CommandResult, FloatParser, ParsedArgumentError, ParsedArguments, argument,
-    literal,
+    CommandNodeBuilder, CommandResult, FloatParser, ParsedArguments, argument, literal,
 };
 use crate::command::parsers::TimeParser;
 use crate::command::{CommandRegistration, CommandRegistrationError};
@@ -155,7 +154,7 @@ fn set_tick_rate(
 ) -> Result<CommandResult, CommandError> {
     let rate = arguments
         .get::<f32>("rate")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
 
     context.server.broadcast_ticking_state();
     context.server.tick_rate_manager.write().set_tick_rate(rate);
@@ -233,7 +232,7 @@ fn step_ticks(
 ) -> Result<CommandResult, CommandError> {
     let ticks = arguments
         .get::<i32>("time")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
     step_impl(ticks, context)
 }
 
@@ -284,7 +283,7 @@ fn sprint_ticks(
 ) -> Result<CommandResult, CommandError> {
     let ticks = arguments
         .get::<i32>("time")
-        .map_err(invalid_parsed_argument)?;
+        .map_err(super::invalid_parsed_argument)?;
 
     let interrupted = context
         .server
@@ -333,8 +332,4 @@ fn stop_sprint(
             translations::COMMANDS_TICK_SPRINT_STOP_FAIL.msg(),
         ))
     }
-}
-
-fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
-    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }

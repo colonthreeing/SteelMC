@@ -2,7 +2,7 @@
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments, argument, literal,
+    CommandNodeBuilder, CommandResult, ParsedArguments, argument, literal,
 };
 use crate::command::parsers::TimeParser;
 use crate::command::{CommandRegistration, CommandRegistrationError};
@@ -30,7 +30,7 @@ fn weather_literal(name: &'static str, command: WeatherCommand) -> CommandNodeBu
             move |context: &mut CommandContext, arguments: &ParsedArguments| {
                 let duration = arguments
                     .get::<i32>("duration")
-                    .map_err(invalid_parsed_argument)?;
+                    .map_err(super::invalid_parsed_argument)?;
 
                 execute_weather(context, command, duration)
             },
@@ -96,8 +96,4 @@ fn execute_weather(
     }
 
     Ok(CommandResult::success())
-}
-
-fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
-    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }
