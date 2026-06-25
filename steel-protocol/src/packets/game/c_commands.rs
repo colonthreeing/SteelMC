@@ -25,12 +25,14 @@ pub enum CommandNode {
         redirects_to: Option<i32>,
         name: Cow<'static, str>,
         is_executable: bool,
+        is_restricted: bool,
     },
     Argument {
         children: Vec<i32>,
         redirects_to: Option<i32>,
         name: Cow<'static, str>,
         is_executable: bool,
+        is_restricted: bool,
         parser: ArgumentType,
         suggestions_type: Option<SuggestionType>,
     },
@@ -40,6 +42,7 @@ impl CommandNode {
     const FLAG_IS_EXECUTABLE: u8 = 4;
     const FLAG_HAS_REDIRECT: u8 = 8;
     const FLAG_HAS_SUGGESTION_TYPE: u8 = 16;
+    const FLAG_RESTRICTED: u8 = 32;
 
     pub fn new_root() -> Self {
         Self::Root {
@@ -52,6 +55,7 @@ impl CommandNode {
             children: info.children,
             name: name.into(),
             is_executable: info.is_executable,
+            is_restricted: info.is_restricted,
             redirects_to: info.redirects_to,
         }
     }
@@ -65,6 +69,7 @@ impl CommandNode {
             children: info.children,
             name: name.into(),
             is_executable: info.is_executable,
+            is_restricted: info.is_restricted,
             redirects_to: info.redirects_to,
             parser: argument.0,
             suggestions_type: argument.1,
@@ -72,23 +77,41 @@ impl CommandNode {
     }
 
     fn flags(&self) -> u8 {
-        let (mut flags, is_executable, has_redirect, has_suggestions_type) = match self {
-            CommandNode::Root { .. } => (0, false, false, false),
-            CommandNode::Literal {
-                is_executable,
-                redirects_to,
-                ..
-            } => (1, *is_executable, redirects_to.is_some(), false),
-            CommandNode::Argument {
-                is_executable,
-                redirects_to: r,
-                suggestions_type,
-                ..
-            } => (2, *is_executable, r.is_some(), suggestions_type.is_some()),
-        };
+        let (mut flags, is_executable, is_restricted, has_redirect, has_suggestions_type) =
+            match self {
+                CommandNode::Root { .. } => (0, false, false, false, false),
+                CommandNode::Literal {
+                    is_executable,
+                    is_restricted,
+                    redirects_to,
+                    ..
+                } => (
+                    1,
+                    *is_executable,
+                    *is_restricted,
+                    redirects_to.is_some(),
+                    false,
+                ),
+                CommandNode::Argument {
+                    is_executable,
+                    is_restricted,
+                    redirects_to: r,
+                    suggestions_type,
+                    ..
+                } => (
+                    2,
+                    *is_executable,
+                    *is_restricted,
+                    r.is_some(),
+                    suggestions_type.is_some(),
+                ),
+            };
 
         if is_executable {
             flags |= Self::FLAG_IS_EXECUTABLE
+        }
+        if is_restricted {
+            flags |= Self::FLAG_RESTRICTED
         }
         if has_redirect {
             flags |= Self::FLAG_HAS_REDIRECT
@@ -169,6 +192,7 @@ impl WriteTo for CommandNode {
 pub struct CommandNodeInfo {
     children: Vec<i32>,
     is_executable: bool,
+    is_restricted: bool,
     redirects_to: Option<i32>,
 }
 
@@ -177,6 +201,7 @@ impl CommandNodeInfo {
         Self {
             children,
             is_executable: false,
+            is_restricted: false,
             redirects_to: None,
         }
     }
@@ -185,6 +210,7 @@ impl CommandNodeInfo {
         Self {
             children: Vec::new(),
             is_executable: true,
+            is_restricted: false,
             redirects_to: None,
         }
     }
@@ -193,13 +219,20 @@ impl CommandNodeInfo {
         Self {
             children: Vec::new(),
             is_executable: false,
+            is_restricted: false,
             redirects_to: Some(redirects_to),
         }
+    }
+
+    pub fn restricted(mut self) -> Self {
+        self.is_restricted = true;
+        self
     }
 
     pub fn chain(mut self, mut other: Self) -> Self {
         self.children.append(&mut other.children);
         self.is_executable |= other.is_executable;
+        self.is_restricted |= other.is_restricted;
         self
     }
 }
@@ -428,5 +461,24 @@ impl SuggestionType {
             SuggestionType::AvailableSounds => "minecraft:available_sounds",
             SuggestionType::SummonableEntities => "minecraft:summonable_entities",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CommandNode, CommandNodeInfo};
+    use steel_utils::serial::WriteTo;
+
+    fn first_flag_byte(node: &CommandNode) -> u8 {
+        let mut bytes = Vec::new();
+        node.write(&mut bytes).expect("command node writes");
+        bytes[0]
+    }
+
+    #[test]
+    fn restricted_literal_sets_vanilla_flag() {
+        let node = CommandNode::new_literal(CommandNodeInfo::new(Vec::new()).restricted(), "admin");
+
+        assert_eq!(first_flag_byte(&node), 1 | CommandNode::FLAG_RESTRICTED);
     }
 }

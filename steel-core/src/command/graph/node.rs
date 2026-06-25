@@ -6,7 +6,23 @@ use super::{
     CommandArgumentParser, CommandExecutor, CommandGraphError, CommandRedirectTarget,
     DynamicPermission, validate_command_node_name,
 };
-use crate::command::requirement::{Requirement, RequirementContext};
+use crate::command::requirement::{
+    CommandSourceKind, PermissionExpr, Requirement, RequirementContext,
+};
+
+struct NoPermissionContext {
+    source_kind: CommandSourceKind,
+}
+
+impl RequirementContext for NoPermissionContext {
+    fn source_kind(&self) -> CommandSourceKind {
+        self.source_kind
+    }
+
+    fn has_permission(&self, _permission: &PermissionExpr) -> bool {
+        false
+    }
+}
 
 #[derive(Clone)]
 pub(super) struct CommandRedirect {
@@ -65,6 +81,9 @@ impl CommandNode {
         if self.redirect.is_none() && self.executor.is_some() {
             info = info.chain(CommandNodeInfo::new_executable());
         }
+        if self.is_restricted(context) {
+            info = info.restricted();
+        }
 
         buffer[node_index] = match &self.kind {
             CommandNodeKind::Literal(name) => ProtocolCommandNode::new_literal(info, name.clone()),
@@ -72,6 +91,13 @@ impl CommandNode {
                 ProtocolCommandNode::new_argument(info, name.clone(), parser.usage())
             }
         };
+    }
+
+    fn is_restricted(&self, context: &dyn RequirementContext) -> bool {
+        let no_permission_context = NoPermissionContext {
+            source_kind: context.source_kind(),
+        };
+        !self.requirement.allows(&no_permission_context)
     }
 
     fn can_merge_with(&self, other: &Self) -> bool {

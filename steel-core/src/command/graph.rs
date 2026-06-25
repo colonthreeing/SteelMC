@@ -695,7 +695,7 @@ mod tests {
     };
     use crate::permission::{PermissionEntry, PermissionSet};
     use steel_protocol::packets::game::CommandNode as ProtocolCommandNode;
-    use steel_utils::types::GameType;
+    use steel_utils::{serial::WriteTo, types::GameType};
 
     struct TestContext {
         source_kind: CommandSourceKind,
@@ -1100,6 +1100,24 @@ mod tests {
     }
 
     #[test]
+    fn usage_marks_permission_nodes_restricted() {
+        const RESTRICTED_FLAG: u8 = 32;
+
+        let graph = graph_with_root(literal("admin").requires(Requirement::Permission(
+            PermissionExpr::key(PermissionKey::parse("steel.admin").expect("key parses")),
+        )));
+        let allowed_context =
+            player_context_with(PermissionKey::parse("steel.admin").expect("key parses"));
+        let mut nodes = vec![ProtocolCommandNode::new_root()];
+        let mut root_children = Vec::new();
+
+        graph.usage(&mut nodes, &mut root_children, &allowed_context);
+
+        let admin = usize::try_from(root_children[0]).expect("node index is non-negative");
+        assert_ne!(node_flag_byte(&nodes[admin]) & RESTRICTED_FLAG, 0);
+    }
+
+    #[test]
     fn root_suggestions_include_partial_literals() {
         let graph = graph_with_root(literal("list"));
 
@@ -1182,6 +1200,12 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    fn node_flag_byte(node: &ProtocolCommandNode) -> u8 {
+        let mut bytes = Vec::new();
+        node.write(&mut bytes).expect("command node writes");
+        bytes[0]
     }
 
     #[test]
