@@ -55,7 +55,7 @@ impl CommandDispatcher {
         dispatcher.graph.register_root(commands::stop::command());
         dispatcher.register(commands::summon::command_handler());
         dispatcher.graph.register_root(commands::tellraw::command());
-        dispatcher.register(commands::tick::command_handler());
+        dispatcher.graph.register_root(commands::tick::command());
         dispatcher.graph.register_root(commands::time::command());
         dispatcher.register(commands::tp::command_handler());
         dispatcher.graph.register_root(commands::weather::command());
