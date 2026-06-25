@@ -16,9 +16,7 @@ use text_components::{Modifier, TextComponent, format::Color};
 use crate::command::commands::CommandHandlerDyn;
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
-use crate::command::graph::{
-    CommandExecutionError, CommandGraph, CommandParseError, CommandParseErrorKind,
-};
+use crate::command::graph::{CommandGraph, CommandParseError, CommandParseErrorKind};
 use crate::command::requirement::{CommandSourceKind, PermissionExpr, RequirementContext};
 use crate::command::sender::CommandSender;
 use crate::player::Player;
@@ -58,7 +56,9 @@ impl CommandDispatcher {
         dispatcher.register(commands::time::command_handler());
         dispatcher.register(commands::tp::command_handler());
         dispatcher.register(commands::weather::command_handler());
-        dispatcher.register(commands::difficulty::command_handler());
+        dispatcher
+            .graph
+            .register_root(commands::difficulty::command());
         dispatcher.register(commands::steel::command_handler());
         dispatcher.register(commands::xp::command_handler());
         dispatcher
@@ -124,7 +124,6 @@ impl CommandDispatcher {
             .map_err(Self::parse_error_to_command_error)?
             .execute(context)
             .map(|_| ())
-            .map_err(Self::execution_error_to_command_error)
     }
 
     /// Executes a command.
@@ -217,10 +216,6 @@ impl CommandDispatcher {
         CommandError::CommandFailed(Box::new(TextComponent::plain(format!(
             "{message} at position {cursor}"
         ))))
-    }
-
-    fn execution_error_to_command_error(error: CommandExecutionError) -> CommandError {
-        CommandError::CommandFailed(Box::new(TextComponent::plain(error.message().to_owned())))
     }
 
     /// Generates the `CCommands` packet, containing the usage information of every registered commands.

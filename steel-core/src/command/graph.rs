@@ -9,8 +9,9 @@ use steel_protocol::packets::game::{
 
 use crate::command::{
     context::CommandContext,
+    error::CommandError,
     reader::{CommandReader, StringMode},
-    requirement::{Requirement, RequirementContext},
+    requirement::{CommandInputContext, Requirement, RequirementContext},
 };
 
 /// Structured command parse error.
@@ -237,13 +238,22 @@ pub trait CommandArgumentParser: Send + Sync {
     /// # Errors
     ///
     /// Returns a structured parse error when the argument is invalid.
-    fn parse(&self, reader: &mut CommandReader<'_>) -> Result<ParsedArgument, CommandParseError>;
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError>;
 
     /// Returns protocol parser metadata for this argument.
     fn usage(&self) -> (ArgumentType, Option<SuggestionType>);
 
     /// Returns suggestions for the current argument token.
-    fn suggest(&self, _prefix: &str, _arguments: &ParsedArguments) -> Vec<SuggestionEntry> {
+    fn suggest(
+        &self,
+        _prefix: &str,
+        _arguments: &ParsedArguments,
+        _context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
         Vec::new()
     }
 }
@@ -253,7 +263,11 @@ pub trait CommandArgumentParser: Send + Sync {
 pub struct BoolParser;
 
 impl CommandArgumentParser for BoolParser {
-    fn parse(&self, reader: &mut CommandReader<'_>) -> Result<ParsedArgument, CommandParseError> {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
         let value = reader.read_string(StringMode::SingleWord)?;
 
@@ -271,7 +285,12 @@ impl CommandArgumentParser for BoolParser {
         (ArgumentType::Bool, None)
     }
 
-    fn suggest(&self, prefix: &str, _arguments: &ParsedArguments) -> Vec<SuggestionEntry> {
+    fn suggest(
+        &self,
+        prefix: &str,
+        _arguments: &ParsedArguments,
+        _context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
         ["true", "false"]
             .into_iter()
             .filter(|suggestion| suggestion.starts_with(prefix))
@@ -305,7 +324,11 @@ impl IntegerParser {
 }
 
 impl CommandArgumentParser for IntegerParser {
-    fn parse(&self, reader: &mut CommandReader<'_>) -> Result<ParsedArgument, CommandParseError> {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
         let raw = reader.read_string(StringMode::SingleWord)?;
         let value = raw.parse::<i32>().map_err(|_| {
@@ -359,7 +382,11 @@ impl StringParser {
 }
 
 impl CommandArgumentParser for StringParser {
-    fn parse(&self, reader: &mut CommandReader<'_>) -> Result<ParsedArgument, CommandParseError> {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
         reader.read_string(self.mode).map(ParsedArgument::String)
     }
 
@@ -389,28 +416,6 @@ impl CommandResult {
     }
 }
 
-/// Command execution error.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CommandExecutionError {
-    message: String,
-}
-
-impl CommandExecutionError {
-    /// Creates an execution error.
-    #[must_use]
-    pub fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
-
-    /// Returns the error message.
-    #[must_use]
-    pub fn message(&self) -> &str {
-        &self.message
-    }
-}
-
 /// Suggestions for a command input range.
 #[derive(Clone, Debug)]
 pub struct SuggestionResult {
@@ -423,7 +428,7 @@ pub struct SuggestionResult {
 }
 
 type CommandExecutor = Arc<
-    dyn Fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandExecutionError>
+    dyn Fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>
         + Send
         + Sync,
 >;
@@ -471,10 +476,7 @@ impl ParseResults {
     /// # Errors
     ///
     /// Returns a command execution error from the matched executor.
-    pub fn execute(
-        &self,
-        context: &mut CommandContext,
-    ) -> Result<CommandResult, CommandExecutionError> {
+    pub fn execute(&self, context: &mut CommandContext) -> Result<CommandResult, CommandError> {
         (self.executor)(context, &self.arguments)
     }
 }
@@ -552,7 +554,7 @@ impl CommandGraph {
     pub fn suggest(
         &self,
         input: &str,
-        context: &dyn RequirementContext,
+        context: &dyn CommandInputContext,
     ) -> Option<SuggestionResult> {
         let (input_without_slash, cursor_offset) = input
             .strip_prefix('/')
@@ -572,7 +574,7 @@ impl CommandGraph {
     pub fn parse(
         &self,
         input: &str,
-        context: &dyn RequirementContext,
+        context: &dyn CommandInputContext,
     ) -> Result<ParseResults, CommandParseError> {
         let (input_without_slash, cursor_offset) = input
             .strip_prefix('/')
@@ -604,7 +606,7 @@ fn parse_children(
     children: &[CommandNode],
     arguments: ParsedArguments,
     path: Vec<String>,
-    context: &dyn RequirementContext,
+    context: &dyn CommandInputContext,
 ) -> Result<ParseResults, CommandParseError> {
     let mut best_error = None;
     let mut usable_child_seen = false;
@@ -619,7 +621,7 @@ fn parse_children(
         let mut child_arguments = arguments.clone();
         let mut child_path = path.clone();
 
-        match child.parse_self(&mut child_reader, &mut child_arguments) {
+        match child.parse_self(&mut child_reader, &mut child_arguments, context) {
             Ok(()) => {
                 child_path.push(child.display_name().to_owned());
                 match parse_after_node(
@@ -656,7 +658,7 @@ fn parse_after_node(
     reader: &mut CommandReader<'_>,
     arguments: ParsedArguments,
     path: Vec<String>,
-    context: &dyn RequirementContext,
+    context: &dyn CommandInputContext,
 ) -> Result<ParseResults, CommandParseError> {
     if !reader.can_read() {
         return node.executable(input, arguments, path).ok_or_else(|| {
@@ -707,7 +709,7 @@ fn suggest_children(
     reader: &CommandReader<'_>,
     children: &[CommandNode],
     arguments: ParsedArguments,
-    context: &dyn RequirementContext,
+    context: &dyn CommandInputContext,
 ) -> Option<SuggestionResult> {
     let mut best_result = None;
 
@@ -807,10 +809,7 @@ impl CommandNodeBuilder {
     #[must_use]
     pub fn executes(
         mut self,
-        executor: impl Fn(
-            &mut CommandContext,
-            &ParsedArguments,
-        ) -> Result<CommandResult, CommandExecutionError>
+        executor: impl Fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>
         + Send
         + Sync
         + 'static,
@@ -869,6 +868,7 @@ impl CommandNode {
         &self,
         reader: &mut CommandReader<'_>,
         arguments: &mut ParsedArguments,
+        context: &dyn CommandInputContext,
     ) -> Result<(), CommandParseError> {
         match &self.kind {
             CommandNodeKind::Literal(expected) => {
@@ -884,7 +884,7 @@ impl CommandNode {
                 }
             }
             CommandNodeKind::Argument { name, parser } => {
-                let value = parser.parse(reader)?;
+                let value = parser.parse(reader, context)?;
                 arguments.insert(name, value);
                 Ok(())
             }
@@ -915,7 +915,7 @@ impl CommandNode {
         &self,
         reader: &CommandReader<'_>,
         mut arguments: ParsedArguments,
-        context: &dyn RequirementContext,
+        context: &dyn CommandInputContext,
     ) -> Option<SuggestionResult> {
         let token = suggestion_token(reader);
         let direct_suggestions = match &self.kind {
@@ -925,13 +925,16 @@ impl CommandNode {
                 make_suggestion_result(reader, vec![SuggestionEntry::new(name.clone())])
             }
             CommandNodeKind::Argument { parser, .. } if token.is_at_end => {
-                make_suggestion_result(reader, parser.suggest(&token.prefix, &arguments))
+                make_suggestion_result(reader, parser.suggest(&token.prefix, &arguments, context))
             }
             CommandNodeKind::Literal(_) | CommandNodeKind::Argument { .. } => None,
         };
 
         let mut parsed_reader = reader.clone();
-        if self.parse_self(&mut parsed_reader, &mut arguments).is_err() {
+        if self
+            .parse_self(&mut parsed_reader, &mut arguments, context)
+            .is_err()
+        {
             return direct_suggestions;
         }
 
@@ -948,7 +951,7 @@ impl CommandNode {
         &self,
         reader: &mut CommandReader<'_>,
         arguments: ParsedArguments,
-        context: &dyn RequirementContext,
+        context: &dyn CommandInputContext,
     ) -> Option<SuggestionResult> {
         if !reader.can_read() {
             return None;
@@ -1017,7 +1020,8 @@ mod tests {
         },
         reader::StringMode,
         requirement::{
-            CommandSourceKind, PermissionExpr, PermissionKey, Requirement, RequirementContext,
+            CommandInputContext, CommandSourceKind, PermissionExpr, PermissionKey, Requirement,
+            RequirementContext,
         },
     };
 
@@ -1043,6 +1047,8 @@ mod tests {
             }
         }
     }
+
+    impl CommandInputContext for TestContext {}
 
     fn player_context() -> TestContext {
         TestContext {

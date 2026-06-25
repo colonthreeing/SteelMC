@@ -1,8 +1,18 @@
 //! Command node requirements and permission expressions.
 
-use std::ops::{BitAnd, BitOr};
+use std::{
+    ops::{BitAnd, BitOr},
+    sync::Arc,
+};
 
-use crate::command::{context::CommandContext, sender::CommandSender};
+use glam::DVec3;
+
+use crate::{
+    command::{context::CommandContext, sender::CommandSender},
+    player::Player,
+    server::Server,
+    world::World,
+};
 
 /// The kind of source attempting to use a command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +32,29 @@ pub trait RequirementContext {
 
     /// Returns whether this source satisfies `permission`.
     fn has_permission(&self, permission: &PermissionExpr) -> bool;
+}
+
+/// Runtime context available to command argument parsers and suggestion providers.
+pub trait CommandInputContext: RequirementContext {
+    /// Returns the server when this input is being parsed against a live command context.
+    fn server(&self) -> Option<&Arc<Server>> {
+        None
+    }
+
+    /// Returns the active world when available.
+    fn world(&self) -> Option<&Arc<World>> {
+        None
+    }
+
+    /// Returns the player source when available.
+    fn player(&self) -> Option<&Arc<Player>> {
+        None
+    }
+
+    /// Returns the command source position when available.
+    fn position(&self) -> Option<DVec3> {
+        None
+    }
 }
 
 /// One permission key.
@@ -242,11 +275,29 @@ impl RequirementContext for CommandContext {
     }
 }
 
+impl CommandInputContext for CommandContext {
+    fn server(&self) -> Option<&Arc<Server>> {
+        Some(&self.server)
+    }
+
+    fn world(&self) -> Option<&Arc<World>> {
+        Some(&self.world)
+    }
+
+    fn player(&self) -> Option<&Arc<Player>> {
+        self.player.as_ref()
+    }
+
+    fn position(&self) -> Option<DVec3> {
+        Some(self.position)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        CommandSourceKind, PermissionExpr, PermissionKey, PermissionKeyError, Requirement,
-        RequirementContext,
+        CommandInputContext, CommandSourceKind, PermissionExpr, PermissionKey, PermissionKeyError,
+        Requirement, RequirementContext,
     };
 
     struct StaticContext {
@@ -271,6 +322,8 @@ mod tests {
             }
         }
     }
+
+    impl CommandInputContext for StaticContext {}
 
     #[test]
     fn permission_keys_reject_mid_pattern_wildcards() {
