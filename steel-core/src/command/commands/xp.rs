@@ -7,132 +7,197 @@ use text_components::TextComponent;
 
 use crate::{
     command::{
-        arguments::{integer::IntegerArgument, player::PlayerArgument},
-        commands::{CommandHandlerBuilder, CommandHandlerDyn, argument, literal},
         context::CommandContext,
         error::CommandError,
+        graph::{
+            CommandNodeBuilder, CommandResult, IntegerParser, ParsedArgumentError, ParsedArguments,
+            argument, literal,
+        },
+        parsers::PlayerParser,
     },
     player::Player,
 };
 
 /// Handler for the "xp" command.
-#[expect(clippy::too_many_lines, reason = "its fine")]
 #[must_use]
-pub fn command_handler() -> impl CommandHandlerDyn {
-    CommandHandlerBuilder::new(
-        &["xp", "experience"],
-        "Gives, queries and sets a player's experience level and points.",
-        "minecraft:command.xp",
-    )
-    .then(
-        literal("query").then(
-            argument("target", PlayerArgument::multiple())
-                .then(literal("points").executes(
-                    |((), players): ((), Vec<Arc<Player>>), ctx: &mut CommandContext| {
-                        for player in players {
-                            let points = { player.experience.lock().points() };
-                            ctx.sender.send_message(
-                                &translations::COMMANDS_EXPERIENCE_QUERY_POINTS
-                                    .message([
-                                        TextComponent::from(player.gameprofile.name.clone()),
-                                        TextComponent::from(points.to_string()),
-                                    ])
-                                    .into(),
-                            );
-                        }
-                        Ok(())
-                    },
-                ))
-                .then(literal("levels").executes(
-                    |((), players): ((), Vec<Arc<Player>>), ctx: &mut CommandContext| {
-                        for player in players {
-                            let level = { player.experience.lock().level() };
-                            ctx.sender.send_message(
-                                &translations::COMMANDS_EXPERIENCE_QUERY_LEVELS
-                                    .message([
-                                        TextComponent::from(player.gameprofile.name.clone()),
-                                        TextComponent::from(level.to_string()),
-                                    ])
-                                    .into(),
-                            );
-                        }
-                        Ok(())
-                    },
-                )),
-        ),
-    )
-    .then(
-        literal("set").then(
-            argument("target", PlayerArgument::multiple()).then(
-                argument("amount", IntegerArgument::bounded(Some(0), None))
-                    .executes(
-                        |(((), players), amount): (((), Vec<Arc<Player>>), i32),
-                         ctx: &mut CommandContext| {
-                            set_experience(players, amount, ExperienceType::Points, ctx)
-                        },
-                    )
-                    .then(literal("points").executes(
-                        |(((), players), amount): (((), Vec<Arc<Player>>), i32),
-                         ctx: &mut CommandContext| {
-                            set_experience(players, amount, ExperienceType::Points, ctx)
-                        },
-                    ))
-                    .then(literal("levels").executes(
-                        |(((), players), amount): (((), Vec<Arc<Player>>), i32),
-                         ctx: &mut CommandContext| {
-                            set_experience(players, amount, ExperienceType::Levels, ctx)
-                        },
-                    )),
+pub fn command() -> CommandNodeBuilder {
+    command_with_name("xp")
+}
+
+/// Handler for the "experience" command alias.
+#[must_use]
+pub fn experience_command() -> CommandNodeBuilder {
+    command_with_name("experience")
+}
+
+fn command_with_name(name: &'static str) -> CommandNodeBuilder {
+    literal(name)
+        .then(
+            literal("query").then(
+                argument("target", PlayerParser::multiple())
+                    .then(literal("points").executes(query_points))
+                    .then(literal("levels").executes(query_levels)),
             ),
-        ),
-    )
-    .then(
-        literal("add").then(
-            argument("target", PlayerArgument::multiple()).then(
-                argument("amount", IntegerArgument::new())
-                    .executes(
-                        |(((), players), amount): (((), Vec<Arc<Player>>), i32),
-                         ctx: &mut CommandContext| {
-                            add_experience(players, amount, ExperienceType::Points, ctx);
-                            Ok(())
-                        },
-                    )
-                    .then(literal("points").executes(
-                        |(((), players), amount): (((), Vec<Arc<Player>>), i32),
-                         ctx: &mut CommandContext| {
-                            add_experience(players, amount, ExperienceType::Points, ctx);
-                            Ok(())
-                        },
-                    ))
-                    .then(literal("levels").executes(
-                        |(((), players), amount): (((), Vec<Arc<Player>>), i32),
-                         ctx: &mut CommandContext| {
-                            add_experience(players, amount, ExperienceType::Levels, ctx);
-                            Ok(())
-                        },
-                    )),
+        )
+        .then(
+            literal("set").then(
+                argument("target", PlayerParser::multiple()).then(
+                    argument("amount", IntegerParser::bounded(Some(0), None))
+                        .executes(set_points)
+                        .then(literal("points").executes(set_points))
+                        .then(literal("levels").executes(set_levels)),
+                ),
             ),
-        ),
-    )
-    .then(
-        literal("clear")
-            .executes(|(): (), ctx: &mut CommandContext| {
-                if let Some(player) = ctx.sender.get_player() {
-                    player.experience.lock().set_total_points(0);
-                }
-                Ok(())
-            })
-            .then(argument("target", PlayerArgument::multiple()).executes(
-                |((), players): ((), Vec<Arc<Player>>), _ctx: &mut CommandContext| {
-                    for player in players {
-                        player.experience.lock().set_total_points(0);
-                    }
-                    Ok(())
-                },
-            )),
+        )
+        .then(
+            literal("add").then(
+                argument("target", PlayerParser::multiple()).then(
+                    argument("amount", IntegerParser::new())
+                        .executes(add_points)
+                        .then(literal("points").executes(add_points))
+                        .then(literal("levels").executes(add_levels)),
+                ),
+            ),
+        )
+        .then(
+            literal("clear")
+                .executes(clear_sender)
+                .then(argument("target", PlayerParser::multiple()).executes(clear_targets)),
+        )
+}
+
+fn query_points(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    query_experience(context, arguments, ExperienceType::Points)
+}
+
+fn query_levels(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    query_experience(context, arguments, ExperienceType::Levels)
+}
+
+fn query_experience(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    xp_type: ExperienceType,
+) -> Result<CommandResult, CommandError> {
+    for player in players(arguments)? {
+        let amount = {
+            let experience = player.experience.lock();
+            match xp_type {
+                ExperienceType::Points => experience.points(),
+                ExperienceType::Levels => experience.level(),
+            }
+        };
+        let translation = match xp_type {
+            ExperienceType::Points => &translations::COMMANDS_EXPERIENCE_QUERY_POINTS,
+            ExperienceType::Levels => &translations::COMMANDS_EXPERIENCE_QUERY_LEVELS,
+        };
+
+        context.sender.send_message(
+            &translation
+                .message([
+                    TextComponent::from(player.gameprofile.name.clone()),
+                    TextComponent::from(amount.to_string()),
+                ])
+                .into(),
+        );
+    }
+
+    Ok(CommandResult::success())
+}
+
+fn set_points(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    set_experience(
+        players(arguments)?,
+        amount(arguments)?,
+        ExperienceType::Points,
+        context,
     )
 }
 
+fn set_levels(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    set_experience(
+        players(arguments)?,
+        amount(arguments)?,
+        ExperienceType::Levels,
+        context,
+    )
+}
+
+fn add_points(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    add_experience(
+        players(arguments)?,
+        amount(arguments)?,
+        ExperienceType::Points,
+        context,
+    );
+    Ok(CommandResult::success())
+}
+
+fn add_levels(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    add_experience(
+        players(arguments)?,
+        amount(arguments)?,
+        ExperienceType::Levels,
+        context,
+    );
+    Ok(CommandResult::success())
+}
+
+fn clear_sender(
+    context: &mut CommandContext,
+    _: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    if let Some(player) = context.sender.get_player() {
+        player.experience.lock().set_total_points(0);
+    }
+    Ok(CommandResult::success())
+}
+
+fn clear_targets(
+    _context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    for player in players(arguments)? {
+        player.experience.lock().set_total_points(0);
+    }
+    Ok(CommandResult::success())
+}
+
+fn players(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
+    arguments
+        .get::<Vec<Arc<Player>>>("target")
+        .map_err(invalid_parsed_argument)
+}
+
+fn amount(arguments: &ParsedArguments) -> Result<i32, CommandError> {
+    arguments
+        .get::<i32>("amount")
+        .map_err(invalid_parsed_argument)
+}
+
+fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
+    CommandError::InvalidConsumption(Some(format!("{error:?}")))
+}
+
+#[derive(Clone, Copy)]
 enum ExperienceType {
     Points,
     Levels,
@@ -143,7 +208,7 @@ fn set_experience(
     amount: i32,
     xp_type: ExperienceType,
     ctx: &mut CommandContext,
-) -> Result<(), CommandError> {
+) -> Result<CommandResult, CommandError> {
     for player in &players {
         let mut experience = player.experience.lock();
         match xp_type {
@@ -188,7 +253,7 @@ fn set_experience(
         );
     }
 
-    Ok(())
+    Ok(CommandResult::success())
 }
 
 fn add_experience(

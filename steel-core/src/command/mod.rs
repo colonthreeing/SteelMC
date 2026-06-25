@@ -63,7 +63,10 @@ impl CommandDispatcher {
             .graph
             .register_root(commands::difficulty::command());
         dispatcher.graph.register_root(commands::steel::command());
-        dispatcher.register(commands::xp::command_handler());
+        dispatcher.graph.register_root(commands::xp::command());
+        dispatcher
+            .graph
+            .register_root(commands::xp::experience_command());
         dispatcher
     }
 
