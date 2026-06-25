@@ -7,6 +7,7 @@ use steel_protocol::packets::game::{
     ArgumentStringTypeBehavior, ArgumentType, CommandNode as ProtocolCommandNode, CommandNodeInfo,
     SuggestionEntry, SuggestionType,
 };
+use steel_registry::entity_type::EntityTypeRef;
 use steel_utils::BlockPos;
 use steel_utils::types::GameType;
 use text_components::TextComponent;
@@ -114,6 +115,8 @@ pub enum CommandParseErrorKind {
     InvalidPlayer(String),
     /// An entity argument was invalid.
     InvalidEntity(String),
+    /// An entity type argument was invalid.
+    InvalidEntityType(String),
     /// A domain argument was invalid.
     InvalidDomain(String),
     /// A world argument was invalid.
@@ -146,6 +149,7 @@ impl CommandParseErrorKind {
             | Self::InvalidGameMode(_)
             | Self::InvalidPlayer(_)
             | Self::InvalidEntity(_)
+            | Self::InvalidEntityType(_)
             | Self::InvalidDomain(_)
             | Self::InvalidWorld(_)
             | Self::InvalidVec3(_)
@@ -183,6 +187,8 @@ pub enum ParsedArgument {
     Players(Vec<Arc<Player>>),
     /// Living entity target argument.
     Entities(Vec<Arc<dyn LivingEntity + Send + Sync>>),
+    /// Entity type argument.
+    EntityType(EntityTypeRef),
     /// Loaded world argument.
     World(Arc<World>),
     /// 3D vector argument.
@@ -211,6 +217,7 @@ impl fmt::Debug for ParsedArgument {
                 .debug_struct("Entities")
                 .field("count", &value.len())
                 .finish(),
+            Self::EntityType(value) => f.debug_tuple("EntityType").field(&value.key).finish(),
             Self::World(value) => f.debug_tuple("World").field(&value.key).finish(),
             Self::Vec3(value) => f.debug_tuple("Vec3").field(value).finish(),
             Self::BlockPos(value) => f.debug_tuple("BlockPos").field(value).finish(),
@@ -275,6 +282,7 @@ impl ParsedArgument {
             Self::GameMode(_) => "gamemode",
             Self::Players(_) => "players",
             Self::Entities(_) => "entities",
+            Self::EntityType(_) => "entity_type",
             Self::World(_) => "world",
             Self::Vec3(_) => "vec3",
             Self::BlockPos(_) => "block_pos",
@@ -367,6 +375,17 @@ impl FromParsedArgument for Vec<Arc<dyn LivingEntity + Send + Sync>> {
             return None;
         };
         Some(value.clone())
+    }
+}
+
+impl FromParsedArgument for EntityTypeRef {
+    const TYPE_NAME: &'static str = "entity_type";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::EntityType(value) = value else {
+            return None;
+        };
+        Some(*value)
     }
 }
 

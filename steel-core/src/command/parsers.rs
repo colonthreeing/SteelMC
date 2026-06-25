@@ -5,6 +5,7 @@ use std::{f32::consts::PI, sync::Arc};
 use glam::DVec3;
 use rand::seq::IteratorRandom;
 use steel_protocol::packets::game::{ArgumentType, SuggestionEntry, SuggestionType};
+use steel_registry::{REGISTRY, RegistryExt, entity_type::EntityTypeRef};
 use steel_utils::{
     BlockPos, Identifier,
     translations::{
@@ -27,7 +28,7 @@ use crate::{
         reader::{CommandReader, StringMode},
         requirement::CommandInputContext,
     },
-    entity::{Entity, LivingEntity},
+    entity::{ENTITIES, Entity, LivingEntity},
 };
 
 /// Game mode argument parser.
@@ -324,6 +325,85 @@ impl CommandArgumentParser for EntityParser {
         suggestions.retain(|suggestion| suggestion.text.starts_with(prefix));
         suggestions
     }
+}
+
+/// Summonable entity type argument parser.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EntitySummonParser;
+
+impl CommandArgumentParser for EntitySummonParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let raw = reader.read_string(StringMode::SingleWord)?;
+        let Some(entity_type) = resolve_summon_entity_type(&raw) else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidEntityType(raw),
+                cursor,
+            ));
+        };
+
+        Ok(ParsedArgument::EntityType(entity_type))
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        (
+            ArgumentType::Resource {
+                identifier: "minecraft:entity_type",
+            },
+            Some(SuggestionType::SummonableEntities),
+        )
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        _arguments: &ParsedArguments,
+        _context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        let stripped_prefix = prefix.strip_prefix("minecraft:").unwrap_or(prefix);
+        REGISTRY
+            .entity_types
+            .iter()
+            .filter(|(_, entity_type)| can_summon_entity_type(entity_type))
+            .map(|(_, entity_type)| SuggestionEntry::new(entity_type.key.to_string()))
+            .filter(|suggestion| {
+                suggestion
+                    .text
+                    .strip_prefix("minecraft:")
+                    .unwrap_or(&suggestion.text)
+                    .starts_with(stripped_prefix)
+            })
+            .collect()
+    }
+}
+
+fn parse_entity_type_identifier(input: &str) -> Option<Identifier> {
+    let (namespace, path) = input.split_once(':').map_or(
+        (Identifier::VANILLA_NAMESPACE, input),
+        |(namespace, path)| (namespace, path),
+    );
+
+    Identifier::validate(namespace, path)
+        .then(|| Identifier::new(namespace.to_owned(), path.to_owned()))
+}
+
+fn resolve_summon_entity_type(input: &str) -> Option<EntityTypeRef> {
+    let key = parse_entity_type_identifier(input)?;
+    REGISTRY
+        .entity_types
+        .by_key(&key)
+        .filter(|entity_type| can_summon_entity_type(entity_type))
+}
+
+fn can_summon_entity_type(entity_type: EntityTypeRef) -> bool {
+    entity_type.summonable
+        && ENTITIES
+            .get()
+            .is_some_and(|registry| registry.has_factory(entity_type))
 }
 
 /// Configured domain name argument parser.
@@ -855,15 +935,23 @@ impl CommandArgumentParser for TimeParser {
 #[cfg(test)]
 mod tests {
     use glam::DVec3;
+    use steel_registry::vanilla_entities;
 
-    use crate::command::{
-        graph::{CommandArgumentParser, CommandParseErrorKind, ParsedArgument, ParsedArguments},
-        parsers::{
-            BlockPosParser, ComponentParser, DomainParser, EntityParser, GameModeParser,
-            PlayerParser, RotationParser, TimeParser, Vec3Parser, WorldParser,
+    use crate::{
+        command::{
+            graph::{
+                CommandArgumentParser, CommandParseErrorKind, ParsedArgument, ParsedArguments,
+            },
+            parsers::{
+                BlockPosParser, ComponentParser, DomainParser, EntityParser, EntitySummonParser,
+                GameModeParser, PlayerParser, RotationParser, TimeParser, Vec3Parser, WorldParser,
+            },
+            reader::CommandReader,
+            requirement::{
+                CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext,
+            },
         },
-        reader::CommandReader,
-        requirement::{CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext},
+        entity::init_test_entities,
     };
     use steel_utils::types::GameType;
 
@@ -956,6 +1044,21 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(texts, vec!["@a", "@e", "@n", "@p", "@r", "@s"]);
+    }
+
+    #[test]
+    fn entity_summon_parser_resolves_default_namespace() {
+        init_test_entities();
+
+        let mut reader = CommandReader::new("pig");
+        let value = EntitySummonParser
+            .parse(&mut reader, &TestContext)
+            .expect("entity type parses");
+
+        assert!(matches!(
+            value,
+            ParsedArgument::EntityType(entity_type) if entity_type == &vanilla_entities::PIG
+        ));
     }
 
     #[test]

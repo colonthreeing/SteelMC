@@ -55,7 +55,7 @@ impl CommandDispatcher {
             .graph
             .register_root(commands::setworldspawn::command());
         dispatcher.graph.register_root(commands::stop::command());
-        dispatcher.register(commands::summon::command_handler());
+        dispatcher.graph.register_root(commands::summon::command());
         dispatcher.graph.register_root(commands::tellraw::command());
         dispatcher.graph.register_root(commands::tick::command());
         dispatcher.graph.register_root(commands::time::command());
@@ -239,6 +239,9 @@ impl CommandDispatcher {
             }
             CommandParseErrorKind::InvalidEntity(value) => {
                 format!("Invalid entity '{value}'")
+            }
+            CommandParseErrorKind::InvalidEntityType(value) => {
+                format!("Invalid entity type '{value}'")
             }
             CommandParseErrorKind::InvalidDomain(value) => {
                 format!("Invalid domain '{value}'")

@@ -10,13 +10,12 @@ use steel_utils::{BlockPos, translations};
 use text_components::TextComponent;
 use text_components::translation::TranslatedMessage;
 
-use crate::command::arguments::entity_type::EntitySummonArgument;
-use crate::command::arguments::vector3::Vector3Argument;
-use crate::command::commands::{
-    CommandExecutor, CommandHandlerBuilder, CommandHandlerDyn, argument,
-};
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
+use crate::command::graph::{
+    CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments, argument, literal,
+};
+use crate::command::parsers::{EntitySummonParser, Vec3Parser};
 use crate::entity::{
     AddEntityError, ENTITIES, Entity, EntitySpawnReason, SharedEntity, next_entity_id,
 };
@@ -24,55 +23,56 @@ use crate::world::World;
 
 /// Handler for the "summon" command.
 #[must_use]
-pub fn command_handler() -> impl CommandHandlerDyn {
-    CommandHandlerBuilder::new(
-        &["summon"],
-        "Summons an entity.",
-        "minecraft:command.summon",
-    )
-    .then(
-        argument("entity", EntitySummonArgument)
-            .executes(SummonAtSourceExecutor)
-            .then(argument("pos", Vector3Argument).executes(SummonAtPosExecutor)),
+pub fn command() -> CommandNodeBuilder {
+    literal("summon").then(
+        argument("entity", EntitySummonParser)
+            .executes(summon_at_source)
+            .then(argument("pos", Vec3Parser).executes(summon_at_pos)),
     )
 }
 
-struct SummonAtSourceExecutor;
-
-impl CommandExecutor<((), EntityTypeRef)> for SummonAtSourceExecutor {
-    fn execute(
-        &self,
-        ((), entity_type): ((), EntityTypeRef),
-        context: &mut CommandContext,
-    ) -> Result<(), CommandError> {
-        summon_entity(context, entity_type, context.position)
-    }
+fn summon_at_source(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    summon_entity(context, entity_type(arguments)?, context.position)
 }
 
-struct SummonAtPosExecutor;
+fn summon_at_pos(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    summon_entity(context, entity_type(arguments)?, position(arguments)?)
+}
 
-impl CommandExecutor<(((), EntityTypeRef), DVec3)> for SummonAtPosExecutor {
-    fn execute(
-        &self,
-        (((), entity_type), pos): (((), EntityTypeRef), DVec3),
-        context: &mut CommandContext,
-    ) -> Result<(), CommandError> {
-        summon_entity(context, entity_type, pos)
-    }
+fn entity_type(arguments: &ParsedArguments) -> Result<EntityTypeRef, CommandError> {
+    arguments
+        .get::<EntityTypeRef>("entity")
+        .map_err(invalid_parsed_argument)
+}
+
+fn position(arguments: &ParsedArguments) -> Result<DVec3, CommandError> {
+    arguments
+        .get::<DVec3>("pos")
+        .map_err(invalid_parsed_argument)
+}
+
+fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
+    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }
 
 fn summon_entity(
     context: &mut CommandContext,
     entity_type: EntityTypeRef,
     pos: DVec3,
-) -> Result<(), CommandError> {
+) -> Result<CommandResult, CommandError> {
     let entity = create_entity(context, entity_type, pos)?;
     context.sender.send_message(
         &translations::COMMANDS_SUMMON_SUCCESS
             .message([entity_display_name(entity.as_ref())])
             .into(),
     );
-    Ok(())
+    Ok(CommandResult::success())
 }
 
 fn create_entity(
