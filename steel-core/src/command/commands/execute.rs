@@ -11,65 +11,59 @@
 //! - `in` (execute in another world; vanilla command docs call these dimensions)
 //! - `summon` (execute as newly summoned entity)
 //! - `on` (execute on related entities)
-use crate::command::arguments::anchor::AnchorArgument;
-use crate::command::arguments::rotation::RotationArgument;
-use crate::command::commands::{
-    CommandExecutor, CommandHandlerBuilder, CommandHandlerDyn, CommandRedirectTarget, argument,
-    literal, redirect,
-};
+
 use crate::command::context::{CommandContext, EntityAnchor};
 use crate::command::error::CommandError;
+use crate::command::graph::{
+    AnchorParser, CommandNodeBuilder, CommandRedirectTarget, CommandResult, ParsedArgumentError,
+    ParsedArguments, argument, literal,
+};
+use crate::command::parsers::RotationParser;
 
 /// Handler for the "execute" command.
 #[must_use]
-pub fn command_handler() -> impl CommandHandlerDyn {
-    CommandHandlerBuilder::new(
-        &["execute"],
-        "Executes another command with extra options.",
-        "minecraft:command.execute",
-    )
-    .then(
-        literal("anchored").then(
-            argument("anchor", AnchorArgument)
-                .then(redirect(CommandRedirectTarget::Current, AnchorExecutor)),
-        ),
-    )
-    .then(
-        literal("rotated").then(
-            argument("rot", RotationArgument)
-                .then(redirect(CommandRedirectTarget::Current, RotationExecutor)),
-        ),
-    )
-    .then(literal("run").then(redirect(CommandRedirectTarget::All, RunExecutor)))
+pub fn command() -> CommandNodeBuilder {
+    literal("execute")
+        .then(literal("anchored").then(
+            argument("anchor", AnchorParser).redirects(CommandRedirectTarget::Current, set_anchor),
+        ))
+        .then(literal("rotated").then(
+            argument("rot", RotationParser).redirects(CommandRedirectTarget::Current, set_rotation),
+        ))
+        .then(literal("run").redirects(CommandRedirectTarget::All, run_command))
 }
 
-struct AnchorExecutor;
-impl CommandExecutor<((), EntityAnchor)> for AnchorExecutor {
-    fn execute(
-        &self,
-        args: ((), EntityAnchor),
-        context: &mut CommandContext,
-    ) -> Result<(), CommandError> {
-        context.anchor = args.1;
-        Ok(())
-    }
+fn set_anchor(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    context.anchor = arguments
+        .get::<EntityAnchor>("anchor")
+        .map_err(invalid_parsed_argument)?;
+
+    Ok(CommandResult::success())
 }
 
-struct RotationExecutor;
-impl CommandExecutor<((), (f32, f32))> for RotationExecutor {
-    fn execute(
-        &self,
-        args: ((), (f32, f32)),
-        context: &mut CommandContext,
-    ) -> Result<(), CommandError> {
-        context.rotation = Some(args.1);
-        Ok(())
-    }
+fn set_rotation(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    context.rotation = Some(
+        arguments
+            .get::<(f32, f32)>("rot")
+            .map_err(invalid_parsed_argument)?,
+    );
+
+    Ok(CommandResult::success())
 }
 
-struct RunExecutor;
-impl CommandExecutor<()> for RunExecutor {
-    fn execute(&self, _args: (), _context: &mut CommandContext) -> Result<(), CommandError> {
-        Ok(())
-    }
+fn run_command(
+    _context: &mut CommandContext,
+    _arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    Ok(CommandResult::success())
+}
+
+fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
+    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }

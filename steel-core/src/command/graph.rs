@@ -16,7 +16,7 @@ use steel_utils::{BlockPos, Identifier};
 use text_components::TextComponent;
 
 use crate::command::{
-    context::CommandContext,
+    context::{CommandContext, EntityAnchor},
     error::CommandError,
     reader::{CommandReader, StringMode},
     requirement::{CommandInputContext, Requirement, RequirementContext},
@@ -80,6 +80,8 @@ pub enum CommandParseErrorKind {
     InvalidEscape(char),
     /// A boolean argument was invalid.
     InvalidBool(String),
+    /// An entity anchor argument was invalid.
+    InvalidAnchor(String),
     /// An integer argument was invalid.
     InvalidInteger(String),
     /// An integer argument was below its minimum.
@@ -149,6 +151,7 @@ impl CommandParseErrorKind {
         match self {
             Self::TrailingData => 7,
             Self::InvalidBool(_)
+            | Self::InvalidAnchor(_)
             | Self::InvalidInteger(_)
             | Self::IntegerTooLow { .. }
             | Self::IntegerTooHigh { .. }
@@ -187,6 +190,8 @@ impl CommandParseErrorKind {
 pub enum ParsedArgument {
     /// Boolean argument.
     Bool(bool),
+    /// Entity anchor argument.
+    Anchor(EntityAnchor),
     /// 32-bit signed integer argument.
     I32(i32),
     /// 32-bit floating-point argument.
@@ -269,6 +274,7 @@ impl fmt::Debug for ParsedArgument {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Bool(value) => f.debug_tuple("Bool").field(value).finish(),
+            Self::Anchor(value) => f.debug_tuple("Anchor").field(value).finish(),
             Self::I32(value) => f.debug_tuple("I32").field(value).finish(),
             Self::F32(value) => f.debug_tuple("F32").field(value).finish(),
             Self::String(value) => f.debug_tuple("String").field(value).finish(),
@@ -343,6 +349,7 @@ impl ParsedArgument {
     const fn type_name(&self) -> &'static str {
         match self {
             Self::Bool(_) => "bool",
+            Self::Anchor(_) => "anchor",
             Self::I32(_) => "i32",
             Self::F32(_) => "f32",
             Self::String(_) => "string",
@@ -376,6 +383,17 @@ impl FromParsedArgument for bool {
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
         let ParsedArgument::Bool(value) = value else {
+            return None;
+        };
+        Some(*value)
+    }
+}
+
+impl FromParsedArgument for EntityAnchor {
+    const TYPE_NAME: &'static str = "anchor";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::Anchor(value) = value else {
             return None;
         };
         Some(*value)
@@ -631,6 +649,47 @@ impl CommandArgumentParser for BoolParser {
     }
 }
 
+/// Entity anchor argument parser.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AnchorParser;
+
+impl CommandArgumentParser for AnchorParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let value = reader.read_string(StringMode::SingleWord)?;
+
+        match value.as_str() {
+            "feet" => Ok(ParsedArgument::Anchor(EntityAnchor::Feet)),
+            "eyes" => Ok(ParsedArgument::Anchor(EntityAnchor::Eyes)),
+            _ => Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidAnchor(value),
+                cursor,
+            )),
+        }
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        (ArgumentType::EntityAnchor, None)
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        _arguments: &ParsedArguments,
+        _context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        ["feet", "eyes"]
+            .into_iter()
+            .filter(|suggestion| suggestion.starts_with(prefix))
+            .map(SuggestionEntry::new)
+            .collect()
+    }
+}
+
 /// 32-bit signed integer command argument parser.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct IntegerParser {
@@ -833,13 +892,42 @@ type CommandExecutor = Arc<
         + Sync,
 >;
 
+/// Target for redirecting graph execution after a node action runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandRedirectTarget {
+    /// Redirects back to the current root command.
+    Current,
+    /// Redirects to the command dispatcher root.
+    All,
+}
+
+#[derive(Clone)]
+struct CommandRedirect {
+    target: CommandRedirectTarget,
+    executor: CommandExecutor,
+}
+
+#[derive(Clone)]
+enum ParsedCommandAction {
+    Execute(CommandExecutor),
+    Redirect(ParsedRedirect),
+}
+
+#[derive(Clone)]
+struct ParsedRedirect {
+    target: CommandRedirectTarget,
+    current_root: String,
+    command: String,
+    executor: CommandExecutor,
+}
+
 /// A successfully parsed command.
 #[derive(Clone)]
 pub struct ParseResults {
     input: String,
     arguments: ParsedArguments,
     path: Vec<String>,
-    executor: CommandExecutor,
+    action: ParsedCommandAction,
 }
 
 impl std::fmt::Debug for ParseResults {
@@ -877,7 +965,39 @@ impl ParseResults {
     ///
     /// Returns a command execution error from the matched executor.
     pub fn execute(&self, context: &mut CommandContext) -> Result<CommandResult, CommandError> {
-        (self.executor)(context, &self.arguments)
+        self.execute_with_dispatcher(context, |command, _| {
+            Err(CommandError::CommandFailed(Box::new(TextComponent::plain(
+                format!("Command redirect target '{command}' is unavailable"),
+            ))))
+        })
+    }
+
+    /// Executes this parsed command, using `dispatch` for redirected command tails.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error from either this command's executor or the redirected command.
+    pub fn execute_with_dispatcher(
+        &self,
+        context: &mut CommandContext,
+        mut dispatch: impl FnMut(&str, &mut CommandContext) -> Result<(), CommandError>,
+    ) -> Result<CommandResult, CommandError> {
+        match &self.action {
+            ParsedCommandAction::Execute(executor) => executor(context, &self.arguments),
+            ParsedCommandAction::Redirect(redirect) => {
+                (redirect.executor)(context, &self.arguments)?;
+                match redirect.target {
+                    CommandRedirectTarget::Current => {
+                        let command = format!("{} {}", redirect.current_root, redirect.command);
+                        dispatch(&command, context)?;
+                    }
+                    CommandRedirectTarget::All => {
+                        dispatch(&redirect.command, context)?;
+                    }
+                }
+                Ok(CommandResult::success())
+            }
+        }
     }
 }
 
@@ -923,7 +1043,7 @@ impl CommandGraph {
         context: &dyn RequirementContext,
     ) {
         for root in &self.roots {
-            root.usage(buffer, root_children, context);
+            root.usage(buffer, root_children, context, None);
         }
     }
 
@@ -1086,6 +1206,10 @@ fn parse_after_node(
         });
     }
 
+    if node.redirect.is_some() {
+        return node.redirectable(input, arguments, path, reader.remaining().to_owned());
+    }
+
     if node.children.is_empty() {
         return Err(CommandParseError::new(
             CommandParseErrorKind::TrailingData,
@@ -1188,6 +1312,7 @@ pub struct CommandNodeBuilder {
     requirement: Requirement,
     children: Vec<CommandNodeBuilder>,
     executor: Option<CommandExecutor>,
+    redirect: Option<CommandRedirect>,
 }
 
 impl CommandNodeBuilder {
@@ -1218,12 +1343,30 @@ impl CommandNodeBuilder {
         self
     }
 
+    /// Redirects from this node after running `executor`.
+    #[must_use]
+    pub fn redirects(
+        mut self,
+        target: CommandRedirectTarget,
+        executor: impl Fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.redirect = Some(CommandRedirect {
+            target,
+            executor: Arc::new(executor),
+        });
+        self
+    }
+
     fn build(self) -> CommandNode {
         CommandNode {
             kind: self.kind,
             requirement: self.requirement,
             children: self.children.into_iter().map(Self::build).collect(),
             executor: self.executor,
+            redirect: self.redirect,
         }
     }
 }
@@ -1236,6 +1379,7 @@ pub fn literal(name: impl Into<String>) -> CommandNodeBuilder {
         requirement: Requirement::Always,
         children: Vec::new(),
         executor: None,
+        redirect: None,
     }
 }
 
@@ -1253,6 +1397,7 @@ pub fn argument(
         requirement: Requirement::Always,
         children: Vec::new(),
         executor: None,
+        redirect: None,
     }
 }
 
@@ -1261,6 +1406,7 @@ struct CommandNode {
     requirement: Requirement,
     children: Vec<CommandNode>,
     executor: Option<CommandExecutor>,
+    redirect: Option<CommandRedirect>,
 }
 
 impl CommandNode {
@@ -1307,7 +1453,40 @@ impl CommandNode {
             input: input.to_owned(),
             arguments,
             path,
-            executor: Arc::clone(self.executor.as_ref()?),
+            action: ParsedCommandAction::Execute(Arc::clone(self.executor.as_ref()?)),
+        })
+    }
+
+    fn redirectable(
+        &self,
+        input: &str,
+        arguments: ParsedArguments,
+        path: Vec<String>,
+        command: String,
+    ) -> Result<ParseResults, CommandParseError> {
+        let Some(redirect) = &self.redirect else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::TrailingData,
+                input.len(),
+            ));
+        };
+        let Some(current_root) = path.first().cloned() else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::IncompleteCommand,
+                input.len(),
+            ));
+        };
+
+        Ok(ParseResults {
+            input: input.to_owned(),
+            arguments,
+            path,
+            action: ParsedCommandAction::Redirect(ParsedRedirect {
+                target: redirect.target,
+                current_root,
+                command,
+                executor: Arc::clone(&redirect.executor),
+            }),
         })
     }
 
@@ -1370,6 +1549,7 @@ impl CommandNode {
         buffer: &mut Vec<ProtocolCommandNode>,
         siblings: &mut Vec<i32>,
         context: &dyn RequirementContext,
+        current_root_index: Option<i32>,
     ) {
         if !self.requirement.allows(context) {
             return;
@@ -1378,14 +1558,25 @@ impl CommandNode {
         let node_index = buffer.len();
         buffer.push(ProtocolCommandNode::new_root());
         siblings.push(node_index as i32);
+        let current_root_index = current_root_index.unwrap_or(node_index as i32);
 
         let mut children = Vec::new();
-        for child in &self.children {
-            child.usage(buffer, &mut children, context);
+        if self.redirect.is_none() {
+            for child in &self.children {
+                child.usage(buffer, &mut children, context, Some(current_root_index));
+            }
         }
 
-        let mut info = CommandNodeInfo::new(children);
-        if self.executor.is_some() {
+        let mut info = self.redirect.as_ref().map_or_else(
+            || CommandNodeInfo::new(children),
+            |redirect| {
+                CommandNodeInfo::new_redirect(match redirect.target {
+                    CommandRedirectTarget::Current => current_root_index,
+                    CommandRedirectTarget::All => 0,
+                })
+            },
+        );
+        if self.redirect.is_none() && self.executor.is_some() {
             info = info.chain(CommandNodeInfo::new_executable());
         }
 
@@ -1415,8 +1606,9 @@ mod tests {
 
     use crate::command::{
         graph::{
-            BoolParser, CommandGraph, CommandParseErrorKind, CommandResult, FloatParser,
-            IntegerParser, StringParser, SuggestionResult, argument, literal,
+            BoolParser, CommandGraph, CommandParseErrorKind, CommandRedirectTarget, CommandResult,
+            FloatParser, IntegerParser, ParsedCommandAction, StringParser, SuggestionResult,
+            argument, literal,
         },
         reader::StringMode,
         requirement::{
@@ -1540,6 +1732,27 @@ mod tests {
             result.arguments().get::<String>("message"),
             Ok("hello world".to_owned())
         );
+    }
+
+    #[test]
+    fn redirect_node_captures_remaining_command_tail() {
+        let graph = CommandGraph::new().with_root(literal("execute").then(
+            literal("run").redirects(CommandRedirectTarget::All, |_, _| {
+                Ok(CommandResult::success())
+            }),
+        ));
+
+        let result = graph
+            .parse("execute run say hello", &player_context())
+            .expect("redirect parses");
+
+        assert_eq!(result.path(), ["execute", "run"]);
+        let ParsedCommandAction::Redirect(redirect) = &result.action else {
+            panic!("expected redirect action");
+        };
+        assert_eq!(redirect.target, CommandRedirectTarget::All);
+        assert_eq!(redirect.command, "say hello");
+        assert_eq!(redirect.current_root, "execute");
     }
 
     #[test]

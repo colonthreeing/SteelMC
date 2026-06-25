@@ -40,7 +40,7 @@ impl CommandDispatcher {
         dispatcher.graph.register_root(commands::clear::command());
         dispatcher.graph.register_root(commands::domain::command());
         dispatcher.graph.register_root(commands::enchant::command());
-        dispatcher.register(commands::execute::command_handler());
+        dispatcher.graph.register_root(commands::execute::command());
         dispatcher.graph.register_root(commands::fly::command());
         dispatcher
             .graph
@@ -90,14 +90,7 @@ impl CommandDispatcher {
     pub fn handle_command(&self, sender: CommandSender, command: String, server: &Arc<Server>) {
         let mut context = CommandContext::new(sender.clone(), server.clone());
 
-        let result = if Self::command_root(&command)
-            .is_some_and(|command| self.graph.has_root(command, &context))
-        {
-            self.execute_graph(&command, &mut context)
-        } else {
-            Self::split_command(&command)
-                .and_then(|(command, args)| self.execute(command, &args, &mut context, server))
-        };
+        let result = self.dispatch_with_context(&command, &mut context);
 
         if let Err(error) = result {
             let text = match error {
@@ -127,6 +120,22 @@ impl CommandDispatcher {
         }
     }
 
+    /// Executes a command using an existing command context.
+    pub fn dispatch_with_context(
+        &self,
+        command: &str,
+        context: &mut CommandContext,
+    ) -> Result<(), CommandError> {
+        if Self::command_root(command).is_some_and(|command| self.graph.has_root(command, context))
+        {
+            self.execute_graph(command, context)
+        } else {
+            let server = Arc::clone(&context.server);
+            Self::split_command(command)
+                .and_then(|(command, args)| self.execute(command, &args, context, &server))
+        }
+    }
+
     fn execute_graph(
         &self,
         command: &str,
@@ -135,7 +144,9 @@ impl CommandDispatcher {
         self.graph
             .parse(command, context)
             .map_err(Self::parse_error_to_command_error)?
-            .execute(context)
+            .execute_with_dispatcher(context, |command, context| {
+                self.dispatch_with_context(command, context)
+            })
             .map(|_| ())
     }
 
@@ -214,6 +225,9 @@ impl CommandDispatcher {
             }
             CommandParseErrorKind::InvalidBool(value) => {
                 format!("Invalid boolean '{value}'")
+            }
+            CommandParseErrorKind::InvalidAnchor(value) => {
+                format!("Invalid entity anchor '{value}'")
             }
             CommandParseErrorKind::InvalidInteger(value) => {
                 format!("Invalid integer '{value}'")
