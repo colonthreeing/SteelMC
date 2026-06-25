@@ -59,7 +59,10 @@ impl CommandDispatcher {
         dispatcher.graph.register_root(commands::tellraw::command());
         dispatcher.graph.register_root(commands::tick::command());
         dispatcher.graph.register_root(commands::time::command());
-        dispatcher.register(commands::tp::command_handler());
+        dispatcher.graph.register_root(commands::tp::command());
+        dispatcher
+            .graph
+            .register_root(commands::tp::teleport_command());
         dispatcher.graph.register_root(commands::weather::command());
         dispatcher
             .graph
@@ -242,6 +245,9 @@ impl CommandDispatcher {
             }
             CommandParseErrorKind::InvalidWorld(value) => {
                 format!("Invalid world '{value}'")
+            }
+            CommandParseErrorKind::InvalidVec3(value) => {
+                format!("Invalid position '{value}'")
             }
             CommandParseErrorKind::InvalidBlockPos(value) => {
                 format!("Invalid block position '{value}'")

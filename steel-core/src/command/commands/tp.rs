@@ -7,77 +7,148 @@ use text_components::TextComponent;
 
 use crate::{
     command::{
-        arguments::{player::PlayerArgument, rotation::RotationArgument, vector3::Vector3Argument},
-        commands::{CommandHandlerBuilder, CommandHandlerDyn, argument},
         context::CommandContext,
         error::CommandError,
+        graph::{
+            CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments, argument,
+            literal,
+        },
+        parsers::{PlayerParser, RotationParser, Vec3Parser},
     },
     entity::Entity,
     player::Player,
     world::World,
 };
 
-type MultipleRotationArgs = ((((), Vec<Arc<Player>>), DVec3), (f32, f32));
-type MultipleEntityArgs = (((), Vec<Arc<Player>>), Vec<Arc<Player>>);
-
 /// Handler for the "teleport" command.
 #[must_use]
-pub fn command_handler() -> impl CommandHandlerDyn {
-    CommandHandlerBuilder::new(
-        &["tp", "teleport"],
-        "Teleports the target(s) to the given location.",
-        "minecraft:command.teleport",
-    )
-    .then(
-        argument("targets", PlayerArgument::multiple())
-            .then(
-                argument("position", Vector3Argument)
-                    .executes(
-                        |(((), targets), pos): (((), Vec<Arc<Player>>), DVec3),
-                         context: &mut CommandContext| {
-                            let player = context
-                                .sender
-                                .get_player()
-                                .ok_or(CommandError::InvalidRequirement)?;
+pub fn command() -> CommandNodeBuilder {
+    command_with_name("tp")
+}
 
-                            teleport_to_pos(&targets, pos, player.rotation(), context)
-                        },
-                    )
-                    .then(argument("rotation", RotationArgument).executes(
-                        |((((), targets), pos), rotation): MultipleRotationArgs,
-                         context: &mut CommandContext| {
-                            teleport_to_pos(&targets, pos, rotation, context)
-                        },
-                    )),
-            )
-            .then(argument("destination", PlayerArgument::one()).executes(
-                |(((), targets), destination): MultipleEntityArgs, context: &mut CommandContext| {
-                    teleport_to_player(&targets, &destination, context)
-                },
-            )),
-    )
-    .then(
-        argument("location", Vector3Argument)
-            .executes(|((), pos), context: &mut CommandContext| {
-                let player = context
-                    .player
-                    .clone()
-                    .ok_or(CommandError::InvalidRequirement)?;
-                let rotation = player.rotation();
+/// Handler for the "teleport" command alias.
+#[must_use]
+pub fn teleport_command() -> CommandNodeBuilder {
+    command_with_name("teleport")
+}
 
-                teleport_to_pos(&[player], pos, rotation, context)
-            })
-            .then(argument("rotation", RotationArgument).executes(
-                |(((), pos), rotation), context: &mut CommandContext| {
-                    let player = context
-                        .player
-                        .clone()
-                        .ok_or(CommandError::InvalidRequirement)?;
+fn command_with_name(name: &'static str) -> CommandNodeBuilder {
+    literal(name)
+        .then(
+            argument("targets", PlayerParser::multiple())
+                .then(
+                    argument("position", Vec3Parser)
+                        .executes(teleport_targets_to_position)
+                        .then(
+                            argument("rotation", RotationParser)
+                                .executes(teleport_targets_to_position_with_rotation),
+                        ),
+                )
+                .then(
+                    argument("destination", PlayerParser::one())
+                        .executes(teleport_targets_to_player),
+                ),
+        )
+        .then(
+            argument("location", Vec3Parser)
+                .executes(teleport_sender_to_location)
+                .then(
+                    argument("rotation", RotationParser)
+                        .executes(teleport_sender_to_location_with_rotation),
+                ),
+        )
+}
 
-                    teleport_to_pos(&[player], pos, rotation, context)
-                },
-            )),
+fn teleport_targets_to_position(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let targets = targets(arguments)?;
+    let pos = position(arguments)?;
+    let player = context
+        .sender
+        .get_player()
+        .ok_or(CommandError::InvalidRequirement)?;
+
+    teleport_to_pos(&targets, pos, player.rotation(), context)
+}
+
+fn teleport_targets_to_position_with_rotation(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    teleport_to_pos(
+        &targets(arguments)?,
+        position(arguments)?,
+        rotation(arguments)?,
+        context,
     )
+}
+
+fn teleport_targets_to_player(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    teleport_to_player(&targets(arguments)?, &destination(arguments)?, context)
+}
+
+fn teleport_sender_to_location(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let player = context
+        .player
+        .clone()
+        .ok_or(CommandError::InvalidRequirement)?;
+    let rotation = player.rotation();
+
+    teleport_to_pos(&[player], position(arguments)?, rotation, context)
+}
+
+fn teleport_sender_to_location_with_rotation(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let player = context
+        .player
+        .clone()
+        .ok_or(CommandError::InvalidRequirement)?;
+
+    teleport_to_pos(
+        &[player],
+        position(arguments)?,
+        rotation(arguments)?,
+        context,
+    )
+}
+
+fn targets(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
+    arguments
+        .get::<Vec<Arc<Player>>>("targets")
+        .map_err(invalid_parsed_argument)
+}
+
+fn destination(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
+    arguments
+        .get::<Vec<Arc<Player>>>("destination")
+        .map_err(invalid_parsed_argument)
+}
+
+fn position(arguments: &ParsedArguments) -> Result<DVec3, CommandError> {
+    arguments
+        .get::<DVec3>("position")
+        .or_else(|_| arguments.get::<DVec3>("location"))
+        .map_err(invalid_parsed_argument)
+}
+
+fn rotation(arguments: &ParsedArguments) -> Result<(f32, f32), CommandError> {
+    arguments
+        .get::<(f32, f32)>("rotation")
+        .map_err(invalid_parsed_argument)
+}
+
+fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
+    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }
 
 fn teleport_to_pos(
@@ -85,14 +156,14 @@ fn teleport_to_pos(
     pos: DVec3,
     rotation: (f32, f32),
     ctx: &mut CommandContext,
-) -> Result<(), CommandError> {
+) -> Result<CommandResult, CommandError> {
     if !World::is_in_spawnable_bounds(BlockPos::from(pos)) {
         ctx.sender.send_message(
             &translations::COMMANDS_TELEPORT_INVALID_POSITION
                 .message([] as [TextComponent; 0])
                 .into(),
         );
-        return Ok(());
+        return Ok(CommandResult::success());
     }
 
     let targets = current_players(targets, ctx)?;
@@ -123,14 +194,14 @@ fn teleport_to_pos(
                 .into(),
         );
     }
-    Ok(())
+    Ok(CommandResult::success())
 }
 
 fn teleport_to_player(
     targets: &[Arc<Player>],
     destination: &[Arc<Player>],
     ctx: &mut CommandContext,
-) -> Result<(), CommandError> {
+) -> Result<CommandResult, CommandError> {
     let Some(destination) = destination.first() else {
         return Err(no_player_found());
     };
@@ -163,7 +234,7 @@ fn teleport_to_player(
                 .into(),
         );
     }
-    Ok(())
+    Ok(CommandResult::success())
 }
 
 fn current_players(

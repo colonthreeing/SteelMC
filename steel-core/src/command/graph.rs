@@ -2,6 +2,7 @@
 
 use std::{fmt, sync::Arc};
 
+use glam::DVec3;
 use steel_protocol::packets::game::{
     ArgumentStringTypeBehavior, ArgumentType, CommandNode as ProtocolCommandNode, CommandNodeInfo,
     SuggestionEntry, SuggestionType,
@@ -117,6 +118,8 @@ pub enum CommandParseErrorKind {
     InvalidDomain(String),
     /// A world argument was invalid.
     InvalidWorld(String),
+    /// A 3D vector argument was invalid.
+    InvalidVec3(String),
     /// A block position argument was invalid.
     InvalidBlockPos(String),
     /// A rotation argument was invalid.
@@ -145,6 +148,7 @@ impl CommandParseErrorKind {
             | Self::InvalidEntity(_)
             | Self::InvalidDomain(_)
             | Self::InvalidWorld(_)
+            | Self::InvalidVec3(_)
             | Self::InvalidBlockPos(_)
             | Self::InvalidRotation(_)
             | Self::InvalidComponent(_)
@@ -181,6 +185,8 @@ pub enum ParsedArgument {
     Entities(Vec<Arc<dyn LivingEntity + Send + Sync>>),
     /// Loaded world argument.
     World(Arc<World>),
+    /// 3D vector argument.
+    Vec3(DVec3),
     /// Block position argument.
     BlockPos(BlockPos),
     /// Rotation argument.
@@ -206,6 +212,7 @@ impl fmt::Debug for ParsedArgument {
                 .field("count", &value.len())
                 .finish(),
             Self::World(value) => f.debug_tuple("World").field(&value.key).finish(),
+            Self::Vec3(value) => f.debug_tuple("Vec3").field(value).finish(),
             Self::BlockPos(value) => f.debug_tuple("BlockPos").field(value).finish(),
             Self::Rotation(value) => f.debug_tuple("Rotation").field(value).finish(),
             Self::Component(_) => f.debug_tuple("Component").finish(),
@@ -269,6 +276,7 @@ impl ParsedArgument {
             Self::Players(_) => "players",
             Self::Entities(_) => "entities",
             Self::World(_) => "world",
+            Self::Vec3(_) => "vec3",
             Self::BlockPos(_) => "block_pos",
             Self::Rotation(_) => "rotation",
             Self::Component(_) => "component",
@@ -370,6 +378,17 @@ impl FromParsedArgument for Arc<World> {
             return None;
         };
         Some(Arc::clone(value))
+    }
+}
+
+impl FromParsedArgument for DVec3 {
+    const TYPE_NAME: &'static str = "vec3";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::Vec3(value) = value else {
+            return None;
+        };
+        Some(*value)
     }
 }
 

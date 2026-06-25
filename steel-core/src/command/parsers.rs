@@ -461,6 +461,68 @@ impl CommandArgumentParser for WorldParser {
     }
 }
 
+/// 3D position argument parser.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Vec3Parser;
+
+impl CommandArgumentParser for Vec3Parser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let x = reader.read_string(StringMode::SingleWord)?;
+        reader.expect_whitespace()?;
+        let y = reader.read_string(StringMode::SingleWord)?;
+        reader.expect_whitespace()?;
+        let z = reader.read_string(StringMode::SingleWord)?;
+        let raw = format!("{x} {y} {z}");
+
+        if x.starts_with('^') {
+            let Some(pos) = parse_local_coordinates((&x, &y, &z), context) else {
+                return Err(CommandParseError::new(
+                    CommandParseErrorKind::InvalidVec3(raw),
+                    cursor,
+                ));
+            };
+
+            return Ok(ParsedArgument::Vec3(pos));
+        }
+
+        let Some(origin) = context.position() else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::MissingCommandContext("position"),
+                cursor,
+            ));
+        };
+        let Some(x) = parse_vec3_coordinate::<false>(&x, origin.x) else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidVec3(raw),
+                cursor,
+            ));
+        };
+        let Some(y) = parse_vec3_coordinate::<true>(&y, origin.y) else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidVec3(raw),
+                cursor,
+            ));
+        };
+        let Some(z) = parse_vec3_coordinate::<false>(&z, origin.z) else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidVec3(raw),
+                cursor,
+            ));
+        };
+
+        Ok(ParsedArgument::Vec3(DVec3::new(x, y, z)))
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        (ArgumentType::Vec3, None)
+    }
+}
+
 /// Block position argument parser.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BlockPosParser;
@@ -577,6 +639,24 @@ fn parse_block_coordinate(value: &str, origin: f64) -> Option<f64> {
     } else {
         Some(f64::from(value.parse::<i32>().ok()?))
     }
+}
+
+fn parse_vec3_coordinate<const IS_Y: bool>(value: &str, origin: f64) -> Option<f64> {
+    if let Some(offset) = value.strip_prefix('~') {
+        let offset = if offset.is_empty() {
+            0.0
+        } else {
+            offset.parse().ok()?
+        };
+        return Some(origin + offset);
+    }
+
+    let mut parsed = value.parse::<f64>().ok()?;
+    if !IS_Y && !value.contains('.') {
+        parsed += 0.5;
+    }
+
+    Some(parsed)
 }
 
 fn parse_local_coordinates(
@@ -774,11 +854,13 @@ impl CommandArgumentParser for TimeParser {
 
 #[cfg(test)]
 mod tests {
+    use glam::DVec3;
+
     use crate::command::{
         graph::{CommandArgumentParser, CommandParseErrorKind, ParsedArgument, ParsedArguments},
         parsers::{
             BlockPosParser, ComponentParser, DomainParser, EntityParser, GameModeParser,
-            PlayerParser, RotationParser, TimeParser, WorldParser,
+            PlayerParser, RotationParser, TimeParser, Vec3Parser, WorldParser,
         },
         reader::CommandReader,
         requirement::{CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext},
@@ -798,6 +880,24 @@ mod tests {
     }
 
     impl CommandInputContext for TestContext {}
+
+    struct PositionedContext;
+
+    impl RequirementContext for PositionedContext {
+        fn source_kind(&self) -> CommandSourceKind {
+            CommandSourceKind::Player
+        }
+
+        fn has_permission(&self, _permission: &PermissionExpr) -> bool {
+            false
+        }
+    }
+
+    impl CommandInputContext for PositionedContext {
+        fn position(&self) -> Option<DVec3> {
+            Some(DVec3::new(10.0, 20.0, 30.0))
+        }
+    }
 
     #[test]
     fn gamemode_parser_accepts_names_and_numeric_aliases() {
@@ -895,6 +995,16 @@ mod tests {
             error.kind(),
             CommandParseErrorKind::MissingCommandContext("position")
         ));
+    }
+
+    #[test]
+    fn vec3_parser_centers_absolute_xz_without_decimal() {
+        let mut reader = CommandReader::new("1 2 3.0");
+        let value = Vec3Parser
+            .parse(&mut reader, &PositionedContext)
+            .expect("vec3 parses");
+
+        assert!(matches!(value, ParsedArgument::Vec3(pos) if pos == DVec3::new(1.5, 2.0, 3.0)));
     }
 
     #[test]
