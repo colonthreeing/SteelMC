@@ -99,6 +99,23 @@ pub enum PermissionKeyError {
     InvalidWildcardSegment,
 }
 
+impl fmt::Display for PermissionKeyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "permission key is empty"),
+            Self::EmptySegment => write!(f, "permission key contains an empty segment"),
+            Self::WildcardNotFinal => {
+                write!(f, "permission wildcard must be the final segment")
+            }
+            Self::InvalidWildcardSegment => {
+                write!(f, "permission wildcard must occupy the full segment")
+            }
+        }
+    }
+}
+
+impl Error for PermissionKeyError {}
+
 /// A boolean permission expression.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PermissionExpr {
@@ -503,7 +520,7 @@ impl fmt::Display for PermissionConfigError {
             Self::InvalidPermissionKey { group, source } => {
                 write!(
                     f,
-                    "permission group '{group}' contains invalid key: {source:?}"
+                    "permission group '{group}' contains invalid key: {source}"
                 )
             }
         }

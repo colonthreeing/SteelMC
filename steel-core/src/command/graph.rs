@@ -22,6 +22,7 @@ use crate::command::{
     requirement::{CommandInputContext, Requirement, RequirementContext},
 };
 use crate::entity::LivingEntity;
+use crate::permission::{PermissionExpr, PermissionKey, PermissionKeyError};
 use crate::player::Player;
 use crate::world::World;
 
@@ -1358,6 +1359,24 @@ impl CommandNodeBuilder {
         self
     }
 
+    /// Adds a permission requirement to this node.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `permission` is not a valid permission key.
+    pub fn requires_permission(
+        self,
+        permission: impl Into<String>,
+    ) -> Result<Self, PermissionKeyError> {
+        Ok(self.requires_permission_expr(PermissionExpr::key(PermissionKey::parse(permission)?)))
+    }
+
+    /// Adds a permission expression requirement to this node.
+    #[must_use]
+    pub fn requires_permission_expr(self, permission: PermissionExpr) -> Self {
+        self.requires(Requirement::Permission(permission))
+    }
+
     /// Marks this node executable.
     #[must_use]
     pub fn executes(
@@ -1703,7 +1722,7 @@ mod tests {
             RequirementContext,
         },
     };
-    use crate::permission::{PermissionEntry, PermissionSet};
+    use crate::permission::{PermissionEntry, PermissionKeyError, PermissionSet};
     use steel_protocol::packets::game::CommandNode as ProtocolCommandNode;
 
     struct TestContext {
@@ -1901,6 +1920,13 @@ mod tests {
 
         assert_eq!(error.kind(), &CommandParseErrorKind::UnknownCommand);
         assert!(!denied.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn permission_builder_rejects_invalid_keys() {
+        let error = literal("admin").requires_permission("steel.*.admin").err();
+
+        assert_eq!(error, Some(PermissionKeyError::WildcardNotFinal));
     }
 
     #[test]

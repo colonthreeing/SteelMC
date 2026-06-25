@@ -521,7 +521,10 @@ impl Server {
             worlds,
             registry_cache,
             tick_rate_manager: SyncRwLock::new(TickRateManager::new()),
-            command_dispatcher: SyncRwLock::new(CommandDispatcher::new()),
+            command_dispatcher: SyncRwLock::new(
+                CommandDispatcher::new()
+                    .map_err(|e| format!("failed to register commands: {e}"))?,
+            ),
             jobs: ServerJobQueue::new(),
             player_data_storage,
             pending_player_joins: PlayerJoinQueue::new(),

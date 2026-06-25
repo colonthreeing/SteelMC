@@ -14,10 +14,11 @@ use text_components::{Modifier, TextComponent, format::Color};
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandGraph, CommandParseError, CommandParseErrorKind, CommandResult,
+    CommandGraph, CommandNodeBuilder, CommandParseError, CommandParseErrorKind, CommandResult,
 };
 use crate::command::requirement::RequirementContext;
 use crate::command::sender::CommandSender;
+use crate::permission::PermissionKeyError;
 use crate::player::Player;
 use crate::server::Server;
 use std::sync::Arc;
@@ -30,48 +31,78 @@ pub struct CommandDispatcher {
 }
 
 impl CommandDispatcher {
-    /// Creates a new command dispatcher with vanilla commands.
-    #[must_use]
-    pub fn new() -> Self {
+    /// Creates a new command dispatcher with built-in commands.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a built-in command permission key is invalid.
+    pub fn new() -> Result<Self, PermissionKeyError> {
         let mut dispatcher = CommandDispatcher::new_empty();
-        dispatcher.graph.register_root(commands::clear::command());
-        dispatcher.graph.register_root(commands::domain::command());
-        dispatcher.graph.register_root(commands::enchant::command());
-        dispatcher.graph.register_root(commands::execute::command());
-        dispatcher.graph.register_root(commands::fly::command());
-        dispatcher
-            .graph
-            .register_root(commands::gamemode::command());
-        dispatcher
-            .graph
-            .register_root(commands::gamerule::command());
-        dispatcher.graph.register_root(commands::kill::command());
-        dispatcher.graph.register_root(commands::list::command());
-        dispatcher.graph.register_root(commands::locate::command());
-        dispatcher.graph.register_root(commands::give::command());
-        dispatcher.graph.register_root(commands::seed::command());
-        dispatcher
-            .graph
-            .register_root(commands::setworldspawn::command());
-        dispatcher.graph.register_root(commands::stop::command());
-        dispatcher.graph.register_root(commands::summon::command());
-        dispatcher.graph.register_root(commands::tellraw::command());
-        dispatcher.graph.register_root(commands::tick::command());
-        dispatcher.graph.register_root(commands::time::command());
-        dispatcher.graph.register_root(commands::tp::command());
-        dispatcher
-            .graph
-            .register_root(commands::tp::teleport_command());
-        dispatcher.graph.register_root(commands::weather::command());
-        dispatcher
-            .graph
-            .register_root(commands::difficulty::command());
-        dispatcher.graph.register_root(commands::steel::command());
-        dispatcher.graph.register_root(commands::xp::command());
-        dispatcher
-            .graph
-            .register_root(commands::xp::experience_command());
-        dispatcher
+        dispatcher.register_root(commands::clear::command(), Some("minecraft.command.clear"))?;
+        dispatcher.register_root(commands::domain::command(), Some("steel.command.domain"))?;
+        dispatcher.register_root(
+            commands::enchant::command(),
+            Some("minecraft.command.enchant"),
+        )?;
+        dispatcher.register_root(
+            commands::execute::command(),
+            Some("minecraft.command.execute"),
+        )?;
+        dispatcher.register_root(commands::fly::command(), Some("steel.command.fly"))?;
+        dispatcher.register_root(
+            commands::gamemode::command(),
+            Some("minecraft.command.gamemode"),
+        )?;
+        dispatcher.register_root(
+            commands::gamerule::command(),
+            Some("minecraft.command.gamerule"),
+        )?;
+        dispatcher.register_root(commands::kill::command(), Some("minecraft.command.kill"))?;
+        dispatcher.register_root(commands::list::command(), None)?;
+        dispatcher.register_root(
+            commands::locate::command(),
+            Some("minecraft.command.locate"),
+        )?;
+        dispatcher.register_root(commands::give::command(), Some("minecraft.command.give"))?;
+        dispatcher.register_root(commands::seed::command(), Some("minecraft.command.seed"))?;
+        dispatcher.register_root(
+            commands::setworldspawn::command(),
+            Some("minecraft.command.setworldspawn"),
+        )?;
+        dispatcher.register_root(commands::stop::command(), Some("minecraft.command.stop"))?;
+        dispatcher.register_root(
+            commands::summon::command(),
+            Some("minecraft.command.summon"),
+        )?;
+        dispatcher.register_root(
+            commands::tellraw::command(),
+            Some("minecraft.command.tellraw"),
+        )?;
+        dispatcher.register_root(commands::tick::command(), Some("minecraft.command.tick"))?;
+        dispatcher.register_root(commands::time::command(), Some("minecraft.command.time"))?;
+        dispatcher.register_root(commands::tp::command(), Some("minecraft.command.teleport"))?;
+        dispatcher.register_root(
+            commands::tp::teleport_command(),
+            Some("minecraft.command.teleport"),
+        )?;
+        dispatcher.register_root(
+            commands::weather::command(),
+            Some("minecraft.command.weather"),
+        )?;
+        dispatcher.register_root(
+            commands::difficulty::command(),
+            Some("minecraft.command.difficulty"),
+        )?;
+        dispatcher.register_root(commands::steel::command(), Some("steel.command.steel"))?;
+        dispatcher.register_root(
+            commands::xp::command(),
+            Some("minecraft.command.experience"),
+        )?;
+        dispatcher.register_root(
+            commands::xp::experience_command(),
+            Some("minecraft.command.experience"),
+        )?;
+        Ok(dispatcher)
     }
 
     /// Creates a new command dispatcher with no commands.
@@ -80,6 +111,20 @@ impl CommandDispatcher {
         CommandDispatcher {
             graph: CommandGraph::new(),
         }
+    }
+
+    fn register_root(
+        &mut self,
+        root: CommandNodeBuilder,
+        permission: Option<&str>,
+    ) -> Result<(), PermissionKeyError> {
+        let root = if let Some(permission) = permission {
+            root.requires_permission(permission)?
+        } else {
+            root
+        };
+        self.graph.register_root(root);
+        Ok(())
     }
 
     /// Executes a command.
@@ -273,5 +318,64 @@ impl CommandDispatcher {
             .map_or((Vec::new(), 0, 0), |result| {
                 (result.suggestions, result.start, result.length)
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::command::{
+        CommandDispatcher,
+        requirement::{CommandSourceKind, PermissionExpr, RequirementContext},
+    };
+    use crate::permission::{PermissionEntry, PermissionKey, PermissionSet};
+    use steel_registry::test_support::init_test_registry;
+
+    struct TestContext {
+        permissions: PermissionSet,
+    }
+
+    impl RequirementContext for TestContext {
+        fn source_kind(&self) -> CommandSourceKind {
+            CommandSourceKind::Player
+        }
+
+        fn has_permission(&self, permission: &PermissionExpr) -> bool {
+            self.permissions.allows(permission)
+        }
+    }
+
+    fn player_context() -> TestContext {
+        TestContext {
+            permissions: PermissionSet::default(),
+        }
+    }
+
+    fn player_context_with(permission: &str) -> TestContext {
+        TestContext {
+            permissions: PermissionSet::from_entries([PermissionEntry::allow(
+                PermissionKey::parse(permission).expect("test permission key parses"),
+            )]),
+        }
+    }
+
+    #[test]
+    fn dispatcher_applies_root_command_permissions() {
+        init_test_registry();
+
+        let dispatcher = CommandDispatcher::new().expect("built-in commands register");
+        let player = player_context();
+
+        assert!(dispatcher.graph.has_root("list", &player));
+        assert!(!dispatcher.graph.has_root("gamemode", &player));
+        assert!(!dispatcher.graph.has_root("tp", &player));
+        assert!(!dispatcher.graph.has_root("teleport", &player));
+
+        let gamemode_player = player_context_with("minecraft.command.gamemode");
+        assert!(dispatcher.graph.has_root("gamemode", &gamemode_player));
+        assert!(!dispatcher.graph.has_root("tp", &gamemode_player));
+
+        let teleport_player = player_context_with("minecraft.command.teleport");
+        assert!(dispatcher.graph.has_root("tp", &teleport_player));
+        assert!(dispatcher.graph.has_root("teleport", &teleport_player));
     }
 }
