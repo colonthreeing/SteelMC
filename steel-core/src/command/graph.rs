@@ -1092,6 +1092,21 @@ impl DynamicPermission {
     }
 }
 
+fn dynamic_permissions_allow(
+    permissions: &[DynamicPermission],
+    arguments: &ParsedArguments,
+    context: &dyn RequirementContext,
+) -> Result<bool, DynamicPermissionError> {
+    for permission in permissions {
+        let expression = permission.expression(arguments)?;
+        if !context.has_permission(&expression) {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
 /// Target for redirecting graph execution after a node action runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommandRedirectTarget {
@@ -1203,16 +1218,13 @@ impl ParseResults {
         &self,
         context: &dyn RequirementContext,
     ) -> Result<(), CommandError> {
-        for permission in &self.dynamic_permissions {
-            let expression = permission.expression(&self.arguments).map_err(|error| {
-                CommandError::InvalidConsumption(Some(format!("dynamic permission: {error}")))
-            })?;
-            if !context.has_permission(&expression) {
-                return Err(CommandError::PermissionDenied);
-            }
+        if dynamic_permissions_allow(&self.dynamic_permissions, &self.arguments, context).map_err(
+            |error| CommandError::InvalidConsumption(Some(format!("dynamic permission: {error}"))),
+        )? {
+            Ok(())
+        } else {
+            Err(CommandError::PermissionDenied)
         }
-
-        Ok(())
     }
 }
 
@@ -1310,6 +1322,7 @@ impl CommandGraph {
             &reader,
             &self.roots,
             ParsedArguments::default(),
+            Vec::new(),
             context,
             &self.roots,
             None,
@@ -1488,10 +1501,15 @@ fn suggest_children(
     reader: &CommandReader<'_>,
     children: &[CommandNode],
     arguments: ParsedArguments,
+    dynamic_permissions: Vec<DynamicPermission>,
     context: &dyn CommandInputContext,
     roots: &[CommandNode],
     current_root_children: Option<&[CommandNode]>,
 ) -> Option<SuggestionResult> {
+    if !dynamic_permissions_allow(&dynamic_permissions, &arguments, context).unwrap_or(false) {
+        return None;
+    }
+
     let mut best_result = None;
 
     for child in children {
@@ -1506,6 +1524,7 @@ fn suggest_children(
         if let Some(result) = child.suggest(
             reader,
             arguments.clone(),
+            dynamic_permissions.clone(),
             context,
             roots,
             child_root_children,
@@ -1569,6 +1588,37 @@ fn make_suggestion_result(
         start: token.start,
         length: token.length,
     })
+}
+
+fn filter_argument_suggestions_by_dynamic_permissions(
+    suggestions: Vec<SuggestionEntry>,
+    parser: &dyn CommandArgumentParser,
+    argument_name: &str,
+    arguments: &ParsedArguments,
+    dynamic_permissions: &[DynamicPermission],
+    context: &dyn CommandInputContext,
+) -> Vec<SuggestionEntry> {
+    if dynamic_permissions.is_empty() {
+        return suggestions;
+    }
+
+    suggestions
+        .into_iter()
+        .filter(|suggestion| {
+            let mut reader = CommandReader::new(&suggestion.text);
+            let Ok(value) = parser.parse(&mut reader, context) else {
+                return false;
+            };
+            reader.skip_whitespace();
+            if reader.can_read() {
+                return false;
+            }
+
+            let mut arguments = arguments.clone();
+            arguments.insert(argument_name, value);
+            dynamic_permissions_allow(dynamic_permissions, &arguments, context).unwrap_or(false)
+        })
+        .collect()
 }
 
 fn suggestion_token(reader: &CommandReader<'_>) -> SuggestionToken {
@@ -1938,6 +1988,7 @@ impl CommandNode {
         &self,
         reader: &CommandReader<'_>,
         mut arguments: ParsedArguments,
+        mut dynamic_permissions: Vec<DynamicPermission>,
         context: &dyn CommandInputContext,
         roots: &[CommandNode],
         current_root_children: Option<&[CommandNode]>,
@@ -1947,10 +1998,24 @@ impl CommandNode {
             CommandNodeKind::Literal(name)
                 if token.is_at_end && name.starts_with(&token.prefix) =>
             {
-                make_suggestion_result(reader, vec![SuggestionEntry::new(name.clone())])
+                dynamic_permissions_allow(&self.dynamic_permissions, &arguments, context)
+                    .ok()
+                    .filter(|allowed| *allowed)
+                    .and_then(|_| {
+                        make_suggestion_result(reader, vec![SuggestionEntry::new(name.clone())])
+                    })
             }
-            CommandNodeKind::Argument { parser, .. } if token.is_at_end => {
-                make_suggestion_result(reader, parser.suggest(&token.prefix, &arguments, context))
+            CommandNodeKind::Argument { name, parser } if token.is_at_end => {
+                let suggestions = parser.suggest(&token.prefix, &arguments, context);
+                let suggestions = filter_argument_suggestions_by_dynamic_permissions(
+                    suggestions,
+                    parser.as_ref(),
+                    name,
+                    &arguments,
+                    &self.dynamic_permissions,
+                    context,
+                );
+                make_suggestion_result(reader, suggestions)
             }
             CommandNodeKind::Literal(_) | CommandNodeKind::Argument { .. } => None,
         };
@@ -1963,10 +2028,16 @@ impl CommandNode {
             return direct_suggestions;
         }
 
+        dynamic_permissions.extend(self.dynamic_permissions.iter().cloned());
+        if !dynamic_permissions_allow(&dynamic_permissions, &arguments, context).unwrap_or(false) {
+            return direct_suggestions;
+        }
+
         let mut result = direct_suggestions;
         if let Some(deeper) = self.suggest_after_successful_parse(
             &mut parsed_reader,
             arguments,
+            dynamic_permissions,
             context,
             roots,
             current_root_children,
@@ -1980,6 +2051,7 @@ impl CommandNode {
         &self,
         reader: &mut CommandReader<'_>,
         arguments: ParsedArguments,
+        dynamic_permissions: Vec<DynamicPermission>,
         context: &dyn CommandInputContext,
         roots: &[CommandNode],
         current_root_children: Option<&[CommandNode]>,
@@ -2000,6 +2072,7 @@ impl CommandNode {
                         reader,
                         children,
                         ParsedArguments::default(),
+                        Vec::new(),
                         context,
                         roots,
                         current_root_children,
@@ -2009,6 +2082,7 @@ impl CommandNode {
                     reader,
                     roots,
                     ParsedArguments::default(),
+                    Vec::new(),
                     context,
                     roots,
                     None,
@@ -2020,6 +2094,7 @@ impl CommandNode {
             reader,
             &self.children,
             arguments,
+            dynamic_permissions,
             context,
             roots,
             current_root_children,
@@ -2318,6 +2393,62 @@ mod tests {
                 .expect("permission key parses"),
         ]);
         assert!(result.check_dynamic_permissions(&creative).is_ok());
+    }
+
+    #[test]
+    fn dynamic_argument_permission_filters_value_suggestions() {
+        let root_permission =
+            PermissionKey::parse("minecraft.command.gamemode").expect("permission key parses");
+        let root = commands::gamemode::command()
+            .resolve_subcommand_permissions(&root_permission)
+            .expect("gamemode permissions resolve");
+        let graph = graph_with_root(root);
+
+        assert!(graph.suggest("gamemode ", &player_context()).is_none());
+
+        let survival = player_context_with(
+            PermissionKey::parse("minecraft.command.gamemode.survival")
+                .expect("permission key parses"),
+        );
+        let result = graph
+            .suggest("gamemode ", &survival)
+            .expect("survival suggestion");
+
+        assert_eq!(suggestion_texts(&result), vec!["survival".to_owned()]);
+    }
+
+    #[test]
+    fn denied_dynamic_argument_hides_deeper_suggestions() {
+        let root_permission =
+            PermissionKey::parse("minecraft.command.gamemode").expect("permission key parses");
+        let root = commands::gamemode::command()
+            .resolve_subcommand_permissions(&root_permission)
+            .expect("gamemode permissions resolve");
+        let graph = graph_with_root(root);
+
+        assert!(
+            graph
+                .suggest("gamemode creative @", &player_context())
+                .is_none()
+        );
+
+        let creative = player_context_with(
+            PermissionKey::parse("minecraft.command.gamemode.creative")
+                .expect("permission key parses"),
+        );
+        let result = graph
+            .suggest("gamemode creative @", &creative)
+            .expect("target suggestions");
+
+        assert_eq!(
+            suggestion_texts(&result),
+            vec![
+                "@a".to_owned(),
+                "@p".to_owned(),
+                "@r".to_owned(),
+                "@s".to_owned()
+            ]
+        );
     }
 
     #[test]
