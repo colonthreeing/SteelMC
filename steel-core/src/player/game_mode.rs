@@ -34,7 +34,7 @@ use crate::behavior::{
 };
 use crate::block_entity::BlockEntity;
 use crate::block_entity::entities::SignBlockEntity;
-use crate::command::commands::gamemode::get_gamemode_translation;
+use crate::command::commands::{difficulty, gamemode::get_gamemode_translation};
 use crate::enchantment_helper::{self, EnchantmentDamageContext, EnchantmentPostAttackContext};
 use crate::entity::attribute::{AttributeModifier, AttributeModifierOperation};
 use crate::entity::damage::DamageSource;
@@ -1053,8 +1053,16 @@ impl Player {
     }
 
     /// Handles a client request to change the world difficulty.
-    pub fn handle_change_difficulty(&self, difficulty: Difficulty) {
-        // TODO: implement op-level permission check
+    pub fn handle_change_difficulty(&self, new_difficulty: Difficulty) {
+        if !difficulty::can_change_difficulty(self) {
+            log::warn!(
+                "Player {} tried to change difficulty to {} without required permissions",
+                self.gameprofile.name,
+                difficulty::difficulty_key(new_difficulty)
+            );
+            return;
+        }
+
         let world = self.get_world();
         {
             let level_data = world.level_data.read();
@@ -1072,11 +1080,14 @@ impl Player {
         let domain = self.get_world().domain().to_owned();
         for w in self.server().worlds.worlds_in_domain(&domain) {
             let mut level_data = w.level_data.write();
-            level_data.data_mut().difficulty = difficulty;
+            level_data.data_mut().difficulty = new_difficulty;
             let locked = level_data.data().difficulty_locked;
             drop(level_data);
 
-            w.broadcast_to_all(CChangeDifficulty { difficulty, locked });
+            w.broadcast_to_all(CChangeDifficulty {
+                difficulty: new_difficulty,
+                locked,
+            });
         }
     }
 

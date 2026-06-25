@@ -3,7 +3,11 @@
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{CommandNodeBuilder, CommandResult, ParsedArguments, literal};
-use crate::command::{CommandRegistration, CommandRegistrationError};
+use crate::command::requirement::RequirementContext;
+use crate::command::{
+    CommandRegistration, CommandRegistrationError, minecraft_command_permission_key,
+};
+use crate::permission::{PermissionExpr, PermissionKeyError};
 use steel_protocol::packets::game::CChangeDifficulty;
 use steel_utils::translations;
 use steel_utils::types::Difficulty;
@@ -31,8 +35,24 @@ fn difficulty_literal(name: &'static str, difficulty: Difficulty) -> CommandNode
     })
 }
 
+pub(crate) fn can_change_difficulty(context: &dyn RequirementContext) -> bool {
+    match difficulty_permission() {
+        Ok(permission) => context.has_permission(&permission),
+        Err(error) => {
+            log::error!("invalid built-in difficulty permission key: {error}");
+            false
+        }
+    }
+}
+
+fn difficulty_permission() -> Result<PermissionExpr, PermissionKeyError> {
+    Ok(PermissionExpr::key(minecraft_command_permission_key(
+        "difficulty",
+    )?))
+}
+
 /// Returns the string key for a [`Difficulty`] variant
-const fn difficulty_key(difficulty: Difficulty) -> &'static str {
+pub(crate) const fn difficulty_key(difficulty: Difficulty) -> &'static str {
     match difficulty {
         Difficulty::Peaceful => "peaceful",
         Difficulty::Easy => "easy",
@@ -69,6 +89,58 @@ fn query_difficulty(
     );
 
     Ok(CommandResult::success())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::can_change_difficulty;
+    use crate::command::requirement::{CommandSourceKind, RequirementContext};
+    use crate::permission::{PermissionEntry, PermissionExpr, PermissionKey, PermissionSet};
+
+    struct TestContext {
+        permissions: PermissionSet,
+    }
+
+    impl RequirementContext for TestContext {
+        fn source_kind(&self) -> CommandSourceKind {
+            CommandSourceKind::Player
+        }
+
+        fn has_permission(&self, permission: &PermissionExpr) -> bool {
+            self.permissions.allows(permission)
+        }
+    }
+
+    fn context(permissions: impl IntoIterator<Item = &'static str>) -> TestContext {
+        TestContext {
+            permissions: PermissionSet::from_entries(permissions.into_iter().map(|permission| {
+                PermissionEntry::allow(
+                    PermissionKey::parse(permission).expect("test permission key parses"),
+                )
+            })),
+        }
+    }
+
+    #[test]
+    fn root_permission_allows_client_difficulty_changes() {
+        let context = context(["minecraft.command.difficulty"]);
+
+        assert!(can_change_difficulty(&context));
+    }
+
+    #[test]
+    fn missing_root_permission_rejects_client_difficulty_changes() {
+        let context = context(["minecraft.command.gamemode"]);
+
+        assert!(!can_change_difficulty(&context));
+    }
+
+    #[test]
+    fn global_wildcard_allows_client_difficulty_changes() {
+        let context = context(["*"]);
+
+        assert!(can_change_difficulty(&context));
+    }
 }
 
 fn set_difficulty(

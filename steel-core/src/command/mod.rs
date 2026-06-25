@@ -146,6 +146,12 @@ fn command_permission_key(
     ])
 }
 
+pub(crate) fn minecraft_command_permission_key(
+    command: &str,
+) -> Result<PermissionKey, PermissionKeyError> {
+    command_permission_key(&PermissionSegment::parse("minecraft")?, command)
+}
+
 impl CommandDispatcher {
     /// Creates a new command dispatcher with built-in commands.
     ///

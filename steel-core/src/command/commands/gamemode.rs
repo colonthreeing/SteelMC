@@ -7,7 +7,9 @@ use crate::command::graph::{
 };
 use crate::command::parsers::{GameModeParser, PlayerParser};
 use crate::command::requirement::RequirementContext;
-use crate::command::{CommandRegistration, CommandRegistrationError};
+use crate::command::{
+    CommandRegistration, CommandRegistrationError, minecraft_command_permission_key,
+};
 use crate::entity::Entity;
 use crate::permission::{PermissionExpr, PermissionKey, PermissionKeyError};
 use crate::player::Player;
@@ -76,7 +78,7 @@ fn change_game_mode_permission(game_mode: GameType) -> Result<PermissionExpr, Pe
 }
 
 fn gamemode_root_permission() -> Result<PermissionKey, PermissionKeyError> {
-    PermissionKey::parse("minecraft.command.gamemode")
+    minecraft_command_permission_key("gamemode")
 }
 
 fn gamemode_value_permission(
