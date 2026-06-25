@@ -16,10 +16,15 @@ use crate::command::graph::{
     CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments, argument, literal,
 };
 use crate::command::parsers::{EntitySummonParser, Vec3Parser};
+use crate::command::{CommandRegistration, CommandRegistrationError};
 use crate::entity::{
     AddEntityError, ENTITIES, Entity, EntitySpawnReason, SharedEntity, next_entity_id,
 };
 use crate::world::World;
+
+pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
+    CommandRegistration::minecraft(command())
+}
 
 /// Handler for the "summon" command.
 #[must_use]

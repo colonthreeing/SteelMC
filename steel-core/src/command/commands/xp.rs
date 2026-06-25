@@ -5,6 +5,7 @@ use std::sync::Arc;
 use steel_utils::translations;
 use text_components::TextComponent;
 
+use crate::command::{CommandRegistration, CommandRegistrationError};
 use crate::{
     command::{
         context::CommandContext,
@@ -17,6 +18,12 @@ use crate::{
     },
     player::Player,
 };
+
+pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
+    CommandRegistration::minecraft(command())?
+        .permission_base("experience")?
+        .alias("experience")
+}
 
 /// Handler for the "xp" command.
 #[must_use]

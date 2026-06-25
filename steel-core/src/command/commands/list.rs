@@ -1,10 +1,15 @@
 //! Handler for the "list" command.
 
+use crate::command::{CommandRegistration, CommandRegistrationError};
 use crate::command::{
     context::CommandContext,
     graph::{CommandNodeBuilder, CommandResult, ParsedArguments, literal},
 };
 use steel_utils::translations::{COMMANDS_LIST_NAME_AND_ID, COMMANDS_LIST_PLAYERS};
+
+pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
+    Ok(CommandRegistration::minecraft(command())?.public())
+}
 
 /// Handler for the "list" command.
 #[must_use]

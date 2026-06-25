@@ -10,10 +10,15 @@ use crate::command::graph::{
 };
 use crate::command::parsers::PlayerParser;
 use crate::command::sender::CommandSender;
+use crate::command::{CommandRegistration, CommandRegistrationError};
 use crate::player::Player;
 use text_components::TextComponent;
 
 const MAX_FLY_SPEED: f32 = 30f32;
+
+pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
+    CommandRegistration::steel(command())
+}
 
 /// Handler for the "flyspeed" command.
 #[must_use]

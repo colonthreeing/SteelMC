@@ -19,6 +19,11 @@ use crate::command::graph::{
     ParsedArguments, argument, literal,
 };
 use crate::command::parsers::RotationParser;
+use crate::command::{CommandRegistration, CommandRegistrationError};
+
+pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
+    CommandRegistration::minecraft(command())
+}
 
 /// Handler for the "execute" command.
 #[must_use]

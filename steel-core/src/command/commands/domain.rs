@@ -6,7 +6,12 @@ use crate::command::graph::{
     CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments, argument, literal,
 };
 use crate::command::parsers::DomainParser;
+use crate::command::{CommandRegistration, CommandRegistrationError};
 use text_components::TextComponent;
+
+pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
+    CommandRegistration::steel(command())
+}
 
 /// Handler for switching to another configured domain.
 #[must_use]

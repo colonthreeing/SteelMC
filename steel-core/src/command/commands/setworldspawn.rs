@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use text_components::TextComponent;
 use text_components::translation::TranslatedMessage;
 
+use crate::command::{CommandRegistration, CommandRegistrationError};
 use crate::command::{
     context::CommandContext,
     error::CommandError,
@@ -16,6 +17,10 @@ use crate::command::{
 use crate::level_data::RespawnData;
 use crate::world::World;
 use steel_utils::BlockPos;
+
+pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
+    CommandRegistration::minecraft(command())
+}
 
 /// Handler for the `setworldspawn` command.
 #[must_use]

@@ -5,10 +5,15 @@ use crate::command::graph::{
     BoolParser, CommandNodeBuilder, CommandResult, IntegerParser, ParsedArgumentError,
     ParsedArguments, argument, literal,
 };
+use crate::command::{CommandRegistration, CommandRegistrationError};
 use steel_registry::REGISTRY;
 use steel_registry::game_rules::{GameRuleRef, GameRuleType, GameRuleValue};
 use steel_utils::translations;
 use text_components::TextComponent;
+
+pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
+    CommandRegistration::minecraft(command())
+}
 
 /// Returns the handler for the "gamerule" command.
 #[must_use]

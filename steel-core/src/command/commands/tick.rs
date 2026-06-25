@@ -9,6 +9,11 @@ use crate::command::graph::{
     literal,
 };
 use crate::command::parsers::TimeParser;
+use crate::command::{CommandRegistration, CommandRegistrationError};
+
+pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
+    CommandRegistration::minecraft(command())
+}
 
 /// Handler for the "tick" command.
 #[must_use]

@@ -2,6 +2,11 @@
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{CommandNodeBuilder, CommandResult, ParsedArguments, literal};
+use crate::command::{CommandRegistration, CommandRegistrationError};
+
+pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
+    CommandRegistration::minecraft(command())
+}
 
 /// Handler for the "stop" command.
 #[must_use]

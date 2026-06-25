@@ -11,11 +11,16 @@ use crate::command::graph::{
     CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments, argument, literal,
 };
 use crate::command::parsers::EntityParser;
+use crate::command::{CommandRegistration, CommandRegistrationError};
 use crate::entity::damage::DamageSource;
 use crate::entity::{Entity, LivingEntity};
 use crate::player::Player;
 use steel_registry::vanilla_damage_types;
 use steel_utils::translations;
+
+pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
+    CommandRegistration::minecraft(command())
+}
 
 /// Creates the `/kill` command handler.
 #[must_use]

@@ -5,6 +5,7 @@ use glam::DVec3;
 use steel_utils::{BlockPos, translations};
 use text_components::TextComponent;
 
+use crate::command::{CommandRegistration, CommandRegistrationError};
 use crate::{
     command::{
         context::CommandContext,
@@ -19,6 +20,12 @@ use crate::{
     player::Player,
     world::World,
 };
+
+pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
+    CommandRegistration::minecraft(command())?
+        .permission_base("teleport")?
+        .alias("teleport")
+}
 
 /// Handler for the "teleport" command.
 #[must_use]

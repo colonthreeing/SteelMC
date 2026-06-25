@@ -31,7 +31,7 @@ pub struct CommandDispatcher {
     graph: CommandGraph,
 }
 
-struct CommandRegistration {
+pub(crate) struct CommandRegistration {
     root: CommandNodeBuilder,
     namespace: PermissionSegment,
     permission: CommandPermissionMode,
@@ -39,7 +39,7 @@ struct CommandRegistration {
 }
 
 impl CommandRegistration {
-    const fn new(root: CommandNodeBuilder, namespace: PermissionSegment) -> Self {
+    pub(crate) const fn new(root: CommandNodeBuilder, namespace: PermissionSegment) -> Self {
         Self {
             root,
             namespace,
@@ -48,22 +48,35 @@ impl CommandRegistration {
         }
     }
 
-    fn public(mut self) -> Self {
+    pub(crate) fn minecraft(root: CommandNodeBuilder) -> Result<Self, CommandRegistrationError> {
+        Ok(Self::new(root, PermissionSegment::parse("minecraft")?))
+    }
+
+    pub(crate) fn steel(root: CommandNodeBuilder) -> Result<Self, CommandRegistrationError> {
+        Ok(Self::new(root, PermissionSegment::parse("steel")?))
+    }
+
+    pub(crate) fn public(mut self) -> Self {
         self.permission = CommandPermissionMode::Public;
         self
     }
 
-    fn permission(mut self, permission: PermissionKey) -> Self {
+    pub(crate) fn permission(mut self, permission: PermissionKey) -> Self {
         self.permission = CommandPermissionMode::Override(permission);
         self
     }
 
-    fn alias(mut self, alias: &str) -> Result<Self, CommandRegistrationError> {
+    pub(crate) fn permission_base(self, command: &str) -> Result<Self, CommandRegistrationError> {
+        let permission = command_permission_key(&self.namespace, command)?;
+        Ok(self.permission(permission))
+    }
+
+    pub(crate) fn alias(mut self, alias: &str) -> Result<Self, CommandRegistrationError> {
         self.aliases.push(PermissionSegment::parse(alias)?);
         Ok(self)
     }
 
-    fn permission_base(&self) -> Result<PermissionKey, CommandRegistrationError> {
+    fn resolved_permission_base(&self) -> Result<PermissionKey, CommandRegistrationError> {
         match &self.permission {
             CommandPermissionMode::Auto | CommandPermissionMode::Public => {
                 let command_name = self
@@ -141,99 +154,9 @@ impl CommandDispatcher {
     /// Returns an error when a built-in command registration is invalid.
     pub fn new() -> Result<Self, CommandRegistrationError> {
         let mut dispatcher = CommandDispatcher::new_empty();
-        let minecraft = PermissionSegment::parse("minecraft")?;
-        let steel = PermissionSegment::parse("steel")?;
-
-        dispatcher.register_command(CommandRegistration::new(
-            commands::clear::command(),
-            minecraft.clone(),
-        ))?;
-        dispatcher.register_command(CommandRegistration::new(
-            commands::domain::command(),
-            steel.clone(),
-        ))?;
-        dispatcher.register_command(CommandRegistration::new(
-            commands::enchant::command(),
-            minecraft.clone(),
-        ))?;
-        dispatcher.register_command(CommandRegistration::new(
-            commands::execute::command(),
-            minecraft.clone(),
-        ))?;
-        dispatcher.register_command(CommandRegistration::new(
-            commands::fly::command(),
-            steel.clone(),
-        ))?;
-        dispatcher.register_command(CommandRegistration::new(
-            commands::gamemode::command(),
-            minecraft.clone(),
-        ))?;
-        dispatcher.register_command(CommandRegistration::new(
-            commands::gamerule::command(),
-            minecraft.clone(),
-        ))?;
-        dispatcher.register_command(CommandRegistration::new(
-            commands::kill::command(),
-            minecraft.clone(),
-        ))?;
-        dispatcher.register_command(
-            CommandRegistration::new(commands::list::command(), minecraft.clone()).public(),
-        )?;
-        dispatcher.register_command(CommandRegistration::new(
-            commands::locate::command(),
-            minecraft.clone(),
-        ))?;
-        dispatcher.register_command(CommandRegistration::new(
-            commands::give::command(),
-            minecraft.clone(),
-        ))?;
-        dispatcher.register_command(CommandRegistration::new(
-            commands::seed::command(),
-            minecraft.clone(),
-        ))?;
-        dispatcher.register_command(CommandRegistration::new(
-            commands::setworldspawn::command(),
-            minecraft.clone(),
-        ))?;
-        dispatcher.register_command(CommandRegistration::new(
-            commands::stop::command(),
-            minecraft.clone(),
-        ))?;
-        dispatcher.register_command(CommandRegistration::new(
-            commands::summon::command(),
-            minecraft.clone(),
-        ))?;
-        dispatcher.register_command(CommandRegistration::new(
-            commands::tellraw::command(),
-            minecraft.clone(),
-        ))?;
-        dispatcher.register_command(CommandRegistration::new(
-            commands::tick::command(),
-            minecraft.clone(),
-        ))?;
-        dispatcher.register_command(CommandRegistration::new(
-            commands::time::command(),
-            minecraft.clone(),
-        ))?;
-        dispatcher.register_command(
-            CommandRegistration::new(commands::tp::command(), minecraft.clone())
-                .permission(command_permission_key(&minecraft, "teleport")?)
-                .alias("teleport")?,
-        )?;
-        dispatcher.register_command(CommandRegistration::new(
-            commands::weather::command(),
-            minecraft.clone(),
-        ))?;
-        dispatcher.register_command(CommandRegistration::new(
-            commands::difficulty::command(),
-            minecraft.clone(),
-        ))?;
-        dispatcher.register_command(CommandRegistration::new(commands::steel::command(), steel))?;
-        dispatcher.register_command(
-            CommandRegistration::new(commands::xp::command(), minecraft.clone())
-                .permission(command_permission_key(&minecraft, "experience")?)
-                .alias("experience")?,
-        )?;
+        for registration in commands::registrations()? {
+            dispatcher.register_command(registration)?;
+        }
         Ok(dispatcher)
     }
 
@@ -249,7 +172,7 @@ impl CommandDispatcher {
         &mut self,
         registration: CommandRegistration,
     ) -> Result<(), CommandRegistrationError> {
-        let permission_base = registration.permission_base()?;
+        let permission_base = registration.resolved_permission_base()?;
         let permission = registration
             .has_root_permission()
             .then(|| permission_base.clone());

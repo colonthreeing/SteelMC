@@ -5,6 +5,7 @@ use steel_registry::{item_stack::ItemStack, items::ItemRef};
 use steel_utils::translations;
 use text_components::TextComponent;
 
+use crate::command::{CommandRegistration, CommandRegistrationError};
 use crate::{
     command::{
         context::CommandContext,
@@ -19,6 +20,10 @@ use crate::{
     inventory::container::Container,
     player::Player,
 };
+
+pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
+    CommandRegistration::minecraft(command())
+}
 
 /// Handler for the "clear" command.
 #[must_use]

@@ -20,12 +20,17 @@ use crate::command::graph::{
 };
 use crate::command::parsers::StructureParser;
 use crate::command::sender::CommandSender;
+use crate::command::{CommandRegistration, CommandRegistrationError};
 use crate::server::jobs::{JobPoll, ServerJob, ServerJobContext};
 use crate::world::World;
 use crate::worldgen::generator::ChunkGenerator;
 use crate::worldgen::structure::{StructureLocateCandidate, StructureLocatePlan, squared_distance};
 
 const MAX_STRUCTURE_LOCATE_RADIUS: i32 = 100;
+
+pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
+    CommandRegistration::minecraft(command())
+}
 
 /// Handler for the "locate" command.
 #[must_use]

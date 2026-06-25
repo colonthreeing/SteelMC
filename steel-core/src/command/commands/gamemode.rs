@@ -5,6 +5,7 @@ use crate::command::graph::{
     CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments, argument, literal,
 };
 use crate::command::parsers::{GameModeParser, PlayerParser};
+use crate::command::{CommandRegistration, CommandRegistrationError};
 use crate::entity::Entity;
 use crate::player::Player;
 use std::sync::Arc;
@@ -12,6 +13,10 @@ use steel_utils::translations;
 use steel_utils::types::GameType;
 use text_components::TextComponent;
 use text_components::translation::Translation;
+
+pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
+    CommandRegistration::minecraft(command())
+}
 
 /// Handler for the "gamemode" command.
 #[must_use]
