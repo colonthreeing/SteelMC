@@ -34,7 +34,7 @@ fn switch_domain(
     let server = context.server.clone();
     server
         .queue_domain_switch(player, domain.clone())
-        .map_err(|error| CommandError::CommandFailed(Box::new(TextComponent::plain(error))))?;
+        .map_err(CommandError::failure)?;
 
     context.sender.send_message(&TextComponent::plain(format!(
         "Switching to domain {domain}"

@@ -253,9 +253,9 @@ fn step_impl(ticks: i32, context: &mut CommandContext) -> Result<CommandResult, 
         );
         Ok(CommandResult::success())
     } else {
-        Err(CommandError::CommandFailed(Box::new(
-            translations::COMMANDS_TICK_STEP_FAIL.msg().into(),
-        )))
+        Err(CommandError::failure(
+            translations::COMMANDS_TICK_STEP_FAIL.msg(),
+        ))
     }
 }
 
@@ -272,9 +272,9 @@ fn stop_step(
             .send_message(&translations::COMMANDS_TICK_STEP_STOP_SUCCESS.msg().into());
         Ok(CommandResult::success())
     } else {
-        Err(CommandError::CommandFailed(Box::new(
-            translations::COMMANDS_TICK_STEP_STOP_FAIL.msg().into(),
-        )))
+        Err(CommandError::failure(
+            translations::COMMANDS_TICK_STEP_STOP_FAIL.msg(),
+        ))
     }
 }
 
@@ -329,9 +329,9 @@ fn stop_sprint(
         );
         Ok(CommandResult::success())
     } else {
-        Err(CommandError::CommandFailed(Box::new(
-            translations::COMMANDS_TICK_SPRINT_STOP_FAIL.msg().into(),
-        )))
+        Err(CommandError::failure(
+            translations::COMMANDS_TICK_SPRINT_STOP_FAIL.msg(),
+        ))
     }
 }
 

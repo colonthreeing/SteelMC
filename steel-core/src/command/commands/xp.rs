@@ -215,7 +215,7 @@ fn set_experience(
         match xp_type {
             ExperienceType::Points => experience
                 .set_points(amount)
-                .map_err(|err| CommandError::CommandFailed(Box::new(TextComponent::from(err))))?,
+                .map_err(CommandError::failure)?,
             ExperienceType::Levels => experience.set_levels(amount),
         }
     }

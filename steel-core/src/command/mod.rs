@@ -10,10 +10,10 @@ pub mod sender;
 
 use steel_protocol::packets::game::{CCommandSuggestions, CCommands, CommandNode, SuggestionEntry};
 use steel_utils::translations;
-use text_components::{Modifier, TextComponent, format::Color};
+use text_components::TextComponent;
 
 use crate::command::context::CommandContext;
-use crate::command::error::{CommandError, CommandErrorFeedback};
+use crate::command::error::CommandError;
 use crate::command::graph::{
     CommandGraph, CommandGraphError, CommandNodeBuilder, CommandParseError, CommandParseErrorKind,
     CommandResult,
@@ -220,36 +220,7 @@ impl CommandDispatcher {
         let result = self.dispatch_with_context(&command, &mut context);
 
         if let Err(error) = result {
-            let feedback = match error {
-                CommandError::InvalidConsumption(s) => {
-                    log::error!(
-                        "Error while parsing command \"{command}\": {s:?} was consumed, but couldn't be parsed"
-                    );
-                    CommandErrorFeedback::single(TextComponent::const_plain(
-                        "Internal error (See logs for details)",
-                    ))
-                }
-                CommandError::InvalidRequirement => {
-                    log::error!(
-                        "Error while parsing command \"{command}\": a requirement that was expected was not met."
-                    );
-                    CommandErrorFeedback::single(TextComponent::const_plain(
-                        "Internal error (See logs for details)",
-                    ))
-                }
-                CommandError::PermissionDenied => {
-                    log::warn!("Permission denied for command \"{command}\"");
-                    CommandErrorFeedback::single(TextComponent::const_plain(
-                        "I'm sorry, but you do not have permission to perform this command. Please contact the server administrator if you believe this is an error.",
-                    ))
-                }
-                CommandError::Parse(report) => report.into_feedback(),
-                CommandError::CommandFailed(text_component) => {
-                    CommandErrorFeedback::single(*text_component)
-                }
-            };
-
-            Self::send_failure_feedback(&sender, feedback);
+            sender.send_failure_feedback(error.into_feedback(&command));
         }
     }
 
@@ -273,17 +244,6 @@ impl CommandDispatcher {
             .execute_with_dispatcher(context, |command, context| {
                 self.dispatch_with_context(command, context)
             })
-    }
-
-    fn send_failure_feedback(sender: &CommandSender, feedback: CommandErrorFeedback) {
-        Self::send_failure_message(sender, feedback.primary);
-        if let Some(context) = feedback.context {
-            Self::send_failure_message(sender, context);
-        }
-    }
-
-    fn send_failure_message(sender: &CommandSender, message: TextComponent) {
-        sender.send_message(&TextComponent::new().color(Color::Red).add_child(message));
     }
 
     fn parse_error_to_command_error(input: &str, error: CommandParseError) -> CommandError {

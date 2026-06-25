@@ -118,7 +118,7 @@ fn create_entity(
 }
 
 fn command_failed(message: TranslatedMessage) -> CommandError {
-    CommandError::CommandFailed(Box::new(message.into()))
+    CommandError::failure(message)
 }
 
 fn entity_display_name(entity: &dyn Entity) -> TextComponent {

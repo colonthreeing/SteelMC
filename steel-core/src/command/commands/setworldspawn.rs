@@ -70,10 +70,10 @@ fn set_spawn(
     rotation: (f32, f32),
 ) -> Result<CommandResult, CommandError> {
     if !World::is_in_spawnable_bounds(pos) {
-        return Err(CommandError::CommandFailed(Box::new(translated(
+        return Err(CommandError::failure(translated(
             "argument.pos.outofbounds",
             [],
-        ))));
+        )));
     }
 
     let respawn_data = RespawnData::of(context.world.key.clone(), pos, rotation.0, rotation.1);
@@ -98,7 +98,7 @@ fn set_spawn(
 }
 
 fn command_failed(error: String) -> CommandError {
-    CommandError::CommandFailed(Box::new(TextComponent::from(error)))
+    CommandError::failure(error)
 }
 
 fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {

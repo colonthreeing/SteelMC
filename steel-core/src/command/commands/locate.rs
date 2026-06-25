@@ -65,23 +65,23 @@ fn locate_structure(
         .generator
         .structure_generator()
     else {
-        return Err(CommandError::CommandFailed(Box::new(TextComponent::plain(
+        return Err(CommandError::failure(
             "Could not find any configured structures in this world",
-        ))));
+        ));
     };
 
     let structure_keys = structure.structure_keys();
     let query_name = structure.query_name();
     let Some(plan) = structure_generator.locate_plan_for_structures(&structure_keys) else {
-        return Err(CommandError::CommandFailed(Box::new(TextComponent::plain(
-            format!("Could not find any configured placements for {query_name}"),
-        ))));
+        return Err(CommandError::failure(format!(
+            "Could not find any configured placements for {query_name}"
+        )));
     };
 
     if plan.is_empty() {
-        return Err(CommandError::CommandFailed(Box::new(TextComponent::plain(
-            format!("Could not find any configured placements for {query_name}"),
-        ))));
+        return Err(CommandError::failure(format!(
+            "Could not find any configured placements for {query_name}"
+        )));
     }
 
     let origin = BlockPos::from(context.position);

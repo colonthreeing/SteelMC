@@ -3,7 +3,6 @@
 use std::{error::Error, fmt, sync::Arc};
 
 use steel_protocol::packets::game::{CommandNode as ProtocolCommandNode, SuggestionEntry};
-use text_components::TextComponent;
 
 use crate::command::{
     context::CommandContext,
@@ -488,9 +487,9 @@ impl ParseResults {
     /// Returns a command execution error from the matched executor.
     pub fn execute(&self, context: &mut CommandContext) -> Result<CommandResult, CommandError> {
         self.execute_with_dispatcher(context, |command, _| {
-            Err(CommandError::CommandFailed(Box::new(TextComponent::plain(
-                format!("Command redirect target '{command}' is unavailable"),
-            ))))
+            Err(CommandError::failure(format!(
+                "Command redirect target '{command}' is unavailable"
+            )))
         })
     }
 

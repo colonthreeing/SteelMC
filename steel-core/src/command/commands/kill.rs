@@ -68,9 +68,7 @@ fn kill_targets(
         .map_err(invalid_parsed_argument)?;
 
     if targets.is_empty() {
-        return Err(CommandError::CommandFailed(Box::new(
-            TextComponent::const_plain("No entity was found"),
-        )));
+        return Err(CommandError::failure("No entity was found"));
     }
 
     let players = context.server.get_players();
@@ -88,9 +86,7 @@ fn kill_targets(
     }
 
     if victim_count == 0 {
-        return Err(CommandError::CommandFailed(Box::new(
-            TextComponent::const_plain("No entity was found"),
-        )));
+        return Err(CommandError::failure("No entity was found"));
     }
 
     // TODO: use getDisplayName() (team formatting, hover event, UUID insertion)

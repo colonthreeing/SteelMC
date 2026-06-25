@@ -23,10 +23,41 @@ pub enum CommandError {
 }
 
 impl CommandError {
+    /// Creates a command execution failure with a player-facing message.
+    #[must_use]
+    pub fn failure(message: impl Into<TextComponent>) -> Self {
+        Self::CommandFailed(Box::new(message.into()))
+    }
+
     /// Creates a structured command parse error.
     #[must_use]
     pub fn parse(message: TextComponent, input: &str, cursor: usize) -> Self {
         Self::Parse(CommandParseErrorReport::new(message, input, cursor))
+    }
+
+    pub(crate) fn into_feedback(self, command: &str) -> CommandErrorFeedback {
+        match self {
+            Self::InvalidConsumption(consumed) => {
+                log::error!(
+                    "Error while parsing command \"{command}\": {consumed:?} was consumed, but couldn't be parsed"
+                );
+                CommandErrorFeedback::single(internal_error_message())
+            }
+            Self::InvalidRequirement => {
+                log::error!(
+                    "Error while parsing command \"{command}\": a requirement that was expected was not met."
+                );
+                CommandErrorFeedback::single(internal_error_message())
+            }
+            Self::PermissionDenied => {
+                log::warn!("Permission denied for command \"{command}\"");
+                CommandErrorFeedback::single(TextComponent::const_plain(
+                    "I'm sorry, but you do not have permission to perform this command. Please contact the server administrator if you believe this is an error.",
+                ))
+            }
+            Self::Parse(report) => report.into_feedback(),
+            Self::CommandFailed(text_component) => CommandErrorFeedback::single(*text_component),
+        }
     }
 }
 
@@ -110,6 +141,19 @@ impl CommandErrorFeedback {
             context: None,
         }
     }
+
+    pub(crate) fn into_messages(self) -> Vec<TextComponent> {
+        let mut messages = Vec::with_capacity(if self.context.is_some() { 2 } else { 1 });
+        messages.push(self.primary);
+        if let Some(context) = self.context {
+            messages.push(context);
+        }
+        messages
+    }
+}
+
+fn internal_error_message() -> TextComponent {
+    TextComponent::const_plain("Internal error (See logs for details)")
 }
 
 fn context_start(input: &str, cursor: usize) -> usize {

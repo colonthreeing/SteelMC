@@ -154,11 +154,10 @@ fn set_difficulty(
         .iter()
         .all(|world| world.level_data.read().data().difficulty == difficulty)
     {
-        return Err(CommandError::CommandFailed(Box::new(
+        return Err(CommandError::failure(
             translations::COMMANDS_DIFFICULTY_FAILURE
-                .message([TextComponent::plain(difficulty_key(difficulty))])
-                .into(),
-        )));
+                .message([TextComponent::plain(difficulty_key(difficulty))]),
+        ));
     }
 
     for world in worlds {

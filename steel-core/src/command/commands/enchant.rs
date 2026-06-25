@@ -75,14 +75,12 @@ fn enchant(
     ctx: &mut CommandContext,
 ) -> Result<(), CommandError> {
     if level > enchantment.max_level as i32 {
-        return Err(CommandError::CommandFailed(Box::new(
-            translations::COMMANDS_ENCHANT_FAILED_LEVEL
-                .message([
-                    TextComponent::from(level.to_string()),
-                    TextComponent::from(enchantment.max_level.to_string()),
-                ])
-                .into(),
-        )));
+        return Err(CommandError::failure(
+            translations::COMMANDS_ENCHANT_FAILED_LEVEL.message([
+                TextComponent::from(level.to_string()),
+                TextComponent::from(enchantment.max_level.to_string()),
+            ]),
+        ));
     }
 
     let mut success = 0u32;
@@ -94,11 +92,10 @@ fn enchant(
 
         if item.is_empty() {
             if targets.len() == 1 {
-                return Err(CommandError::CommandFailed(Box::new(
+                return Err(CommandError::failure(
                     translations::COMMANDS_ENCHANT_FAILED_ITEMLESS
-                        .message([TextComponent::from(target.gameprofile.name.clone())])
-                        .into(),
-                )));
+                        .message([TextComponent::from(target.gameprofile.name.clone())]),
+                ));
             }
             continue;
         }
@@ -108,11 +105,10 @@ fn enchant(
         {
             if targets.len() == 1 {
                 let item_name = item.item.key.to_string();
-                return Err(CommandError::CommandFailed(Box::new(
+                return Err(CommandError::failure(
                     translations::COMMANDS_ENCHANT_FAILED_INCOMPATIBLE
-                        .message([TextComponent::from(item_name)])
-                        .into(),
-                )));
+                        .message([TextComponent::from(item_name)]),
+                ));
             }
             continue;
         }
@@ -123,9 +119,9 @@ fn enchant(
     }
 
     if success == 0 {
-        return Err(CommandError::CommandFailed(Box::new(
-            translations::COMMANDS_ENCHANT_FAILED.msg().into(),
-        )));
+        return Err(CommandError::failure(
+            translations::COMMANDS_ENCHANT_FAILED.msg(),
+        ));
     }
 
     let enchantment_name = enchantment_display_name(enchantment, level);

@@ -1,7 +1,8 @@
 //! Module defining the sender of a command.
 use std::{fmt, sync::Arc};
-use text_components::TextComponent;
+use text_components::{Modifier, TextComponent, format::Color};
 
+use crate::command::error::CommandErrorFeedback;
 use crate::player::Player;
 
 /// The sender of a command.
@@ -31,6 +32,19 @@ impl CommandSender {
             Self::Player(player) => player.send_message(text),
             Self::Console => log::info!("{:p}", *text),
             Self::Rcon => log::warn!("Dropping Rcon command message until Rcon output is wired"),
+        }
+    }
+
+    pub(crate) fn send_failure(&self, message: impl Into<TextComponent>) {
+        let message = TextComponent::new()
+            .color(Color::Red)
+            .add_child(message.into());
+        self.send_message(&message);
+    }
+
+    pub(crate) fn send_failure_feedback(&self, feedback: CommandErrorFeedback) {
+        for message in feedback.into_messages() {
+            self.send_failure(message);
         }
     }
 }

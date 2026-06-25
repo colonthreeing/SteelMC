@@ -139,9 +139,7 @@ fn apply_time(
     }
 
     let Some(new_day_time) = day_time_option else {
-        return Err(CommandError::CommandFailed(Box::new(TextComponent::from(
-            "no world to update time on",
-        ))));
+        return Err(CommandError::failure("no world to update time on"));
     };
 
     send_time_set_message(context, new_day_time);
@@ -184,11 +182,10 @@ fn send_time_set_message(context: &CommandContext, daytime: i64) {
 }
 
 fn advance_time(world: &World) -> Result<bool, CommandError> {
-    world.get_game_rule(&ADVANCE_TIME).as_bool().ok_or_else(|| {
-        CommandError::CommandFailed(Box::new(TextComponent::from(
-            "gamerule advance_time should always be a bool",
-        )))
-    })
+    world
+        .get_game_rule(&ADVANCE_TIME)
+        .as_bool()
+        .ok_or_else(|| CommandError::failure("gamerule advance_time should always be a bool"))
 }
 
 fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {

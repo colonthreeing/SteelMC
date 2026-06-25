@@ -262,15 +262,15 @@ fn current_player(player: &Player, ctx: &CommandContext) -> Option<Arc<Player>> 
 }
 
 fn no_player_found() -> CommandError {
-    CommandError::CommandFailed(Box::new(TextComponent::const_plain("No player was found")))
+    CommandError::failure("No player was found")
 }
 
 fn teleport_player(player: &Player, pos: DVec3, yaw: f32, pitch: f32) -> Result<(), CommandError> {
     player.teleport(pos, yaw, pitch).map_err(|error| {
-        CommandError::CommandFailed(Box::new(TextComponent::plain(format!(
+        CommandError::failure(format!(
             "Failed to teleport {}: {error}",
             player.gameprofile.name
-        ))))
+        ))
     })?;
     player.reset_flying_ticks();
 

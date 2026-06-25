@@ -46,9 +46,10 @@ fn teleport_to_world(
 
     for target in &targets {
         if target.is_domain_switching() {
-            return Err(CommandError::CommandFailed(Box::new(TextComponent::plain(
-                format!("{} is already switching domains", target.gameprofile.name),
-            ))));
+            return Err(CommandError::failure(format!(
+                "{} is already switching domains",
+                target.gameprofile.name
+            )));
         }
     }
 
@@ -65,9 +66,7 @@ fn teleport_to_world(
             context
                 .server
                 .queue_domain_switch_to_world(target.clone(), world.clone())
-                .map_err(|error| {
-                    CommandError::CommandFailed(Box::new(TextComponent::plain(error)))
-                })?;
+                .map_err(CommandError::failure)?;
         }
     }
 
