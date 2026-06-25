@@ -7,6 +7,7 @@ use steel_protocol::packets::game::{
     SuggestionEntry, SuggestionType,
 };
 use steel_utils::types::GameType;
+use text_components::TextComponent;
 
 use crate::command::{
     context::CommandContext,
@@ -107,6 +108,8 @@ pub enum CommandParseErrorKind {
     InvalidGameMode(String),
     /// A player argument was invalid.
     InvalidPlayer(String),
+    /// A text component argument was invalid.
+    InvalidComponent(String),
     /// A parser required live command context that was not available.
     MissingCommandContext(&'static str),
 }
@@ -124,6 +127,7 @@ impl CommandParseErrorKind {
             | Self::FloatTooHigh { .. }
             | Self::InvalidGameMode(_)
             | Self::InvalidPlayer(_)
+            | Self::InvalidComponent(_)
             | Self::MissingCommandContext(_)
             | Self::UnclosedQuote
             | Self::InvalidEscape(_) => 6,
@@ -152,6 +156,8 @@ pub enum ParsedArgument {
     GameMode(GameType),
     /// Player target argument.
     Players(Vec<Arc<Player>>),
+    /// Text component argument.
+    Component(TextComponent),
 }
 
 impl fmt::Debug for ParsedArgument {
@@ -166,6 +172,7 @@ impl fmt::Debug for ParsedArgument {
                 .debug_struct("Players")
                 .field("count", &value.len())
                 .finish(),
+            Self::Component(_) => f.debug_tuple("Component").finish(),
         }
     }
 }
@@ -224,6 +231,7 @@ impl ParsedArgument {
             Self::String(_) => "string",
             Self::GameMode(_) => "gamemode",
             Self::Players(_) => "players",
+            Self::Component(_) => "component",
         }
     }
 }
@@ -297,6 +305,17 @@ impl FromParsedArgument for Vec<Arc<Player>> {
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
         let ParsedArgument::Players(value) = value else {
+            return None;
+        };
+        Some(value.clone())
+    }
+}
+
+impl FromParsedArgument for TextComponent {
+    const TYPE_NAME: &'static str = "component";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::Component(value) = value else {
             return None;
         };
         Some(value.clone())

@@ -11,6 +11,7 @@ use steel_utils::{
     },
     types::GameType,
 };
+use text_components::TextComponent;
 use uuid::Uuid;
 
 use crate::{
@@ -194,11 +195,38 @@ impl CommandArgumentParser for PlayerParser {
     }
 }
 
+/// Text component argument parser.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ComponentParser;
+
+impl CommandArgumentParser for ComponentParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let raw = reader.read_string(StringMode::GreedyPhrase)?;
+        let component = TextComponent::from_snbt(&raw).map_err(|error| {
+            CommandParseError::new(
+                CommandParseErrorKind::InvalidComponent(error.to_string()),
+                cursor,
+            )
+        })?;
+
+        Ok(ParsedArgument::Component(component))
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        (ArgumentType::Component, None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::command::{
         graph::{CommandArgumentParser, ParsedArgument, ParsedArguments},
-        parsers::{GameModeParser, PlayerParser},
+        parsers::{ComponentParser, GameModeParser, PlayerParser},
         reader::CommandReader,
         requirement::{CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext},
     };
@@ -263,5 +291,16 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(texts, vec!["@a", "@p", "@r", "@s"]);
+    }
+
+    #[test]
+    fn component_parser_consumes_remaining_input() {
+        let mut reader = CommandReader::new("{text:\"hello world\"}");
+        let value = ComponentParser
+            .parse(&mut reader, &TestContext)
+            .expect("component parses");
+
+        assert!(matches!(value, ParsedArgument::Component(_)));
+        assert_eq!(reader.remaining(), "");
     }
 }

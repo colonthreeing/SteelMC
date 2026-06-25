@@ -54,7 +54,7 @@ impl CommandDispatcher {
         dispatcher.register(commands::setworldspawn::command_handler());
         dispatcher.register(commands::stop::command_handler());
         dispatcher.register(commands::summon::command_handler());
-        dispatcher.register(commands::tellraw::command_handler());
+        dispatcher.graph.register_root(commands::tellraw::command());
         dispatcher.register(commands::tick::command_handler());
         dispatcher.register(commands::time::command_handler());
         dispatcher.register(commands::tp::command_handler());
@@ -228,6 +228,9 @@ impl CommandDispatcher {
             }
             CommandParseErrorKind::InvalidPlayer(value) => {
                 format!("Invalid player '{value}'")
+            }
+            CommandParseErrorKind::InvalidComponent(value) => {
+                format!("Invalid component '{value}'")
             }
             CommandParseErrorKind::MissingCommandContext(name) => {
                 format!("Missing command context '{name}'")
