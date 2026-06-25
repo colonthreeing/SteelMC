@@ -108,6 +108,8 @@ pub enum CommandParseErrorKind {
     InvalidGameMode(String),
     /// A player argument was invalid.
     InvalidPlayer(String),
+    /// A domain argument was invalid.
+    InvalidDomain(String),
     /// A text component argument was invalid.
     InvalidComponent(String),
     /// A time argument was invalid.
@@ -129,6 +131,7 @@ impl CommandParseErrorKind {
             | Self::FloatTooHigh { .. }
             | Self::InvalidGameMode(_)
             | Self::InvalidPlayer(_)
+            | Self::InvalidDomain(_)
             | Self::InvalidComponent(_)
             | Self::InvalidTime(_)
             | Self::MissingCommandContext(_)

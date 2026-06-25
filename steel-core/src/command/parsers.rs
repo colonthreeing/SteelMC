@@ -195,6 +195,61 @@ impl CommandArgumentParser for PlayerParser {
     }
 }
 
+/// Configured domain name argument parser.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DomainParser;
+
+impl CommandArgumentParser for DomainParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let domain = reader.read_string(StringMode::SingleWord)?;
+        let Some(server) = context.server() else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::MissingCommandContext("server"),
+                cursor,
+            ));
+        };
+
+        if !server.worlds.has_domain(&domain) {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidDomain(domain),
+                cursor,
+            ));
+        }
+
+        Ok(ParsedArgument::String(domain))
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        (
+            ArgumentType::ResourceLocation,
+            Some(SuggestionType::AskServer),
+        )
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        _arguments: &ParsedArguments,
+        context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        let Some(server) = context.server() else {
+            return Vec::new();
+        };
+
+        server
+            .worlds
+            .domain_names()
+            .filter(|domain| domain.starts_with(prefix))
+            .map(SuggestionEntry::new)
+            .collect()
+    }
+}
+
 /// Text component argument parser.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ComponentParser;
@@ -293,8 +348,8 @@ impl CommandArgumentParser for TimeParser {
 #[cfg(test)]
 mod tests {
     use crate::command::{
-        graph::{CommandArgumentParser, ParsedArgument, ParsedArguments},
-        parsers::{ComponentParser, GameModeParser, PlayerParser, TimeParser},
+        graph::{CommandArgumentParser, CommandParseErrorKind, ParsedArgument, ParsedArguments},
+        parsers::{ComponentParser, DomainParser, GameModeParser, PlayerParser, TimeParser},
         reader::CommandReader,
         requirement::{CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext},
     };
@@ -359,6 +414,19 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(texts, vec!["@a", "@p", "@r", "@s"]);
+    }
+
+    #[test]
+    fn domain_parser_requires_live_server_context() {
+        let mut reader = CommandReader::new("minecraft");
+        let error = DomainParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("domain parser requires a server");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::MissingCommandContext("server")
+        ));
     }
 
     #[test]

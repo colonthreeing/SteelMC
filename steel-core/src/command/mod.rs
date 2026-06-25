@@ -38,7 +38,7 @@ impl CommandDispatcher {
     pub fn new() -> Self {
         let mut dispatcher = CommandDispatcher::new_empty();
         dispatcher.register(commands::clear::command_handler());
-        dispatcher.register(commands::domain::command_handler());
+        dispatcher.graph.register_root(commands::domain::command());
         dispatcher.register(commands::enchant::command_handler());
         dispatcher.register(commands::execute::command_handler());
         dispatcher.graph.register_root(commands::fly::command());
@@ -228,6 +228,9 @@ impl CommandDispatcher {
             }
             CommandParseErrorKind::InvalidPlayer(value) => {
                 format!("Invalid player '{value}'")
+            }
+            CommandParseErrorKind::InvalidDomain(value) => {
+                format!("Invalid domain '{value}'")
             }
             CommandParseErrorKind::InvalidComponent(value) => {
                 format!("Invalid component '{value}'")
