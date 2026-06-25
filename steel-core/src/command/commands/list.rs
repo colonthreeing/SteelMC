@@ -1,34 +1,26 @@
 //! Handler for the "list" command.
 
 use crate::command::{
-    commands::{CommandHandlerBuilder, CommandHandlerDyn, literal},
     context::CommandContext,
-    error::CommandError,
+    graph::{CommandNodeBuilder, CommandResult, ParsedArguments, literal},
 };
 use steel_utils::translations::{COMMANDS_LIST_NAME_AND_ID, COMMANDS_LIST_PLAYERS};
 
 /// Handler for the "list" command.
 #[must_use]
-pub fn command_handler() -> impl CommandHandlerDyn {
-    CommandHandlerBuilder::new(
-        &["list"],
-        "Lists players on the server.",
-        "minecraft:command.list",
-    )
-    .executes(
-        |(), context: &mut CommandContext| -> Result<(), CommandError> {
+pub fn command() -> CommandNodeBuilder {
+    literal("list")
+        .executes(|context: &mut CommandContext, _: &ParsedArguments| {
             list_players(context, false);
-            Ok(())
-        },
-    )
-    .then(literal("uuids").executes(
-        |(), context: &mut CommandContext| -> Result<(), CommandError> {
-            list_players(context, true);
-            Ok(())
-        },
-    ))
+            Ok(CommandResult::success())
+        })
+        .then(
+            literal("uuids").executes(|context: &mut CommandContext, _: &ParsedArguments| {
+                list_players(context, true);
+                Ok(CommandResult::success())
+            }),
+        )
 }
-
 fn list_players(context: &mut CommandContext, show_uuids: bool) {
     let player_number = context.server.player_count();
     let max_player = context.server.config.max_players;

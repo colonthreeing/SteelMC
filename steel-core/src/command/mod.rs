@@ -3,6 +3,9 @@ pub mod arguments;
 pub mod commands;
 pub mod context;
 pub mod error;
+pub mod graph;
+pub mod reader;
+pub mod requirement;
 pub mod sender;
 
 use std::sync::Arc;
@@ -13,6 +16,10 @@ use text_components::{Modifier, TextComponent, format::Color};
 use crate::command::commands::CommandHandlerDyn;
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
+use crate::command::graph::{
+    CommandExecutionError, CommandGraph, CommandParseError, CommandParseErrorKind,
+};
+use crate::command::requirement::{CommandSourceKind, PermissionExpr, RequirementContext};
 use crate::command::sender::CommandSender;
 use crate::player::Player;
 use crate::server::Server;
@@ -22,13 +29,15 @@ use crate::server::Server;
 pub struct CommandDispatcher {
     /// A map of command names to their handlers.
     handlers: scc::HashMap<&'static str, Arc<dyn CommandHandlerDyn + Send + Sync>>,
+    /// New dynamic command graph used by migrated commands.
+    graph: CommandGraph,
 }
 
 impl CommandDispatcher {
     /// Creates a new command dispatcher with vanilla handlers.
     #[must_use]
     pub fn new() -> Self {
-        let dispatcher = CommandDispatcher::new_empty();
+        let mut dispatcher = CommandDispatcher::new_empty();
         dispatcher.register(commands::clear::command_handler());
         dispatcher.register(commands::domain::command_handler());
         dispatcher.register(commands::enchant::command_handler());
@@ -37,7 +46,7 @@ impl CommandDispatcher {
         dispatcher.register(commands::gamemode::command_handler());
         dispatcher.register(commands::gamerule::command_handler());
         dispatcher.register(commands::kill::command_handler());
-        dispatcher.register(commands::list::command_handler());
+        dispatcher.graph.register_root(commands::list::command());
         dispatcher.register(commands::locate::command_handler());
         dispatcher.register(commands::give::command_handler());
         dispatcher.register(commands::seed::command_handler());
@@ -60,6 +69,7 @@ impl CommandDispatcher {
     pub fn new_empty() -> Self {
         CommandDispatcher {
             handlers: scc::HashMap::new(),
+            graph: CommandGraph::new(),
         }
     }
 
@@ -67,9 +77,16 @@ impl CommandDispatcher {
     pub fn handle_command(&self, sender: CommandSender, command: String, server: &Arc<Server>) {
         let mut context = CommandContext::new(sender.clone(), server.clone());
 
-        if let Err(error) = Self::split_command(&command)
-            .and_then(|(command, args)| self.execute(command, &args, &mut context, server))
+        let result = if Self::command_root(&command)
+            .is_some_and(|command| self.graph.has_root(command, &context))
         {
+            self.execute_graph(&command, &mut context)
+        } else {
+            Self::split_command(&command)
+                .and_then(|(command, args)| self.execute(command, &args, &mut context, server))
+        };
+
+        if let Err(error) = result {
             let text = match error {
                 CommandError::InvalidConsumption(s) => {
                     log::error!(
@@ -95,6 +112,19 @@ impl CommandDispatcher {
             // TODO: Use vanilla error messages
             sender.send_message(&text.color(Color::Red));
         }
+    }
+
+    fn execute_graph(
+        &self,
+        command: &str,
+        context: &mut CommandContext,
+    ) -> Result<(), CommandError> {
+        self.graph
+            .parse(command, context)
+            .map_err(Self::parse_error_to_command_error)?
+            .execute(context)
+            .map(|_| ())
+            .map_err(Self::execution_error_to_command_error)
     }
 
     /// Executes a command.
@@ -140,12 +170,68 @@ impl CommandDispatcher {
         Ok((command, command_args.split_whitespace().collect()))
     }
 
+    fn command_root(command: &str) -> Option<&str> {
+        let command = command.trim_start();
+        let command = command.strip_prefix('/').unwrap_or(command);
+        if command.is_empty() {
+            return None;
+        }
+
+        Some(
+            command
+                .split_once(char::is_whitespace)
+                .map_or(command, |(root, _)| root),
+        )
+    }
+
+    fn parse_error_to_command_error(error: CommandParseError) -> CommandError {
+        let cursor = error.cursor();
+        let message = match error.kind() {
+            CommandParseErrorKind::EmptyCommand => "Empty command".to_owned(),
+            CommandParseErrorKind::ExpectedWhitespace => "Expected whitespace".to_owned(),
+            CommandParseErrorKind::ExpectedArgument => "Expected argument".to_owned(),
+            CommandParseErrorKind::ExpectedLiteral(literal) => {
+                format!("Expected literal '{literal}'")
+            }
+            CommandParseErrorKind::UnknownCommand => "Unknown command".to_owned(),
+            CommandParseErrorKind::IncompleteCommand => "Incomplete command".to_owned(),
+            CommandParseErrorKind::TrailingData => "Trailing data found".to_owned(),
+            CommandParseErrorKind::UnclosedQuote => "Unclosed quoted string".to_owned(),
+            CommandParseErrorKind::InvalidEscape(ch) => {
+                format!("Invalid escape sequence '\\{ch}'")
+            }
+            CommandParseErrorKind::InvalidBool(value) => {
+                format!("Invalid boolean '{value}'")
+            }
+            CommandParseErrorKind::InvalidInteger(value) => {
+                format!("Invalid integer '{value}'")
+            }
+            CommandParseErrorKind::IntegerTooLow { value, min } => {
+                format!("Integer {value} must be at least {min}")
+            }
+            CommandParseErrorKind::IntegerTooHigh { value, max } => {
+                format!("Integer {value} must be at most {max}")
+            }
+        };
+
+        CommandError::CommandFailed(Box::new(TextComponent::plain(format!(
+            "{message} at position {cursor}"
+        ))))
+    }
+
+    fn execution_error_to_command_error(error: CommandExecutionError) -> CommandError {
+        CommandError::CommandFailed(Box::new(TextComponent::plain(error.message().to_owned())))
+    }
+
     /// Generates the `CCommands` packet, containing the usage information of every registered commands.
     pub fn get_commands(&self) -> CCommands {
         let mut nodes = Vec::with_capacity(self.handlers.len() + 1);
         nodes.push(CommandNode::new_root());
 
         let mut root_children = Vec::with_capacity(self.handlers.len());
+        let command_tree_context = CommandTreeRequirementContext;
+        self.graph
+            .usage(&mut nodes, &mut root_children, &command_tree_context);
         self.handlers.iter_sync(|command, handler| {
             if *command != handler.names()[0] {
                 return true;
@@ -201,7 +287,20 @@ impl CommandDispatcher {
         command: &str,
         server: Arc<Server>,
     ) -> (Vec<SuggestionEntry>, i32, i32) {
+        let mut context = CommandContext::new(sender, server);
+
+        if Self::command_root(command).is_some_and(|command| self.graph.has_root(command, &context))
+        {
+            return self
+                .graph
+                .suggest(command, &context)
+                .map_or((Vec::new(), 0, 0), |result| {
+                    (result.suggestions, result.start, result.length)
+                });
+        }
+
         // Remove leading slash if present
+        let has_leading_slash = command.starts_with('/');
         let command = command.strip_prefix('/').unwrap_or(command);
 
         // Split into parts, preserving trailing space as empty string
@@ -217,9 +316,9 @@ impl CommandDispatcher {
         // If empty or typing command name, suggest command names
         if parts.is_empty() || (parts.len() == 1 && !has_trailing_space) {
             let prefix = parts.first().copied().unwrap_or("");
-            let suggestions = self.get_command_suggestions(prefix);
-            // Start position is 1 (after the slash)
-            return (suggestions, 1, prefix.len() as i32);
+            let suggestions = self.get_command_suggestions(prefix, &context);
+            let start = if has_leading_slash { 1 } else { 0 };
+            return (suggestions, start, prefix.encode_utf16().count() as i32);
         }
 
         // Get the command handler
@@ -235,13 +334,10 @@ impl CommandDispatcher {
         // Get the args (everything after command name)
         let args = &parts[1..];
 
-        // Create context for suggestion
-        let mut context = CommandContext::new(sender, server);
-
         // Get suggestions from handler
         if let Some(result) = handler.suggest(args, args_start_pos, &mut context) {
-            // Adjust start position to account for leading slash
-            (result.suggestions, result.start + 1, result.length)
+            let offset = if has_leading_slash { 1 } else { 0 };
+            (result.suggestions, result.start + offset, result.length)
         } else {
             // No suggestions
             (vec![], 0, 0)
@@ -249,9 +345,16 @@ impl CommandDispatcher {
     }
 
     /// Gets command name suggestions matching the given prefix.
-    fn get_command_suggestions(&self, prefix: &str) -> Vec<SuggestionEntry> {
+    fn get_command_suggestions(
+        &self,
+        prefix: &str,
+        context: &dyn RequirementContext,
+    ) -> Vec<SuggestionEntry> {
         let mut suggestions = Vec::new();
         let prefix_lower = prefix.to_lowercase();
+
+        self.graph
+            .add_root_suggestions(&prefix_lower, &mut suggestions, context);
 
         self.handlers.iter_sync(|name, handler| {
             // Only include primary command names (not aliases)
@@ -263,5 +366,17 @@ impl CommandDispatcher {
 
         suggestions.sort_by(|a, b| a.text.cmp(&b.text));
         suggestions
+    }
+}
+
+struct CommandTreeRequirementContext;
+
+impl RequirementContext for CommandTreeRequirementContext {
+    fn source_kind(&self) -> CommandSourceKind {
+        CommandSourceKind::Player
+    }
+
+    fn has_permission(&self, _permission: &PermissionExpr) -> bool {
+        false
     }
 }
