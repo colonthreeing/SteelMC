@@ -21,17 +21,7 @@ use crate::{
 /// Handler for the "xp" command.
 #[must_use]
 pub fn command() -> CommandNodeBuilder {
-    command_with_name("xp")
-}
-
-/// Handler for the "experience" command alias.
-#[must_use]
-pub fn experience_command() -> CommandNodeBuilder {
-    command_with_name("experience")
-}
-
-fn command_with_name(name: &'static str) -> CommandNodeBuilder {
-    literal(name)
+    literal("xp")
         .then(
             literal("query").then(
                 argument("target", PlayerParser::multiple())

@@ -27,26 +27,43 @@ impl PermissionKey {
         }
 
         let segments = value.split('.').collect::<Vec<_>>();
-        if segments.iter().any(|segment| segment.is_empty()) {
-            return Err(PermissionKeyError::EmptySegment);
+        for (index, segment) in segments.iter().enumerate() {
+            if segment.is_empty() {
+                return Err(PermissionKeyError::EmptySegment);
+            }
+            if *segment == "*" {
+                if index + 1 != segments.len() {
+                    return Err(PermissionKeyError::WildcardNotFinal);
+                }
+                continue;
+            }
+            if segment.contains('*') {
+                return Err(PermissionKeyError::InvalidWildcardSegment);
+            }
+            validate_permission_segment(segment)?;
         }
 
-        if let Some((index, _)) = segments
-            .iter()
-            .enumerate()
-            .find(|(_, segment)| **segment == "*")
-            && index + 1 != segments.len()
-        {
-            return Err(PermissionKeyError::WildcardNotFinal);
-        }
+        Ok(Self(value))
+    }
 
-        if segments
-            .iter()
-            .any(|segment| segment.contains('*') && *segment != "*")
-        {
-            return Err(PermissionKeyError::InvalidWildcardSegment);
+    /// Builds a permission key from already-validated segments.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no segments are supplied.
+    pub fn from_segments(
+        segments: impl IntoIterator<Item = PermissionSegment>,
+    ) -> Result<Self, PermissionKeyError> {
+        let mut value = String::new();
+        for segment in segments {
+            if !value.is_empty() {
+                value.push('.');
+            }
+            value.push_str(segment.as_str());
         }
-
+        if value.is_empty() {
+            return Err(PermissionKeyError::Empty);
+        }
         Ok(Self(value))
     }
 
@@ -86,6 +103,46 @@ impl PermissionKey {
     }
 }
 
+/// One non-wildcard segment in a permission key.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PermissionSegment(String);
+
+impl PermissionSegment {
+    /// Parses one non-wildcard permission segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the segment is empty or contains invalid characters.
+    pub fn parse(value: impl Into<String>) -> Result<Self, PermissionKeyError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(PermissionKeyError::EmptySegment);
+        }
+        if value.contains('*') {
+            return Err(PermissionKeyError::InvalidWildcardSegment);
+        }
+        validate_permission_segment(&value)?;
+        Ok(Self(value))
+    }
+
+    /// Returns this segment as a string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+fn validate_permission_segment(segment: &str) -> Result<(), PermissionKeyError> {
+    if segment
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        Ok(())
+    } else {
+        Err(PermissionKeyError::InvalidSegment)
+    }
+}
+
 /// Invalid permission key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PermissionKeyError {
@@ -97,6 +154,8 @@ pub enum PermissionKeyError {
     WildcardNotFinal,
     /// A wildcard was embedded inside a segment.
     InvalidWildcardSegment,
+    /// A segment contains a character outside `[A-Za-z0-9_-]`.
+    InvalidSegment,
 }
 
 impl fmt::Display for PermissionKeyError {
@@ -109,6 +168,12 @@ impl fmt::Display for PermissionKeyError {
             }
             Self::InvalidWildcardSegment => {
                 write!(f, "permission wildcard must occupy the full segment")
+            }
+            Self::InvalidSegment => {
+                write!(
+                    f,
+                    "permission segment must contain only letters, numbers, '_' or '-'"
+                )
             }
         }
     }
@@ -533,7 +598,7 @@ impl Error for PermissionConfigError {}
 mod tests {
     use super::{
         PermissionEntry, PermissionExpr, PermissionGroups, PermissionGroupsConfig, PermissionKey,
-        PermissionKeyError, PermissionSet, PermissionState,
+        PermissionKeyError, PermissionSegment, PermissionSet, PermissionState,
     };
 
     fn key(value: &str) -> PermissionKey {
@@ -550,6 +615,30 @@ mod tests {
             PermissionKey::parse("minecraft.command.g*").err(),
             Some(PermissionKeyError::InvalidWildcardSegment)
         );
+    }
+
+    #[test]
+    fn permission_keys_reject_invalid_segments() {
+        assert_eq!(
+            PermissionKey::parse("minecraft.command.give item").err(),
+            Some(PermissionKeyError::InvalidSegment)
+        );
+        assert_eq!(
+            PermissionSegment::parse("give.item").err(),
+            Some(PermissionKeyError::InvalidSegment)
+        );
+    }
+
+    #[test]
+    fn permission_key_can_be_built_from_typed_segments() {
+        let key = PermissionKey::from_segments([
+            PermissionSegment::parse("minecraft").expect("segment parses"),
+            PermissionSegment::parse("command").expect("segment parses"),
+            PermissionSegment::parse("give").expect("segment parses"),
+        ])
+        .expect("segments build key");
+
+        assert_eq!(key.as_str(), "minecraft.command.give");
     }
 
     #[test]

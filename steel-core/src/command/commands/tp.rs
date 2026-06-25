@@ -23,17 +23,7 @@ use crate::{
 /// Handler for the "teleport" command.
 #[must_use]
 pub fn command() -> CommandNodeBuilder {
-    command_with_name("tp")
-}
-
-/// Handler for the "teleport" command alias.
-#[must_use]
-pub fn teleport_command() -> CommandNodeBuilder {
-    command_with_name("teleport")
-}
-
-fn command_with_name(name: &'static str) -> CommandNodeBuilder {
-    literal(name)
+    literal("tp")
         .then(
             argument("targets", PlayerParser::multiple())
                 .then(

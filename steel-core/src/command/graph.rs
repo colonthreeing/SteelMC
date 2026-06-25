@@ -22,7 +22,7 @@ use crate::command::{
     requirement::{CommandInputContext, Requirement, RequirementContext},
 };
 use crate::entity::LivingEntity;
-use crate::permission::{PermissionExpr, PermissionKey, PermissionKeyError};
+use crate::permission::{PermissionExpr, PermissionKey};
 use crate::player::Player;
 use crate::world::World;
 
@@ -1336,6 +1336,7 @@ struct SuggestionToken {
 }
 
 /// Builds a command graph node.
+#[derive(Clone)]
 pub struct CommandNodeBuilder {
     kind: CommandNodeKind,
     requirement: Requirement,
@@ -1360,21 +1361,36 @@ impl CommandNodeBuilder {
     }
 
     /// Adds a permission requirement to this node.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `permission` is not a valid permission key.
-    pub fn requires_permission(
-        self,
-        permission: impl Into<String>,
-    ) -> Result<Self, PermissionKeyError> {
-        Ok(self.requires_permission_expr(PermissionExpr::key(PermissionKey::parse(permission)?)))
+    #[must_use]
+    pub fn requires_permission(self, permission: PermissionKey) -> Self {
+        self.requires_permission_expr(PermissionExpr::key(permission))
     }
 
     /// Adds a permission expression requirement to this node.
     #[must_use]
     pub fn requires_permission_expr(self, permission: PermissionExpr) -> Self {
         self.requires(Requirement::Permission(permission))
+    }
+
+    /// Returns this literal node's name.
+    #[must_use]
+    pub fn literal_name(&self) -> Option<&str> {
+        match &self.kind {
+            CommandNodeKind::Literal(name) => Some(name),
+            CommandNodeKind::Argument { .. } => None,
+        }
+    }
+
+    /// Returns this node with a different literal name.
+    #[must_use]
+    pub fn with_literal_name(mut self, name: impl Into<String>) -> Option<Self> {
+        match &mut self.kind {
+            CommandNodeKind::Literal(literal) => {
+                *literal = name.into();
+                Some(self)
+            }
+            CommandNodeKind::Argument { .. } => None,
+        }
     }
 
     /// Marks this node executable.
@@ -1695,6 +1711,7 @@ impl CommandNode {
     }
 }
 
+#[derive(Clone)]
 enum CommandNodeKind {
     Literal(String),
     Argument {
@@ -1722,7 +1739,7 @@ mod tests {
             RequirementContext,
         },
     };
-    use crate::permission::{PermissionEntry, PermissionKeyError, PermissionSet};
+    use crate::permission::{PermissionEntry, PermissionSet};
     use steel_protocol::packets::game::CommandNode as ProtocolCommandNode;
 
     struct TestContext {
@@ -1920,13 +1937,6 @@ mod tests {
 
         assert_eq!(error.kind(), &CommandParseErrorKind::UnknownCommand);
         assert!(!denied.load(Ordering::Relaxed));
-    }
-
-    #[test]
-    fn permission_builder_rejects_invalid_keys() {
-        let error = literal("admin").requires_permission("steel.*.admin").err();
-
-        assert_eq!(error, Some(PermissionKeyError::WildcardNotFinal));
     }
 
     #[test]

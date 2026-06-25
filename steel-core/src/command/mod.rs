@@ -18,10 +18,10 @@ use crate::command::graph::{
 };
 use crate::command::requirement::RequirementContext;
 use crate::command::sender::CommandSender;
-use crate::permission::PermissionKeyError;
+use crate::permission::{PermissionKey, PermissionKeyError, PermissionSegment};
 use crate::player::Player;
 use crate::server::Server;
-use std::sync::Arc;
+use std::{error::Error, fmt, sync::Arc};
 
 /// Parses and dispatches commands through the command graph.
 #[derive(Default)]
@@ -30,77 +30,196 @@ pub struct CommandDispatcher {
     graph: CommandGraph,
 }
 
+struct CommandRegistration {
+    root: CommandNodeBuilder,
+    namespace: PermissionSegment,
+    permission: CommandPermissionMode,
+    aliases: Vec<PermissionSegment>,
+}
+
+impl CommandRegistration {
+    const fn new(root: CommandNodeBuilder, namespace: PermissionSegment) -> Self {
+        Self {
+            root,
+            namespace,
+            permission: CommandPermissionMode::Auto,
+            aliases: Vec::new(),
+        }
+    }
+
+    fn public(mut self) -> Self {
+        self.permission = CommandPermissionMode::Public;
+        self
+    }
+
+    fn permission(mut self, permission: PermissionKey) -> Self {
+        self.permission = CommandPermissionMode::Override(permission);
+        self
+    }
+
+    fn alias(mut self, alias: &str) -> Result<Self, CommandRegistrationError> {
+        self.aliases.push(PermissionSegment::parse(alias)?);
+        Ok(self)
+    }
+
+    fn resolved_permission(&self) -> Result<Option<PermissionKey>, CommandRegistrationError> {
+        match &self.permission {
+            CommandPermissionMode::Auto => {
+                let command_name = self
+                    .root
+                    .literal_name()
+                    .ok_or(CommandRegistrationError::RootMustBeLiteral)?;
+                Ok(Some(command_permission_key(&self.namespace, command_name)?))
+            }
+            CommandPermissionMode::Public => Ok(None),
+            CommandPermissionMode::Override(permission) => Ok(Some(permission.clone())),
+        }
+    }
+}
+
+enum CommandPermissionMode {
+    Auto,
+    Public,
+    Override(PermissionKey),
+}
+
+/// Invalid command registration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommandRegistrationError {
+    /// A command root was not a literal node.
+    RootMustBeLiteral,
+    /// A command or alias produced an invalid permission key.
+    InvalidPermissionKey(PermissionKeyError),
+}
+
+impl fmt::Display for CommandRegistrationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RootMustBeLiteral => write!(f, "command root must be a literal node"),
+            Self::InvalidPermissionKey(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl Error for CommandRegistrationError {}
+
+impl From<PermissionKeyError> for CommandRegistrationError {
+    fn from(value: PermissionKeyError) -> Self {
+        Self::InvalidPermissionKey(value)
+    }
+}
+
+fn command_permission_key(
+    namespace: &PermissionSegment,
+    command: &str,
+) -> Result<PermissionKey, PermissionKeyError> {
+    PermissionKey::from_segments([
+        namespace.clone(),
+        PermissionSegment::parse("command")?,
+        PermissionSegment::parse(command)?,
+    ])
+}
+
 impl CommandDispatcher {
     /// Creates a new command dispatcher with built-in commands.
     ///
     /// # Errors
     ///
-    /// Returns an error when a built-in command permission key is invalid.
-    pub fn new() -> Result<Self, PermissionKeyError> {
+    /// Returns an error when a built-in command registration is invalid.
+    pub fn new() -> Result<Self, CommandRegistrationError> {
         let mut dispatcher = CommandDispatcher::new_empty();
-        dispatcher.register_root(commands::clear::command(), Some("minecraft.command.clear"))?;
-        dispatcher.register_root(commands::domain::command(), Some("steel.command.domain"))?;
-        dispatcher.register_root(
+        let minecraft = PermissionSegment::parse("minecraft")?;
+        let steel = PermissionSegment::parse("steel")?;
+
+        dispatcher.register_command(CommandRegistration::new(
+            commands::clear::command(),
+            minecraft.clone(),
+        ))?;
+        dispatcher.register_command(CommandRegistration::new(
+            commands::domain::command(),
+            steel.clone(),
+        ))?;
+        dispatcher.register_command(CommandRegistration::new(
             commands::enchant::command(),
-            Some("minecraft.command.enchant"),
-        )?;
-        dispatcher.register_root(
+            minecraft.clone(),
+        ))?;
+        dispatcher.register_command(CommandRegistration::new(
             commands::execute::command(),
-            Some("minecraft.command.execute"),
-        )?;
-        dispatcher.register_root(commands::fly::command(), Some("steel.command.fly"))?;
-        dispatcher.register_root(
+            minecraft.clone(),
+        ))?;
+        dispatcher.register_command(CommandRegistration::new(
+            commands::fly::command(),
+            steel.clone(),
+        ))?;
+        dispatcher.register_command(CommandRegistration::new(
             commands::gamemode::command(),
-            Some("minecraft.command.gamemode"),
-        )?;
-        dispatcher.register_root(
+            minecraft.clone(),
+        ))?;
+        dispatcher.register_command(CommandRegistration::new(
             commands::gamerule::command(),
-            Some("minecraft.command.gamerule"),
+            minecraft.clone(),
+        ))?;
+        dispatcher.register_command(CommandRegistration::new(
+            commands::kill::command(),
+            minecraft.clone(),
+        ))?;
+        dispatcher.register_command(
+            CommandRegistration::new(commands::list::command(), minecraft.clone()).public(),
         )?;
-        dispatcher.register_root(commands::kill::command(), Some("minecraft.command.kill"))?;
-        dispatcher.register_root(commands::list::command(), None)?;
-        dispatcher.register_root(
+        dispatcher.register_command(CommandRegistration::new(
             commands::locate::command(),
-            Some("minecraft.command.locate"),
-        )?;
-        dispatcher.register_root(commands::give::command(), Some("minecraft.command.give"))?;
-        dispatcher.register_root(commands::seed::command(), Some("minecraft.command.seed"))?;
-        dispatcher.register_root(
+            minecraft.clone(),
+        ))?;
+        dispatcher.register_command(CommandRegistration::new(
+            commands::give::command(),
+            minecraft.clone(),
+        ))?;
+        dispatcher.register_command(CommandRegistration::new(
+            commands::seed::command(),
+            minecraft.clone(),
+        ))?;
+        dispatcher.register_command(CommandRegistration::new(
             commands::setworldspawn::command(),
-            Some("minecraft.command.setworldspawn"),
-        )?;
-        dispatcher.register_root(commands::stop::command(), Some("minecraft.command.stop"))?;
-        dispatcher.register_root(
+            minecraft.clone(),
+        ))?;
+        dispatcher.register_command(CommandRegistration::new(
+            commands::stop::command(),
+            minecraft.clone(),
+        ))?;
+        dispatcher.register_command(CommandRegistration::new(
             commands::summon::command(),
-            Some("minecraft.command.summon"),
-        )?;
-        dispatcher.register_root(
+            minecraft.clone(),
+        ))?;
+        dispatcher.register_command(CommandRegistration::new(
             commands::tellraw::command(),
-            Some("minecraft.command.tellraw"),
+            minecraft.clone(),
+        ))?;
+        dispatcher.register_command(CommandRegistration::new(
+            commands::tick::command(),
+            minecraft.clone(),
+        ))?;
+        dispatcher.register_command(CommandRegistration::new(
+            commands::time::command(),
+            minecraft.clone(),
+        ))?;
+        dispatcher.register_command(
+            CommandRegistration::new(commands::tp::command(), minecraft.clone())
+                .permission(command_permission_key(&minecraft, "teleport")?)
+                .alias("teleport")?,
         )?;
-        dispatcher.register_root(commands::tick::command(), Some("minecraft.command.tick"))?;
-        dispatcher.register_root(commands::time::command(), Some("minecraft.command.time"))?;
-        dispatcher.register_root(commands::tp::command(), Some("minecraft.command.teleport"))?;
-        dispatcher.register_root(
-            commands::tp::teleport_command(),
-            Some("minecraft.command.teleport"),
-        )?;
-        dispatcher.register_root(
+        dispatcher.register_command(CommandRegistration::new(
             commands::weather::command(),
-            Some("minecraft.command.weather"),
-        )?;
-        dispatcher.register_root(
+            minecraft.clone(),
+        ))?;
+        dispatcher.register_command(CommandRegistration::new(
             commands::difficulty::command(),
-            Some("minecraft.command.difficulty"),
-        )?;
-        dispatcher.register_root(commands::steel::command(), Some("steel.command.steel"))?;
-        dispatcher.register_root(
-            commands::xp::command(),
-            Some("minecraft.command.experience"),
-        )?;
-        dispatcher.register_root(
-            commands::xp::experience_command(),
-            Some("minecraft.command.experience"),
+            minecraft.clone(),
+        ))?;
+        dispatcher.register_command(CommandRegistration::new(commands::steel::command(), steel))?;
+        dispatcher.register_command(
+            CommandRegistration::new(commands::xp::command(), minecraft.clone())
+                .permission(command_permission_key(&minecraft, "experience")?)
+                .alias("experience")?,
         )?;
         Ok(dispatcher)
     }
@@ -113,18 +232,29 @@ impl CommandDispatcher {
         }
     }
 
-    fn register_root(
+    fn register_command(
         &mut self,
-        root: CommandNodeBuilder,
-        permission: Option<&str>,
-    ) -> Result<(), PermissionKeyError> {
-        let root = if let Some(permission) = permission {
-            root.requires_permission(permission)?
-        } else {
-            root
+        registration: CommandRegistration,
+    ) -> Result<(), CommandRegistrationError> {
+        let permission = registration.resolved_permission()?;
+        self.register_root(registration.root.clone(), permission.clone());
+        for alias in registration.aliases {
+            let root = registration
+                .root
+                .clone()
+                .with_literal_name(alias.as_str())
+                .ok_or(CommandRegistrationError::RootMustBeLiteral)?;
+            self.register_root(root, permission.clone());
+        }
+        Ok(())
+    }
+
+    fn register_root(&mut self, root: CommandNodeBuilder, permission: Option<PermissionKey>) {
+        let root = match permission {
+            Some(permission) => root.requires_permission(permission),
+            None => root,
         };
         self.graph.register_root(root);
-        Ok(())
     }
 
     /// Executes a command.
@@ -366,9 +496,13 @@ mod tests {
         let player = player_context();
 
         assert!(dispatcher.graph.has_root("list", &player));
+        assert!(!dispatcher.graph.has_root("give", &player));
         assert!(!dispatcher.graph.has_root("gamemode", &player));
         assert!(!dispatcher.graph.has_root("tp", &player));
         assert!(!dispatcher.graph.has_root("teleport", &player));
+
+        let give_player = player_context_with("minecraft.command.give");
+        assert!(dispatcher.graph.has_root("give", &give_player));
 
         let gamemode_player = player_context_with("minecraft.command.gamemode");
         assert!(dispatcher.graph.has_root("gamemode", &gamemode_player));
@@ -377,5 +511,9 @@ mod tests {
         let teleport_player = player_context_with("minecraft.command.teleport");
         assert!(dispatcher.graph.has_root("tp", &teleport_player));
         assert!(dispatcher.graph.has_root("teleport", &teleport_player));
+
+        let experience_player = player_context_with("minecraft.command.experience");
+        assert!(dispatcher.graph.has_root("xp", &experience_player));
+        assert!(dispatcher.graph.has_root("experience", &experience_player));
     }
 }
