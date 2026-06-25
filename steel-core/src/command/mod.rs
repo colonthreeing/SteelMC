@@ -41,7 +41,7 @@ impl CommandDispatcher {
         dispatcher.register(commands::domain::command_handler());
         dispatcher.register(commands::enchant::command_handler());
         dispatcher.register(commands::execute::command_handler());
-        dispatcher.register(commands::fly::command_handler());
+        dispatcher.graph.register_root(commands::fly::command());
         dispatcher
             .graph
             .register_root(commands::gamemode::command());
@@ -213,6 +213,15 @@ impl CommandDispatcher {
             }
             CommandParseErrorKind::IntegerTooHigh { value, max } => {
                 format!("Integer {value} must be at most {max}")
+            }
+            CommandParseErrorKind::InvalidFloat(value) => {
+                format!("Invalid float '{value}'")
+            }
+            CommandParseErrorKind::FloatTooLow { value, min } => {
+                format!("Float {value} must be at least {min}")
+            }
+            CommandParseErrorKind::FloatTooHigh { value, max } => {
+                format!("Float {value} must be at most {max}")
             }
             CommandParseErrorKind::InvalidGameMode(value) => {
                 format!("Invalid game mode '{value}'")

@@ -2,12 +2,13 @@
 use std::slice;
 use std::sync::Arc;
 
-use crate::command::arguments::bool::BoolArgument;
-use crate::command::arguments::float::FloatArgument;
-use crate::command::arguments::player::PlayerArgument;
-use crate::command::commands::{CommandHandlerBuilder, CommandHandlerDyn, argument, literal};
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
+use crate::command::graph::{
+    BoolParser, CommandNodeBuilder, CommandResult, FloatParser, ParsedArgumentError,
+    ParsedArguments, argument, literal,
+};
+use crate::command::parsers::PlayerParser;
 use crate::command::sender::CommandSender;
 use crate::player::Player;
 use text_components::TextComponent;
@@ -16,88 +17,135 @@ const MAX_FLY_SPEED: f32 = 30f32;
 
 /// Handler for the "flyspeed" command.
 #[must_use]
-pub fn command_handler() -> impl CommandHandlerDyn {
-    CommandHandlerBuilder::new(
-        &["fly"],
-        "Sets the target's flying parameters (may_fly, speed).",
-        "minecraft:command.fly",
-    )
-    .executes(|(), ctx: &mut CommandContext| {
-        let player = ctx
-            .sender
-            .get_player()
-            .ok_or(CommandError::InvalidRequirement)?;
-
-        toggle_fly(slice::from_ref(player));
-
-        Ok(())
-    })
-    .then(
-        argument("target", PlayerArgument::multiple())
-            .executes(
-                |((), targets): ((), Vec<Arc<Player>>), _ctx: &mut CommandContext| {
-                    toggle_fly(&targets);
-                    Ok(())
-                },
-            )
-            .then(argument("value", BoolArgument).executes(
-                |(((), targets), value): (((), Vec<Arc<Player>>), bool),
-                 _ctx: &mut CommandContext| {
-                    set_fly(&targets, value);
-                    Ok(())
-                },
-            ))
-            .then(
-                literal("speed")
-                    .executes(
-                        |((), targets): ((), Vec<Arc<Player>>), ctx: &mut CommandContext| {
-                            query_flying_speed(&targets, &ctx.sender);
-                            Ok(())
-                        },
-                    )
-                    .then(
+pub fn command() -> CommandNodeBuilder {
+    literal("fly")
+        .executes(toggle_sender_fly)
+        .then(
+            argument("target", PlayerParser::multiple())
+                .executes(toggle_target_fly)
+                .then(argument("value", BoolParser).executes(set_target_fly))
+                .then(
+                    literal("speed").executes(query_target_flying_speed).then(
                         argument(
                             "speed",
-                            FloatArgument::bounded(Some(0.0), Some(MAX_FLY_SPEED)),
+                            FloatParser::bounded(Some(0.0), Some(MAX_FLY_SPEED)),
                         )
-                        .executes(
-                            |(((), targets), speed): (((), Vec<Arc<Player>>), f32),
-                             ctx: &mut CommandContext| {
-                                set_flying_speed(&targets, speed, &ctx.sender);
-
-                                Ok(())
-                            },
-                        ),
+                        .executes(set_target_flying_speed),
                     ),
-            ),
-    )
-    .then(
-        literal("speed")
-            .executes(|(), ctx: &mut CommandContext| {
-                let player = ctx
-                    .sender
-                    .get_player()
-                    .ok_or(CommandError::InvalidRequirement)?;
-
-                query_flying_speed(slice::from_ref(player), &ctx.sender);
-
-                Ok(())
-            })
-            .then(
+                ),
+        )
+        .then(
+            literal("speed").executes(query_sender_flying_speed).then(
                 argument(
                     "speed",
-                    FloatArgument::bounded(Some(0.0), Some(MAX_FLY_SPEED)),
+                    FloatParser::bounded(Some(0.0), Some(MAX_FLY_SPEED)),
                 )
-                .executes(|((), speed): ((), f32), ctx: &mut CommandContext| {
-                    let player = ctx
-                        .sender
-                        .get_player()
-                        .ok_or(CommandError::InvalidRequirement)?;
-                    set_flying_speed(slice::from_ref(player), speed, &ctx.sender);
-                    Ok(())
-                }),
+                .executes(set_sender_flying_speed),
             ),
-    )
+        )
+}
+
+fn toggle_sender_fly(
+    context: &mut CommandContext,
+    _: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let player = context
+        .sender
+        .get_player()
+        .ok_or(CommandError::InvalidRequirement)?;
+
+    toggle_fly(slice::from_ref(player));
+
+    Ok(CommandResult::success())
+}
+
+fn toggle_target_fly(
+    _context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let targets = targets(arguments)?;
+    toggle_fly(&targets);
+
+    Ok(CommandResult::success())
+}
+
+fn set_target_fly(
+    _context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let targets = targets(arguments)?;
+    let value = arguments
+        .get::<bool>("value")
+        .map_err(invalid_parsed_argument)?;
+    set_fly(&targets, value);
+
+    Ok(CommandResult::success())
+}
+
+fn query_target_flying_speed(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let targets = targets(arguments)?;
+    query_flying_speed(&targets, &context.sender);
+
+    Ok(CommandResult::success())
+}
+
+fn set_target_flying_speed(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let targets = targets(arguments)?;
+    let speed = speed(arguments)?;
+    set_flying_speed(&targets, speed, &context.sender);
+
+    Ok(CommandResult::success())
+}
+
+fn query_sender_flying_speed(
+    context: &mut CommandContext,
+    _: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let player = context
+        .sender
+        .get_player()
+        .ok_or(CommandError::InvalidRequirement)?;
+
+    query_flying_speed(slice::from_ref(player), &context.sender);
+
+    Ok(CommandResult::success())
+}
+
+fn set_sender_flying_speed(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let player = context
+        .sender
+        .get_player()
+        .ok_or(CommandError::InvalidRequirement)?;
+    let speed = speed(arguments)?;
+
+    set_flying_speed(slice::from_ref(player), speed, &context.sender);
+
+    Ok(CommandResult::success())
+}
+
+fn targets(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
+    arguments
+        .get::<Vec<Arc<Player>>>("target")
+        .map_err(invalid_parsed_argument)
+}
+
+fn speed(arguments: &ParsedArguments) -> Result<f32, CommandError> {
+    arguments
+        .get::<f32>("speed")
+        .map_err(invalid_parsed_argument)
+}
+
+fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
+    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }
 
 fn toggle_fly(targets: &[Arc<Player>]) {

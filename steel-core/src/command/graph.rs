@@ -17,7 +17,7 @@ use crate::command::{
 use crate::player::Player;
 
 /// Structured command parse error.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CommandParseError {
     kind: CommandParseErrorKind,
     cursor: usize,
@@ -49,7 +49,7 @@ impl CommandParseError {
 }
 
 /// Specific command parse error kind.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum CommandParseErrorKind {
     /// The input contained no command.
     EmptyCommand,
@@ -87,6 +87,22 @@ pub enum CommandParseErrorKind {
         /// Maximum accepted value.
         max: i32,
     },
+    /// A float argument was invalid.
+    InvalidFloat(String),
+    /// A float argument was below its minimum.
+    FloatTooLow {
+        /// Parsed value.
+        value: f32,
+        /// Minimum accepted value.
+        min: f32,
+    },
+    /// A float argument was above its maximum.
+    FloatTooHigh {
+        /// Parsed value.
+        value: f32,
+        /// Maximum accepted value.
+        max: f32,
+    },
     /// A game mode argument was invalid.
     InvalidGameMode(String),
     /// A player argument was invalid.
@@ -103,6 +119,9 @@ impl CommandParseErrorKind {
             | Self::InvalidInteger(_)
             | Self::IntegerTooLow { .. }
             | Self::IntegerTooHigh { .. }
+            | Self::InvalidFloat(_)
+            | Self::FloatTooLow { .. }
+            | Self::FloatTooHigh { .. }
             | Self::InvalidGameMode(_)
             | Self::InvalidPlayer(_)
             | Self::MissingCommandContext(_)
@@ -125,6 +144,8 @@ pub enum ParsedArgument {
     Bool(bool),
     /// 32-bit signed integer argument.
     I32(i32),
+    /// 32-bit floating-point argument.
+    F32(f32),
     /// String-like argument.
     String(String),
     /// Game mode argument.
@@ -138,6 +159,7 @@ impl fmt::Debug for ParsedArgument {
         match self {
             Self::Bool(value) => f.debug_tuple("Bool").field(value).finish(),
             Self::I32(value) => f.debug_tuple("I32").field(value).finish(),
+            Self::F32(value) => f.debug_tuple("F32").field(value).finish(),
             Self::String(value) => f.debug_tuple("String").field(value).finish(),
             Self::GameMode(value) => f.debug_tuple("GameMode").field(value).finish(),
             Self::Players(value) => f
@@ -198,6 +220,7 @@ impl ParsedArgument {
         match self {
             Self::Bool(_) => "bool",
             Self::I32(_) => "i32",
+            Self::F32(_) => "f32",
             Self::String(_) => "string",
             Self::GameMode(_) => "gamemode",
             Self::Players(_) => "players",
@@ -230,6 +253,17 @@ impl FromParsedArgument for i32 {
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
         let ParsedArgument::I32(value) = value else {
+            return None;
+        };
+        Some(*value)
+    }
+}
+
+impl FromParsedArgument for f32 {
+    const TYPE_NAME: &'static str = "f32";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::F32(value) = value else {
             return None;
         };
         Some(*value)
@@ -413,6 +447,74 @@ impl CommandArgumentParser for IntegerParser {
     fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
         (
             ArgumentType::Integer {
+                min: self.min,
+                max: self.max,
+            },
+            None,
+        )
+    }
+}
+
+/// 32-bit floating-point command argument parser.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FloatParser {
+    min: Option<f32>,
+    max: Option<f32>,
+}
+
+impl FloatParser {
+    /// Creates an unbounded float parser.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            min: None,
+            max: None,
+        }
+    }
+
+    /// Creates a bounded float parser.
+    #[must_use]
+    pub const fn bounded(min: Option<f32>, max: Option<f32>) -> Self {
+        Self { min, max }
+    }
+}
+
+impl CommandArgumentParser for FloatParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let raw = reader.read_string(StringMode::SingleWord)?;
+        let value = raw.parse::<f32>().map_err(|_| {
+            CommandParseError::new(CommandParseErrorKind::InvalidFloat(raw), cursor)
+        })?;
+
+        if let Some(min) = self.min
+            && value < min
+        {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::FloatTooLow { value, min },
+                cursor,
+            ));
+        }
+
+        if let Some(max) = self.max
+            && value > max
+        {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::FloatTooHigh { value, max },
+                cursor,
+            ));
+        }
+
+        Ok(ParsedArgument::F32(value))
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        (
+            ArgumentType::Float {
                 min: self.min,
                 max: self.max,
             },
@@ -1069,8 +1171,8 @@ mod tests {
 
     use crate::command::{
         graph::{
-            BoolParser, CommandGraph, CommandParseErrorKind, CommandResult, IntegerParser,
-            StringParser, SuggestionResult, argument, literal,
+            BoolParser, CommandGraph, CommandParseErrorKind, CommandResult, FloatParser,
+            IntegerParser, StringParser, SuggestionResult, argument, literal,
         },
         reader::StringMode,
         requirement::{
@@ -1148,6 +1250,33 @@ mod tests {
             .expect("command parses");
 
         assert_eq!(result.arguments().get::<bool>("enabled"), Ok(true));
+    }
+
+    #[test]
+    fn parses_bounded_float_argument() {
+        let graph = CommandGraph::new().with_root(
+            literal("speed").then(
+                argument("value", FloatParser::bounded(Some(0.0), Some(30.0)))
+                    .executes(|_, _| Ok(CommandResult::success())),
+            ),
+        );
+
+        let result = graph
+            .parse("speed 1.5", &player_context())
+            .expect("command parses");
+
+        assert_eq!(result.arguments().get::<f32>("value"), Ok(1.5));
+
+        let error = graph
+            .parse("speed 31.0", &player_context())
+            .expect_err("out-of-range float should fail");
+        assert_eq!(
+            error.kind(),
+            &CommandParseErrorKind::FloatTooHigh {
+                value: 31.0,
+                max: 30.0
+            }
+        );
     }
 
     #[test]
