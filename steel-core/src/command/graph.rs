@@ -7,9 +7,12 @@ use steel_protocol::packets::game::{
     ArgumentStringTypeBehavior, ArgumentType, CommandNode as ProtocolCommandNode, CommandNodeInfo,
     SuggestionEntry, SuggestionType,
 };
-use steel_registry::{enchantment::EnchantmentRef, entity_type::EntityTypeRef, items::ItemRef};
-use steel_utils::BlockPos;
+use steel_registry::{
+    enchantment::EnchantmentRef, entity_type::EntityTypeRef, items::ItemRef,
+    structure::StructureRef,
+};
 use steel_utils::types::GameType;
+use steel_utils::{BlockPos, Identifier};
 use text_components::TextComponent;
 
 use crate::command::{
@@ -121,6 +124,8 @@ pub enum CommandParseErrorKind {
     InvalidItem(String),
     /// An enchantment argument was invalid.
     InvalidEnchantment(String),
+    /// A structure argument was invalid.
+    InvalidStructure(String),
     /// A domain argument was invalid.
     InvalidDomain(String),
     /// A world argument was invalid.
@@ -156,6 +161,7 @@ impl CommandParseErrorKind {
             | Self::InvalidEntityType(_)
             | Self::InvalidItem(_)
             | Self::InvalidEnchantment(_)
+            | Self::InvalidStructure(_)
             | Self::InvalidDomain(_)
             | Self::InvalidWorld(_)
             | Self::InvalidVec3(_)
@@ -199,6 +205,8 @@ pub enum ParsedArgument {
     Item(ItemRef),
     /// Enchantment argument.
     Enchantment(EnchantmentRef),
+    /// Structure or structure tag argument.
+    Structure(StructureArgumentValue),
     /// Loaded world argument.
     World(Arc<World>),
     /// 3D vector argument.
@@ -209,6 +217,52 @@ pub enum ParsedArgument {
     Rotation((f32, f32)),
     /// Text component argument.
     Component(TextComponent),
+}
+
+/// Structure command argument value: either one structure or a structure tag.
+#[derive(Clone, Debug)]
+pub enum StructureArgumentValue {
+    /// A single structure key.
+    Structure(StructureRef),
+    /// A structure tag and its resolved entries.
+    Tag {
+        /// Tag key without the leading `#`.
+        key: Identifier,
+        /// Structures in the tag.
+        structures: Vec<StructureRef>,
+    },
+}
+
+impl StructureArgumentValue {
+    /// Structure keys to scan.
+    #[must_use]
+    pub fn structure_keys(&self) -> Vec<Identifier> {
+        match self {
+            Self::Structure(structure) => vec![structure.key.clone()],
+            Self::Tag { structures, .. } => structures
+                .iter()
+                .map(|structure| structure.key.clone())
+                .collect(),
+        }
+    }
+
+    /// Printable command target name.
+    #[must_use]
+    pub fn printable_name(&self, found_structure: &Identifier) -> String {
+        match self {
+            Self::Structure(structure) => structure.key.to_string(),
+            Self::Tag { key, .. } => format!("#{key} ({found_structure})"),
+        }
+    }
+
+    /// Printable command target without resolved found entry.
+    #[must_use]
+    pub fn query_name(&self) -> String {
+        match self {
+            Self::Structure(structure) => structure.key.to_string(),
+            Self::Tag { key, .. } => format!("#{key}"),
+        }
+    }
 }
 
 impl fmt::Debug for ParsedArgument {
@@ -230,6 +284,7 @@ impl fmt::Debug for ParsedArgument {
             Self::EntityType(value) => f.debug_tuple("EntityType").field(&value.key).finish(),
             Self::Item(value) => f.debug_tuple("Item").field(&value.key).finish(),
             Self::Enchantment(value) => f.debug_tuple("Enchantment").field(&value.key).finish(),
+            Self::Structure(value) => f.debug_tuple("Structure").field(value).finish(),
             Self::World(value) => f.debug_tuple("World").field(&value.key).finish(),
             Self::Vec3(value) => f.debug_tuple("Vec3").field(value).finish(),
             Self::BlockPos(value) => f.debug_tuple("BlockPos").field(value).finish(),
@@ -297,6 +352,7 @@ impl ParsedArgument {
             Self::EntityType(_) => "entity_type",
             Self::Item(_) => "item",
             Self::Enchantment(_) => "enchantment",
+            Self::Structure(_) => "structure",
             Self::World(_) => "world",
             Self::Vec3(_) => "vec3",
             Self::BlockPos(_) => "block_pos",
@@ -422,6 +478,17 @@ impl FromParsedArgument for EnchantmentRef {
             return None;
         };
         Some(*value)
+    }
+}
+
+impl FromParsedArgument for StructureArgumentValue {
+    const TYPE_NAME: &'static str = "structure";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::Structure(value) = value else {
+            return None;
+        };
+        Some(value.clone())
     }
 }
 

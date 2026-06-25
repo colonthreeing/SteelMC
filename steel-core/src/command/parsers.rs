@@ -5,7 +5,7 @@ use std::{f32::consts::PI, sync::Arc};
 use glam::DVec3;
 use rand::seq::IteratorRandom;
 use steel_protocol::packets::game::{ArgumentType, SuggestionEntry, SuggestionType};
-use steel_registry::{REGISTRY, RegistryExt, entity_type::EntityTypeRef};
+use steel_registry::{REGISTRY, RegistryExt, TaggedRegistryExt, entity_type::EntityTypeRef};
 use steel_utils::{
     BlockPos, Identifier,
     translations::{
@@ -23,7 +23,7 @@ use crate::{
         context::EntityAnchor,
         graph::{
             CommandArgumentParser, CommandParseError, CommandParseErrorKind, ParsedArgument,
-            ParsedArguments,
+            ParsedArguments, StructureArgumentValue,
         },
         reader::{CommandReader, StringMode},
         requirement::CommandInputContext,
@@ -381,7 +381,7 @@ impl CommandArgumentParser for EntitySummonParser {
     }
 }
 
-fn parse_entity_type_identifier(input: &str) -> Option<Identifier> {
+fn parse_resource_identifier(input: &str) -> Option<Identifier> {
     let (namespace, path) = input.split_once(':').map_or(
         (Identifier::VANILLA_NAMESPACE, input),
         |(namespace, path)| (namespace, path),
@@ -392,7 +392,7 @@ fn parse_entity_type_identifier(input: &str) -> Option<Identifier> {
 }
 
 fn resolve_summon_entity_type(input: &str) -> Option<EntityTypeRef> {
-    let key = parse_entity_type_identifier(input)?;
+    let key = parse_resource_identifier(input)?;
     REGISTRY
         .entity_types
         .by_key(&key)
@@ -508,6 +508,127 @@ impl CommandArgumentParser for EnchantmentParser {
                     .starts_with(stripped_prefix)
             })
             .collect()
+    }
+}
+
+/// Structure or structure tag argument parser.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StructureParser;
+
+impl CommandArgumentParser for StructureParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let raw = reader.read_string(StringMode::SingleWord)?;
+
+        if let Some(tag) = raw.strip_prefix('#') {
+            let Some(key) = parse_resource_identifier(tag) else {
+                return Err(CommandParseError::new(
+                    CommandParseErrorKind::InvalidStructure(raw),
+                    cursor,
+                ));
+            };
+            let Some(structures) = REGISTRY.structures.get_tag(&key) else {
+                return Err(CommandParseError::new(
+                    CommandParseErrorKind::InvalidStructure(raw),
+                    cursor,
+                ));
+            };
+            if structures.is_empty() {
+                return Err(CommandParseError::new(
+                    CommandParseErrorKind::InvalidStructure(raw),
+                    cursor,
+                ));
+            }
+            return Ok(ParsedArgument::Structure(StructureArgumentValue::Tag {
+                key,
+                structures,
+            }));
+        }
+
+        let Some(key) = parse_resource_identifier(&raw) else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidStructure(raw),
+                cursor,
+            ));
+        };
+
+        let Some(structure) = REGISTRY.structures.by_key(&key) else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidStructure(raw),
+                cursor,
+            ));
+        };
+
+        Ok(ParsedArgument::Structure(
+            StructureArgumentValue::Structure(structure),
+        ))
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        (
+            ArgumentType::ResourceOrTagKey {
+                identifier: "minecraft:worldgen/structure",
+            },
+            Some(SuggestionType::AskServer),
+        )
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        _arguments: &ParsedArguments,
+        _context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        if prefix.starts_with('#') {
+            let stripped_prefix = prefix
+                .strip_prefix("#minecraft:")
+                .or_else(|| prefix.strip_prefix('#'))
+                .unwrap_or(prefix);
+            return REGISTRY
+                .structures
+                .tag_keys()
+                .filter_map(|key| {
+                    let key = key.to_string();
+                    let text = key.strip_prefix("minecraft:").unwrap_or(&key);
+                    text.starts_with(stripped_prefix)
+                        .then(|| SuggestionEntry::new(format!("#{key}")))
+                })
+                .collect();
+        }
+
+        let stripped_prefix = prefix.strip_prefix("minecraft:").unwrap_or(prefix);
+        let mut suggestions = Vec::new();
+        suggestions.extend(
+            REGISTRY
+                .structures
+                .iter()
+                .map(|(_, structure)| SuggestionEntry::new(structure.key.to_string()))
+                .filter(|suggestion| {
+                    suggestion
+                        .text
+                        .strip_prefix("minecraft:")
+                        .unwrap_or(&suggestion.text)
+                        .starts_with(stripped_prefix)
+                }),
+        );
+        suggestions.extend(
+            REGISTRY
+                .structures
+                .tag_keys()
+                .map(|key| SuggestionEntry::new(format!("#{key}")))
+                .filter(|suggestion| {
+                    suggestion
+                        .text
+                        .strip_prefix("#minecraft:")
+                        .unwrap_or(&suggestion.text)
+                        .starts_with(stripped_prefix)
+                }),
+        );
+        suggestions
     }
 }
 
@@ -1052,7 +1173,7 @@ mod tests {
             parsers::{
                 BlockPosParser, ComponentParser, DomainParser, EnchantmentParser, EntityParser,
                 EntitySummonParser, GameModeParser, ItemParser, PlayerParser, RotationParser,
-                TimeParser, Vec3Parser, WorldParser,
+                StructureParser, TimeParser, Vec3Parser, WorldParser,
             },
             reader::CommandReader,
             requirement::{
@@ -1196,6 +1317,21 @@ mod tests {
         assert!(matches!(
             value,
             ParsedArgument::Enchantment(enchantment) if enchantment == &vanilla_enchantments::SHARPNESS
+        ));
+    }
+
+    #[test]
+    fn structure_parser_resolves_default_namespace() {
+        init_test_registry();
+
+        let mut reader = CommandReader::new("mineshaft");
+        let value = StructureParser
+            .parse(&mut reader, &TestContext)
+            .expect("structure parses");
+
+        assert!(matches!(
+            value,
+            ParsedArgument::Structure(structure) if structure.query_name() == "minecraft:mineshaft"
         ));
     }
 

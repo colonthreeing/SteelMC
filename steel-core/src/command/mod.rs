@@ -48,7 +48,7 @@ impl CommandDispatcher {
         dispatcher.register(commands::gamerule::command_handler());
         dispatcher.graph.register_root(commands::kill::command());
         dispatcher.graph.register_root(commands::list::command());
-        dispatcher.register(commands::locate::command_handler());
+        dispatcher.graph.register_root(commands::locate::command());
         dispatcher.graph.register_root(commands::give::command());
         dispatcher.graph.register_root(commands::seed::command());
         dispatcher
@@ -248,6 +248,9 @@ impl CommandDispatcher {
             }
             CommandParseErrorKind::InvalidEnchantment(value) => {
                 format!("Invalid enchantment '{value}'")
+            }
+            CommandParseErrorKind::InvalidStructure(value) => {
+                format!("Invalid structure '{value}'")
             }
             CommandParseErrorKind::InvalidDomain(value) => {
                 format!("Invalid domain '{value}'")

@@ -12,10 +12,13 @@ use crate::chunk::chunk_access::ChunkStatus;
 use crate::chunk::chunk_request::{
     ChunkRequest, ChunkRequestHandle, ChunkRequestState, ChunkTicketKind,
 };
-use crate::command::arguments::structure::{StructureArgument, StructureArgumentValue};
-use crate::command::commands::{CommandHandlerBuilder, CommandHandlerDyn, argument, literal};
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
+use crate::command::graph::{
+    CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments,
+    StructureArgumentValue, argument, literal,
+};
+use crate::command::parsers::StructureParser;
 use crate::command::sender::CommandSender;
 use crate::server::jobs::{JobPoll, ServerJob, ServerJobContext};
 use crate::world::World;
@@ -26,19 +29,24 @@ const MAX_STRUCTURE_LOCATE_RADIUS: i32 = 100;
 
 /// Handler for the "locate" command.
 #[must_use]
-pub fn command_handler() -> impl CommandHandlerDyn {
-    CommandHandlerBuilder::new(
-        &["locate"],
-        "Locates structures.",
-        "minecraft:command.locate",
+pub fn command() -> CommandNodeBuilder {
+    literal("locate").then(
+        literal("structure")
+            .then(argument("structure", StructureParser).executes(locate_structure_argument)),
     )
-    .then(
-        literal("structure").then(argument("structure", StructureArgument).executes(
-            |((), structure): ((), StructureArgumentValue),
-             context: &mut CommandContext|
-             -> Result<(), CommandError> { locate_structure(structure, context) },
-        )),
-    )
+}
+
+fn locate_structure_argument(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let structure = arguments
+        .get::<StructureArgumentValue>("structure")
+        .map_err(invalid_parsed_argument)?;
+
+    locate_structure(structure, context)?;
+
+    Ok(CommandResult::success())
 }
 
 fn locate_structure(
@@ -88,6 +96,10 @@ fn locate_structure(
     };
     context.server.jobs.spawn(job);
     Ok(())
+}
+
+fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
+    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }
 
 enum LocatePhase {
