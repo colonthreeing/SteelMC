@@ -11,12 +11,14 @@ use tracing_subscriber::filter::Directive;
 
 use reqwest::Url;
 use steel_core::config::{CompressionInfo, RuntimeConfig, ServerLinks, WorldsConfig};
+use steel_core::permission::{PermissionGroups, PermissionGroupsConfig};
 
 #[cfg(feature = "stand-alone")]
 const DEFAULT_FAVICON: &[u8] = include_bytes!("../../package-content/favicon.png");
 
 const DEFAULT_CONFIG: &str = include_str!("../../package-content/config.toml");
 const DEFAULT_WORLDS: &str = include_str!("../../package-content/worlds.toml");
+const DEFAULT_GROUPS: &str = include_str!("../../package-content/groups.toml");
 
 /// Top-level TOML deserialization target — used once at startup, not stored globally.
 #[derive(Debug, Clone, Deserialize)]
@@ -29,6 +31,9 @@ pub struct SteelConfig {
     /// World and domain configuration from `worlds.toml`.
     #[serde(skip, default = "empty_worlds_config")]
     pub worlds: WorldsConfig,
+    /// Permission group configuration from `groups.toml`.
+    #[serde(skip, default)]
+    pub groups: PermissionGroups,
 }
 
 const fn empty_worlds_config() -> WorldsConfig {
@@ -112,7 +117,7 @@ pub struct ServerConfig {
 impl ServerConfig {
     /// Extracts the `RuntimeConfig` from this full config.
     #[must_use]
-    pub fn into_runtime_config(self) -> RuntimeConfig {
+    pub fn into_runtime_config(self, permission_groups: PermissionGroups) -> RuntimeConfig {
         RuntimeConfig {
             max_players: self.max_players,
             view_distance: self.view_distance,
@@ -130,6 +135,7 @@ impl ServerConfig {
             compression: self.compression,
             server_links: self.server_links,
             chunk_generation_threads: self.threads.chunk_generation,
+            permission_groups,
         }
     }
 }
@@ -271,6 +277,11 @@ pub fn load_or_create(path: &Path) -> Result<SteelConfig, String> {
         .ok_or_else(|| format!("failed to get config directory for {}", path.display()))?
         .join("worlds.toml");
     config.worlds = load_or_create_worlds(&worlds_path)?;
+    let groups_path = path
+        .parent()
+        .ok_or_else(|| format!("failed to get config directory for {}", path.display()))?
+        .join("groups.toml");
+    config.groups = load_or_create_groups(&groups_path)?;
 
     // If icon file doesnt exist, write it
     #[cfg(feature = "stand-alone")]
@@ -298,6 +309,23 @@ fn load_or_create_worlds(path: &Path) -> Result<WorldsConfig, String> {
         toml::from_str(DEFAULT_WORLDS)
             .map_err(|e| format!("failed to parse default worlds config: {e}"))
     }
+}
+
+fn load_or_create_groups(path: &Path) -> Result<PermissionGroups, String> {
+    let groups_config = if path.exists() {
+        let groups_str = fs::read_to_string(path)
+            .map_err(|e| format!("failed to read groups config file {}: {e}", path.display()))?;
+        toml::from_str::<PermissionGroupsConfig>(groups_str.as_str())
+            .map_err(|e| format!("failed to parse groups config {}: {e}", path.display()))?
+    } else {
+        fs::write(path, DEFAULT_GROUPS)
+            .map_err(|e| format!("failed to write groups config file {}: {e}", path.display()))?;
+        toml::from_str::<PermissionGroupsConfig>(DEFAULT_GROUPS)
+            .map_err(|e| format!("failed to parse default groups config: {e}"))?
+    };
+
+    PermissionGroups::from_config(groups_config)
+        .map_err(|e| format!("failed to validate groups config {}: {e}", path.display()))
 }
 
 /// Validates the server configuration.
@@ -354,6 +382,9 @@ mod tests {
         validate(&config.server).expect("default config validates");
         let worlds: WorldsConfig = toml::from_str(DEFAULT_WORLDS).expect("default worlds parses");
         assert!(!worlds.domains.is_empty());
+        let groups_config: PermissionGroupsConfig =
+            toml::from_str(DEFAULT_GROUPS).expect("default groups parses");
+        PermissionGroups::from_config(groups_config).expect("default groups validate");
     }
 
     #[test]
@@ -390,7 +421,11 @@ mod tests {
 
         assert_eq!(config.server.auth_server.as_deref(), Some(auth_server));
         assert_eq!(
-            config.server.into_runtime_config().auth_server.as_deref(),
+            config
+                .server
+                .into_runtime_config(PermissionGroups::default())
+                .auth_server
+                .as_deref(),
             Some(auth_server)
         );
     }
@@ -407,7 +442,10 @@ mod tests {
         assert_eq!(config.server.threads.chunk_runtime, Some(4));
         assert_eq!(config.server.threads.chunk_generation, Some(5));
         assert_eq!(
-            config.server.into_runtime_config().chunk_generation_threads,
+            config
+                .server
+                .into_runtime_config(PermissionGroups::default())
+                .chunk_generation_threads,
             Some(5)
         );
     }

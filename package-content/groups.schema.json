@@ -1,0 +1,62 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SteelPermissionGroupsConfig",
+  "description": "Permission group configuration schema for Steel",
+  "type": "object",
+  "properties": {
+    "default_groups": {
+      "type": "array",
+      "description": "Groups applied to every player",
+      "items": {
+        "$ref": "#/definitions/group_name"
+      },
+      "uniqueItems": true,
+      "default": ["default"]
+    },
+    "groups": {
+      "type": "object",
+      "description": "Permission groups keyed by group name",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/definitions/group"
+      }
+    }
+  },
+  "required": ["groups"],
+  "additionalProperties": false,
+  "definitions": {
+    "group_name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+$"
+    },
+    "permission_key": {
+      "type": "string",
+      "description": "Dotted permission key. Only a full trailing segment may be a wildcard.",
+      "pattern": "^(\\*|[^.*]+(\\.[^.*]+)*(\\.\\*)?)$"
+    },
+    "group": {
+      "type": "object",
+      "properties": {
+        "allow": {
+          "type": "array",
+          "description": "Permission keys explicitly allowed by this group",
+          "items": {
+            "$ref": "#/definitions/permission_key"
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "deny": {
+          "type": "array",
+          "description": "Permission keys explicitly denied by this group",
+          "items": {
+            "$ref": "#/definitions/permission_key"
+          },
+          "uniqueItems": true,
+          "default": []
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

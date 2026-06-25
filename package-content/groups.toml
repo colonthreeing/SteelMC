@@ -1,0 +1,17 @@
+#:schema https://raw.githubusercontent.com/4lve/SteelMC/refs/heads/master/package-content/groups.schema.json
+
+# Permission groups assigned by the server.
+#
+# `default_groups` are applied to every player. Add `"op"` to a player's
+# global player data groups to grant the built-in operator group, or edit the
+# group below to match the server's needs.
+
+default_groups = ["default"]
+
+[groups.default]
+allow = []
+deny = []
+
+[groups.op]
+allow = ["*"]
+deny = []

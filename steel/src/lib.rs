@@ -75,7 +75,7 @@ impl SteelServer {
 
         let server_port = steel_config.server.server_port;
         let worlds_config = steel_config.worlds;
-        let runtime_config = steel_config.server.into_runtime_config();
+        let runtime_config = steel_config.server.into_runtime_config(steel_config.groups);
 
         let server = Server::new(
             chunk_runtime,

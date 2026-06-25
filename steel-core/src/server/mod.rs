@@ -607,8 +607,13 @@ impl Server {
             .await
         {
             Ok(Some(global)) if self.worlds.has_domain(&global.last_active_domain) => {
-                player.set_permissions(global.permissions);
-                Ok(global.last_active_domain)
+                let GlobalPlayerData {
+                    last_active_domain,
+                    groups,
+                    permissions,
+                } = global;
+                self.apply_global_permission_state(player, groups, permissions);
+                Ok(last_active_domain)
             }
             Ok(Some(global)) => {
                 log::warn!(
@@ -616,15 +621,48 @@ impl Server {
                     player.gameprofile.name,
                     global.last_active_domain
                 );
-                player.set_permissions(global.permissions);
+                let GlobalPlayerData {
+                    groups,
+                    permissions,
+                    ..
+                } = global;
+                self.apply_global_permission_state(player, groups, permissions);
                 Ok(self.worlds.default_domain().to_owned())
             }
             Ok(None) => {
-                player.set_permissions(PermissionSet::default());
+                let groups = Vec::new();
+                let overrides = PermissionSet::default();
+                let permissions = self
+                    .config
+                    .permission_groups
+                    .effective_permissions(&groups, &overrides);
+                player.set_permission_state(groups, overrides, permissions);
                 Ok(self.worlds.default_domain().to_owned())
             }
             Err(e) => Err(format!("failed to load global player data: {e}")),
         }
+    }
+
+    fn apply_global_permission_state(
+        &self,
+        player: &Player,
+        groups: Vec<String>,
+        overrides: PermissionSet,
+    ) {
+        for group in &groups {
+            if !self.config.permission_groups.contains_group(group) {
+                log::warn!(
+                    "Player {} has unknown permission group {group}",
+                    player.gameprofile.name
+                );
+            }
+        }
+
+        let permissions = self
+            .config
+            .permission_groups
+            .effective_permissions(&groups, &overrides);
+        player.set_permission_state(groups, overrides, permissions);
     }
 
     async fn load_domain_player_state(
@@ -1451,7 +1489,8 @@ impl Server {
                 player.gameprofile.id,
                 &GlobalPlayerData {
                     last_active_domain: target_domain,
-                    permissions: player.permissions(),
+                    groups: player.permission_groups(),
+                    permissions: player.permission_overrides(),
                 },
             )
             .await

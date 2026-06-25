@@ -1,6 +1,13 @@
 //! Permission keys, expressions, and effective permission evaluation.
 
-use std::ops::{BitAnd, BitOr};
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    fmt,
+    ops::{BitAnd, BitOr},
+};
+
+use serde::Deserialize;
 
 /// One dotted permission key.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -292,11 +299,224 @@ impl PermissionSet {
     }
 }
 
+/// Parsed `groups.toml` permissions configuration.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct PermissionGroupsConfig {
+    /// Groups every player receives.
+    pub default_groups: Vec<String>,
+    /// Named groups available for assignment.
+    pub groups: BTreeMap<String, PermissionGroupConfig>,
+}
+
+impl Default for PermissionGroupsConfig {
+    fn default() -> Self {
+        let mut groups = BTreeMap::new();
+        groups.insert("default".to_owned(), PermissionGroupConfig::default());
+        groups.insert(
+            "op".to_owned(),
+            PermissionGroupConfig {
+                allow: vec!["*".to_owned()],
+                deny: Vec::new(),
+            },
+        );
+
+        Self {
+            default_groups: vec!["default".to_owned()],
+            groups,
+        }
+    }
+}
+
+/// One configured permission group.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct PermissionGroupConfig {
+    /// Permission keys explicitly allowed by this group.
+    pub allow: Vec<String>,
+    /// Permission keys explicitly denied by this group.
+    pub deny: Vec<String>,
+}
+
+/// Resolved permission groups.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PermissionGroups {
+    default_groups: Vec<String>,
+    groups: BTreeMap<String, PermissionGroup>,
+}
+
+impl Default for PermissionGroups {
+    fn default() -> Self {
+        let mut op_permissions = PermissionSet::new();
+        op_permissions.allow(PermissionKey("*".to_owned()));
+
+        let mut groups = BTreeMap::new();
+        groups.insert(
+            "default".to_owned(),
+            PermissionGroup {
+                permissions: PermissionSet::new(),
+            },
+        );
+        groups.insert(
+            "op".to_owned(),
+            PermissionGroup {
+                permissions: op_permissions,
+            },
+        );
+
+        Self {
+            default_groups: vec!["default".to_owned()],
+            groups,
+        }
+    }
+}
+
+impl PermissionGroups {
+    /// Builds resolved permission groups from config.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a default group is missing or a permission key is invalid.
+    pub fn from_config(config: PermissionGroupsConfig) -> Result<Self, PermissionConfigError> {
+        for group in &config.default_groups {
+            if !config.groups.contains_key(group) {
+                return Err(PermissionConfigError::MissingDefaultGroup(group.clone()));
+            }
+        }
+
+        let mut groups = BTreeMap::new();
+        for (name, group) in config.groups {
+            let mut permissions = PermissionSet::new();
+            for permission in group.allow {
+                permissions.allow(PermissionKey::parse(permission).map_err(|source| {
+                    PermissionConfigError::InvalidPermissionKey {
+                        group: name.clone(),
+                        source,
+                    }
+                })?);
+            }
+            for permission in group.deny {
+                permissions.deny(PermissionKey::parse(permission).map_err(|source| {
+                    PermissionConfigError::InvalidPermissionKey {
+                        group: name.clone(),
+                        source,
+                    }
+                })?);
+            }
+            groups.insert(name, PermissionGroup { permissions });
+        }
+
+        Ok(Self {
+            default_groups: config.default_groups,
+            groups,
+        })
+    }
+
+    /// Returns the configured default group names.
+    #[must_use]
+    pub fn default_groups(&self) -> &[String] {
+        &self.default_groups
+    }
+
+    /// Returns configured groups keyed by name.
+    #[must_use]
+    pub const fn groups(&self) -> &BTreeMap<String, PermissionGroup> {
+        &self.groups
+    }
+
+    /// Returns whether a group exists.
+    #[must_use]
+    pub fn contains_group(&self, group: &str) -> bool {
+        self.groups.contains_key(group)
+    }
+
+    /// Builds an effective permission set from default groups, assigned groups,
+    /// and player-level overrides.
+    ///
+    /// Assigned groups that are not configured have no effect.
+    #[must_use]
+    pub fn effective_permissions(
+        &self,
+        assigned_groups: &[String],
+        player_permissions: &PermissionSet,
+    ) -> PermissionSet {
+        let mut effective = PermissionSet::new();
+
+        for group in &self.default_groups {
+            self.append_group_permissions(group, &mut effective);
+        }
+        for group in assigned_groups {
+            self.append_group_permissions(group, &mut effective);
+        }
+        for entry in player_permissions.entries() {
+            effective.push(entry.clone());
+        }
+
+        effective
+    }
+
+    fn append_group_permissions(&self, group: &str, effective: &mut PermissionSet) {
+        let Some(group) = self.groups.get(group) else {
+            return;
+        };
+
+        for entry in group.permissions.entries() {
+            effective.push(entry.clone());
+        }
+    }
+}
+
+/// One resolved permission group.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PermissionGroup {
+    permissions: PermissionSet,
+}
+
+impl PermissionGroup {
+    /// Returns this group's permission entries.
+    #[must_use]
+    pub const fn permissions(&self) -> &PermissionSet {
+        &self.permissions
+    }
+}
+
+/// Invalid permission group configuration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PermissionConfigError {
+    /// A default group name does not exist in the group map.
+    MissingDefaultGroup(String),
+    /// A group contains an invalid permission key.
+    InvalidPermissionKey {
+        /// Group containing the bad key.
+        group: String,
+        /// Parse error.
+        source: PermissionKeyError,
+    },
+}
+
+impl fmt::Display for PermissionConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingDefaultGroup(group) => {
+                write!(f, "default permission group '{group}' is not configured")
+            }
+            Self::InvalidPermissionKey { group, source } => {
+                write!(
+                    f,
+                    "permission group '{group}' contains invalid key: {source:?}"
+                )
+            }
+        }
+    }
+}
+
+impl Error for PermissionConfigError {}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        PermissionEntry, PermissionExpr, PermissionKey, PermissionKeyError, PermissionSet,
-        PermissionState,
+        PermissionEntry, PermissionExpr, PermissionGroups, PermissionGroupsConfig, PermissionKey,
+        PermissionKeyError, PermissionSet, PermissionState,
     };
 
     fn key(value: &str) -> PermissionKey {
@@ -383,5 +603,34 @@ mod tests {
 
         assert!(!permissions.allows(&(base.clone() & creative)));
         assert!(permissions.allows(&(base | survival)));
+    }
+
+    #[test]
+    fn default_group_config_contains_editable_op_group() {
+        let groups = PermissionGroups::from_config(PermissionGroupsConfig::default())
+            .expect("default groups config is valid");
+
+        assert!(groups.groups().contains_key("default"));
+        assert!(groups.groups().contains_key("op"));
+        assert_eq!(groups.default_groups(), ["default"]);
+        assert!(
+            groups
+                .groups()
+                .get("op")
+                .is_some_and(|group| group.permissions().allows_key(&key("steel.admin")))
+        );
+    }
+
+    #[test]
+    fn groups_combine_with_player_permissions() {
+        let config = PermissionGroupsConfig::default();
+        let groups = PermissionGroups::from_config(config).expect("groups config is valid");
+        let player_permissions =
+            PermissionSet::from_entries([PermissionEntry::deny(key("steel.stop"))]);
+
+        let effective = groups.effective_permissions(&["op".to_owned()], &player_permissions);
+
+        assert!(effective.allows_key(&key("steel.admin")));
+        assert!(!effective.allows_key(&key("steel.stop")));
     }
 }

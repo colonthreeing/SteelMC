@@ -27,14 +27,16 @@ use steel_utils::locks::{AsyncMutex, SyncMutex};
 const PLAYER_MAGIC: [u8; 4] = *b"STLP";
 const GLOBAL_MAGIC: [u8; 4] = *b"STLG";
 const PLAYER_STORAGE_VERSION: u16 = 6;
-const GLOBAL_STORAGE_VERSION: u16 = 2;
-const GLOBAL_PLAYER_DATA_VERSION: i32 = 2;
+const GLOBAL_STORAGE_VERSION: u16 = 3;
+const GLOBAL_PLAYER_DATA_VERSION: i32 = 3;
 
 /// Server-wide player data.
 #[derive(Debug, Clone)]
 pub struct GlobalPlayerData {
     /// Last active domain for reconnects.
     pub last_active_domain: String,
+    /// Assigned permission groups.
+    pub groups: Vec<String>,
     /// Player-level permission overrides.
     pub permissions: PermissionSet,
 }
@@ -111,6 +113,7 @@ struct SlotFile {
 struct GlobalPlayerDataFile {
     data_version: i32,
     last_active_domain: String,
+    groups: Vec<String>,
     permissions: Vec<PermissionEntryFile>,
 }
 
@@ -141,7 +144,8 @@ impl PlayerDataStorage {
             player.gameprofile.id,
             &GlobalPlayerData {
                 last_active_domain: domain,
-                permissions: player.permissions(),
+                groups: player.permission_groups(),
+                permissions: player.permission_overrides(),
             },
         )
         .await
@@ -326,6 +330,7 @@ impl GlobalPlayerDataFile {
         Self {
             data_version: GLOBAL_PLAYER_DATA_VERSION,
             last_active_domain: data.last_active_domain.clone(),
+            groups: data.groups.clone(),
             permissions: data
                 .permissions
                 .entries()
@@ -369,6 +374,7 @@ impl GlobalPlayerDataFile {
 
         Ok(GlobalPlayerData {
             last_active_domain: self.last_active_domain,
+            groups: self.groups,
             permissions,
         })
     }
@@ -695,6 +701,7 @@ mod tests {
         let file = GlobalPlayerDataFile {
             data_version: GLOBAL_PLAYER_DATA_VERSION,
             last_active_domain: "minecraft".to_owned(),
+            groups: Vec::new(),
             permissions: Vec::new(),
         };
 
@@ -712,6 +719,7 @@ mod tests {
     fn global_file_roundtrip_preserves_permissions() {
         let data = GlobalPlayerData {
             last_active_domain: "minecraft".to_owned(),
+            groups: vec!["op".to_owned()],
             permissions: PermissionSet::from_entries([
                 PermissionEntry::allow(
                     PermissionKey::parse("minecraft.command.give").expect("key parses"),
@@ -730,6 +738,7 @@ mod tests {
             .expect("global file should convert");
 
         assert_eq!(decoded.permissions, data.permissions);
+        assert_eq!(decoded.groups, data.groups);
     }
 
     #[test]
