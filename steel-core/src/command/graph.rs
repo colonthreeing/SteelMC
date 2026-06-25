@@ -110,6 +110,8 @@ pub enum CommandParseErrorKind {
     InvalidPlayer(String),
     /// A text component argument was invalid.
     InvalidComponent(String),
+    /// A time argument was invalid.
+    InvalidTime(String),
     /// A parser required live command context that was not available.
     MissingCommandContext(&'static str),
 }
@@ -128,6 +130,7 @@ impl CommandParseErrorKind {
             | Self::InvalidGameMode(_)
             | Self::InvalidPlayer(_)
             | Self::InvalidComponent(_)
+            | Self::InvalidTime(_)
             | Self::MissingCommandContext(_)
             | Self::UnclosedQuote
             | Self::InvalidEscape(_) => 6,

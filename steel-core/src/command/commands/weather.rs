@@ -1,90 +1,94 @@
 //! Handler for the "weather" command.
-use crate::command::arguments::time::TimeArgument;
-use crate::command::commands::{
-    CommandExecutor, CommandHandlerBuilder, CommandHandlerDyn, argument, literal,
-};
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
+use crate::command::graph::{
+    CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments, argument, literal,
+};
+use crate::command::parsers::TimeParser;
 use steel_utils::translations;
 
 /// Handler for the "weather" command.
 #[must_use]
-pub fn command_handler() -> impl CommandHandlerDyn {
-    CommandHandlerBuilder::new(
-        &["weather"],
-        "Changes the weather in the current world.",
-        "minecraft:command.weather",
-    )
-    .then(
-        literal("rain")
-            .then(argument("duration", TimeArgument).executes(WeatherCommandExecutor::Rain))
-            .executes(WeatherCommandExecutor::Rain),
-    )
-    .then(
-        literal("thunder")
-            .then(argument("duration", TimeArgument).executes(WeatherCommandExecutor::Thunder))
-            .executes(WeatherCommandExecutor::Thunder),
-    )
-    .then(
-        literal("clear")
-            .then(argument("duration", TimeArgument).executes(WeatherCommandExecutor::Clear))
-            .executes(WeatherCommandExecutor::Clear),
-    )
+pub fn command() -> CommandNodeBuilder {
+    literal("weather")
+        .then(weather_literal("rain", WeatherCommand::Rain))
+        .then(weather_literal("thunder", WeatherCommand::Thunder))
+        .then(weather_literal("clear", WeatherCommand::Clear))
 }
 
-enum WeatherCommandExecutor {
+fn weather_literal(name: &'static str, command: WeatherCommand) -> CommandNodeBuilder {
+    literal(name)
+        .executes(move |context: &mut CommandContext, _: &ParsedArguments| {
+            execute_weather(context, command, command.random_duration())
+        })
+        .then(argument("duration", TimeParser).executes(
+            move |context: &mut CommandContext, arguments: &ParsedArguments| {
+                let duration = arguments
+                    .get::<i32>("duration")
+                    .map_err(invalid_parsed_argument)?;
+
+                execute_weather(context, command, duration)
+            },
+        ))
+}
+
+#[derive(Clone, Copy)]
+enum WeatherCommand {
     Clear,
     Rain,
     Thunder,
 }
 
-impl CommandExecutor<()> for WeatherCommandExecutor {
-    fn execute(&self, _args: (), context: &mut CommandContext) -> Result<(), CommandError> {
-        let duration = match self {
-            WeatherCommandExecutor::Clear => rand::random_range(12_000..=180_000),
-            WeatherCommandExecutor::Rain => rand::random_range(12_000..=24_000),
-            WeatherCommandExecutor::Thunder => rand::random_range(3_600..=15_600),
-        };
-
-        self.execute(((), duration), context)
+impl WeatherCommand {
+    fn random_duration(self) -> i32 {
+        match self {
+            Self::Clear => rand::random_range(12_000..=180_000),
+            Self::Rain => rand::random_range(12_000..=24_000),
+            Self::Thunder => rand::random_range(3_600..=15_600),
+        }
     }
 }
 
-impl CommandExecutor<((), i32)> for WeatherCommandExecutor {
-    fn execute(&self, args: ((), i32), context: &mut CommandContext) -> Result<(), CommandError> {
-        let ((), duration) = args;
-        let world = &context.world;
-        let mut lock = world.level_data.write();
-        let (clear_weather_time, weather_time, raining, thundering) = match self {
-            WeatherCommandExecutor::Clear => (duration, 0, false, false),
-            WeatherCommandExecutor::Rain => (0, duration, true, false),
-            WeatherCommandExecutor::Thunder => (0, duration, true, true),
-        };
+fn execute_weather(
+    context: &mut CommandContext,
+    command: WeatherCommand,
+    duration: i32,
+) -> Result<CommandResult, CommandError> {
+    let world = &context.world;
+    let mut lock = world.level_data.write();
+    let (clear_weather_time, weather_time, raining, thundering) = match command {
+        WeatherCommand::Clear => (duration, 0, false, false),
+        WeatherCommand::Rain => (0, duration, true, false),
+        WeatherCommand::Thunder => (0, duration, true, true),
+    };
 
-        lock.set_clear_weather_time(clear_weather_time);
-        lock.set_rain_time(weather_time);
-        lock.set_thunder_time(weather_time);
-        lock.set_raining(raining);
-        lock.set_thundering(thundering);
+    lock.set_clear_weather_time(clear_weather_time);
+    lock.set_rain_time(weather_time);
+    lock.set_thunder_time(weather_time);
+    lock.set_raining(raining);
+    lock.set_thundering(thundering);
 
-        match self {
-            WeatherCommandExecutor::Clear => {
-                context
-                    .sender
-                    .send_message(&translations::COMMANDS_WEATHER_SET_CLEAR.msg().into());
-            }
-            WeatherCommandExecutor::Rain => {
-                context
-                    .sender
-                    .send_message(&translations::COMMANDS_WEATHER_SET_RAIN.msg().into());
-            }
-            WeatherCommandExecutor::Thunder => {
-                context
-                    .sender
-                    .send_message(&translations::COMMANDS_WEATHER_SET_THUNDER.msg().into());
-            }
+    match command {
+        WeatherCommand::Clear => {
+            context
+                .sender
+                .send_message(&translations::COMMANDS_WEATHER_SET_CLEAR.msg().into());
         }
-
-        Ok(())
+        WeatherCommand::Rain => {
+            context
+                .sender
+                .send_message(&translations::COMMANDS_WEATHER_SET_RAIN.msg().into());
+        }
+        WeatherCommand::Thunder => {
+            context
+                .sender
+                .send_message(&translations::COMMANDS_WEATHER_SET_THUNDER.msg().into());
+        }
     }
+
+    Ok(CommandResult::success())
+}
+
+fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
+    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }

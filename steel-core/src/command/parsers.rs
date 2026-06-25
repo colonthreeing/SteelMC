@@ -222,11 +222,79 @@ impl CommandArgumentParser for ComponentParser {
     }
 }
 
+/// Time argument parser.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TimeParser;
+
+impl CommandArgumentParser for TimeParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let value = reader.read_string(StringMode::SingleWord)?;
+
+        let (number, unit) = value
+            .find(char::is_alphabetic)
+            .map_or((value.as_str(), "t"), |pos| (&value[..pos], &value[pos..]));
+
+        let Ok(number) = number.parse::<f32>() else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidTime(value),
+                cursor,
+            ));
+        };
+
+        if number < 0.0 {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidTime(value),
+                cursor,
+            ));
+        }
+
+        let ticks = match unit {
+            "d" => number * 24_000.0,
+            "s" => number * 20.0,
+            "t" => number,
+            _ => {
+                return Err(CommandParseError::new(
+                    CommandParseErrorKind::InvalidTime(value),
+                    cursor,
+                ));
+            }
+        };
+
+        Ok(ParsedArgument::I32(ticks.round() as i32))
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        (ArgumentType::Time { min: 0 }, None)
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        _arguments: &ParsedArguments,
+        _context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        let has_unit = prefix.chars().any(char::is_alphabetic);
+        if prefix.is_empty() || has_unit {
+            return Vec::new();
+        }
+
+        ["d", "s", "t"]
+            .into_iter()
+            .map(|unit| SuggestionEntry::new(format!("{prefix}{unit}")))
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::command::{
         graph::{CommandArgumentParser, ParsedArgument, ParsedArguments},
-        parsers::{ComponentParser, GameModeParser, PlayerParser},
+        parsers::{ComponentParser, GameModeParser, PlayerParser, TimeParser},
         reader::CommandReader,
         requirement::{CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext},
     };
@@ -302,5 +370,26 @@ mod tests {
 
         assert!(matches!(value, ParsedArgument::Component(_)));
         assert_eq!(reader.remaining(), "");
+    }
+
+    #[test]
+    fn time_parser_accepts_units_and_rounds_to_ticks() {
+        let mut reader = CommandReader::new("1.5s");
+        let value = TimeParser
+            .parse(&mut reader, &TestContext)
+            .expect("time parses");
+
+        assert!(matches!(value, ParsedArgument::I32(30)));
+    }
+
+    #[test]
+    fn time_parser_suggests_units_for_numeric_prefix() {
+        let suggestions = TimeParser.suggest("10", &ParsedArguments::default(), &TestContext);
+        let texts = suggestions
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+
+        assert_eq!(texts, vec!["10d", "10s", "10t"]);
     }
 }

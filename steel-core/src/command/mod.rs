@@ -58,7 +58,7 @@ impl CommandDispatcher {
         dispatcher.register(commands::tick::command_handler());
         dispatcher.register(commands::time::command_handler());
         dispatcher.register(commands::tp::command_handler());
-        dispatcher.register(commands::weather::command_handler());
+        dispatcher.graph.register_root(commands::weather::command());
         dispatcher
             .graph
             .register_root(commands::difficulty::command());
@@ -231,6 +231,9 @@ impl CommandDispatcher {
             }
             CommandParseErrorKind::InvalidComponent(value) => {
                 format!("Invalid component '{value}'")
+            }
+            CommandParseErrorKind::InvalidTime(value) => {
+                format!("Invalid time '{value}'")
             }
             CommandParseErrorKind::MissingCommandContext(name) => {
                 format!("Missing command context '{name}'")
