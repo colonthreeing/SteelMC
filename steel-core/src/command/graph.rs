@@ -7,7 +7,7 @@ use steel_protocol::packets::game::{
     ArgumentStringTypeBehavior, ArgumentType, CommandNode as ProtocolCommandNode, CommandNodeInfo,
     SuggestionEntry, SuggestionType,
 };
-use steel_registry::{entity_type::EntityTypeRef, items::ItemRef};
+use steel_registry::{enchantment::EnchantmentRef, entity_type::EntityTypeRef, items::ItemRef};
 use steel_utils::BlockPos;
 use steel_utils::types::GameType;
 use text_components::TextComponent;
@@ -119,6 +119,8 @@ pub enum CommandParseErrorKind {
     InvalidEntityType(String),
     /// An item argument was invalid.
     InvalidItem(String),
+    /// An enchantment argument was invalid.
+    InvalidEnchantment(String),
     /// A domain argument was invalid.
     InvalidDomain(String),
     /// A world argument was invalid.
@@ -153,6 +155,7 @@ impl CommandParseErrorKind {
             | Self::InvalidEntity(_)
             | Self::InvalidEntityType(_)
             | Self::InvalidItem(_)
+            | Self::InvalidEnchantment(_)
             | Self::InvalidDomain(_)
             | Self::InvalidWorld(_)
             | Self::InvalidVec3(_)
@@ -194,6 +197,8 @@ pub enum ParsedArgument {
     EntityType(EntityTypeRef),
     /// Item argument.
     Item(ItemRef),
+    /// Enchantment argument.
+    Enchantment(EnchantmentRef),
     /// Loaded world argument.
     World(Arc<World>),
     /// 3D vector argument.
@@ -224,6 +229,7 @@ impl fmt::Debug for ParsedArgument {
                 .finish(),
             Self::EntityType(value) => f.debug_tuple("EntityType").field(&value.key).finish(),
             Self::Item(value) => f.debug_tuple("Item").field(&value.key).finish(),
+            Self::Enchantment(value) => f.debug_tuple("Enchantment").field(&value.key).finish(),
             Self::World(value) => f.debug_tuple("World").field(&value.key).finish(),
             Self::Vec3(value) => f.debug_tuple("Vec3").field(value).finish(),
             Self::BlockPos(value) => f.debug_tuple("BlockPos").field(value).finish(),
@@ -290,6 +296,7 @@ impl ParsedArgument {
             Self::Entities(_) => "entities",
             Self::EntityType(_) => "entity_type",
             Self::Item(_) => "item",
+            Self::Enchantment(_) => "enchantment",
             Self::World(_) => "world",
             Self::Vec3(_) => "vec3",
             Self::BlockPos(_) => "block_pos",
@@ -401,6 +408,17 @@ impl FromParsedArgument for ItemRef {
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
         let ParsedArgument::Item(value) = value else {
+            return None;
+        };
+        Some(*value)
+    }
+}
+
+impl FromParsedArgument for EnchantmentRef {
+    const TYPE_NAME: &'static str = "enchantment";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::Enchantment(value) = value else {
             return None;
         };
         Some(*value)

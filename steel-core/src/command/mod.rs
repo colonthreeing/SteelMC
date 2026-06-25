@@ -39,7 +39,7 @@ impl CommandDispatcher {
         let mut dispatcher = CommandDispatcher::new_empty();
         dispatcher.graph.register_root(commands::clear::command());
         dispatcher.graph.register_root(commands::domain::command());
-        dispatcher.register(commands::enchant::command_handler());
+        dispatcher.graph.register_root(commands::enchant::command());
         dispatcher.register(commands::execute::command_handler());
         dispatcher.graph.register_root(commands::fly::command());
         dispatcher
@@ -245,6 +245,9 @@ impl CommandDispatcher {
             }
             CommandParseErrorKind::InvalidItem(value) => {
                 format!("Invalid item '{value}'")
+            }
+            CommandParseErrorKind::InvalidEnchantment(value) => {
+                format!("Invalid enchantment '{value}'")
             }
             CommandParseErrorKind::InvalidDomain(value) => {
                 format!("Invalid domain '{value}'")

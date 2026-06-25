@@ -12,47 +12,55 @@ use text_components::{Modifier, TextComponent};
 
 use crate::{
     command::{
-        arguments::{
-            enchantment::EnchantmentArgument, integer::IntegerArgument, player::PlayerArgument,
-        },
-        commands::{CommandHandlerBuilder, CommandHandlerDyn, argument},
         context::CommandContext,
         error::CommandError,
+        graph::{
+            CommandNodeBuilder, CommandResult, IntegerParser, ParsedArgumentError, ParsedArguments,
+            argument, literal,
+        },
+        parsers::{EnchantmentParser, PlayerParser},
     },
     player::Player,
 };
 
 /// Handler for the `/enchant` command.
 #[must_use]
-pub fn command_handler() -> impl CommandHandlerDyn {
-    CommandHandlerBuilder::new(
-        &["enchant"],
-        "Enchants a player's selected item.",
-        "minecraft:command.enchant",
-    )
-    .then(
-        argument("targets", PlayerArgument::multiple()).then(
-            argument("enchantment", EnchantmentArgument)
-                .executes(
-                    |(((), targets), enchantment): (((), Vec<Arc<Player>>), EnchantmentRef),
-                     ctx: &mut CommandContext| {
-                        enchant(&targets, enchantment, 1, ctx)
-                    },
-                )
+pub fn command() -> CommandNodeBuilder {
+    literal("enchant").then(
+        argument("targets", PlayerParser::multiple()).then(
+            argument("enchantment", EnchantmentParser)
+                .executes(enchant_default_level)
                 .then(
-                    argument("level", IntegerArgument::bounded(Some(0), None)).executes(
-                        #[expect(clippy::type_complexity, reason = "command framework pattern")]
-                        |((((), targets), enchantment), level): (
-                            (((), Vec<Arc<Player>>), EnchantmentRef),
-                            i32,
-                        ),
-                         ctx: &mut CommandContext| {
-                            enchant(&targets, enchantment, level, ctx)
-                        },
-                    ),
+                    argument("level", IntegerParser::bounded(Some(0), None))
+                        .executes(enchant_with_level),
                 ),
         ),
     )
+}
+
+fn enchant_default_level(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let targets = targets(arguments)?;
+    let enchantment = enchantment(arguments)?;
+
+    enchant(&targets, enchantment, 1, context)?;
+
+    Ok(CommandResult::success())
+}
+
+fn enchant_with_level(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let targets = targets(arguments)?;
+    let enchantment = enchantment(arguments)?;
+    let level = level(arguments)?;
+
+    enchant(&targets, enchantment, level, context)?;
+
+    Ok(CommandResult::success())
 }
 
 fn enchant(
@@ -117,12 +125,14 @@ fn enchant(
 
     let enchantment_name = enchantment_display_name(enchantment, level);
 
-    if targets.len() == 1 {
+    if let Some(target) = targets.first()
+        && targets.len() == 1
+    {
         ctx.sender.send_message(
             &translations::COMMANDS_ENCHANT_SUCCESS_SINGLE
                 .message([
                     enchantment_name,
-                    TextComponent::from(targets[0].gameprofile.name.clone()),
+                    TextComponent::from(target.gameprofile.name.clone()),
                 ])
                 .into(),
         );
@@ -138,6 +148,28 @@ fn enchant(
     }
 
     Ok(())
+}
+
+fn targets(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
+    arguments
+        .get::<Vec<Arc<Player>>>("targets")
+        .map_err(invalid_parsed_argument)
+}
+
+fn enchantment(arguments: &ParsedArguments) -> Result<EnchantmentRef, CommandError> {
+    arguments
+        .get::<EnchantmentRef>("enchantment")
+        .map_err(invalid_parsed_argument)
+}
+
+fn level(arguments: &ParsedArguments) -> Result<i32, CommandError> {
+    arguments
+        .get::<i32>("level")
+        .map_err(invalid_parsed_argument)
+}
+
+fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
+    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }
 
 /// Builds a display name matching vanilla's `Enchantment.getFullname`:

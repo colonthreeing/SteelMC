@@ -456,6 +456,61 @@ impl CommandArgumentParser for ItemParser {
     }
 }
 
+/// Enchantment argument parser.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EnchantmentParser;
+
+impl CommandArgumentParser for EnchantmentParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let raw = reader.read_string(StringMode::SingleWord)?;
+        let key = raw.strip_prefix("minecraft:").unwrap_or(&raw).to_owned();
+
+        let Some(enchantment) = REGISTRY.enchantments.by_key(&Identifier::vanilla(key)) else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidEnchantment(raw),
+                cursor,
+            ));
+        };
+
+        Ok(ParsedArgument::Enchantment(enchantment))
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        (
+            ArgumentType::Resource {
+                identifier: "minecraft:enchantment",
+            },
+            Some(SuggestionType::AskServer),
+        )
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        _arguments: &ParsedArguments,
+        _context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        let stripped_prefix = prefix.strip_prefix("minecraft:").unwrap_or(prefix);
+        REGISTRY
+            .enchantments
+            .iter()
+            .map(|(_, enchantment)| SuggestionEntry::new(enchantment.key.to_string()))
+            .filter(|suggestion| {
+                suggestion
+                    .text
+                    .strip_prefix("minecraft:")
+                    .unwrap_or(&suggestion.text)
+                    .starts_with(stripped_prefix)
+            })
+            .collect()
+    }
+}
+
 /// Configured domain name argument parser.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DomainParser;
@@ -985,7 +1040,9 @@ impl CommandArgumentParser for TimeParser {
 #[cfg(test)]
 mod tests {
     use glam::DVec3;
-    use steel_registry::{test_support::init_test_registry, vanilla_entities, vanilla_items};
+    use steel_registry::{
+        test_support::init_test_registry, vanilla_enchantments, vanilla_entities, vanilla_items,
+    };
 
     use crate::{
         command::{
@@ -993,9 +1050,9 @@ mod tests {
                 CommandArgumentParser, CommandParseErrorKind, ParsedArgument, ParsedArguments,
             },
             parsers::{
-                BlockPosParser, ComponentParser, DomainParser, EntityParser, EntitySummonParser,
-                GameModeParser, ItemParser, PlayerParser, RotationParser, TimeParser, Vec3Parser,
-                WorldParser,
+                BlockPosParser, ComponentParser, DomainParser, EnchantmentParser, EntityParser,
+                EntitySummonParser, GameModeParser, ItemParser, PlayerParser, RotationParser,
+                TimeParser, Vec3Parser, WorldParser,
             },
             reader::CommandReader,
             requirement::{
@@ -1124,6 +1181,21 @@ mod tests {
         assert!(matches!(
             value,
             ParsedArgument::Item(item) if item == &vanilla_items::ITEMS.stone
+        ));
+    }
+
+    #[test]
+    fn enchantment_parser_resolves_default_namespace() {
+        init_test_registry();
+
+        let mut reader = CommandReader::new("sharpness");
+        let value = EnchantmentParser
+            .parse(&mut reader, &TestContext)
+            .expect("enchantment parses");
+
+        assert!(matches!(
+            value,
+            ParsedArgument::Enchantment(enchantment) if enchantment == &vanilla_enchantments::SHARPNESS
         ));
     }
 
