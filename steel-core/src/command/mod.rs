@@ -45,7 +45,9 @@ impl CommandDispatcher {
         dispatcher
             .graph
             .register_root(commands::gamemode::command());
-        dispatcher.register(commands::gamerule::command_handler());
+        dispatcher
+            .graph
+            .register_root(commands::gamerule::command());
         dispatcher.graph.register_root(commands::kill::command());
         dispatcher.graph.register_root(commands::list::command());
         dispatcher.graph.register_root(commands::locate::command());

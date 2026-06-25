@@ -1,12 +1,10 @@
 //! Handler for the "gamerule" command.
-use crate::command::arguments::bool::BoolArgument;
-use crate::command::arguments::integer::IntegerArgument;
-use crate::command::commands::{
-    CommandExecutor, CommandHandlerDyn, DynCommandHandler, argument, literal,
-};
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
-use std::borrow::Cow;
+use crate::command::graph::{
+    BoolParser, CommandNodeBuilder, CommandResult, IntegerParser, ParsedArgumentError,
+    ParsedArguments, argument, literal,
+};
 use steel_registry::REGISTRY;
 use steel_registry::game_rules::{GameRuleRef, GameRuleType, GameRuleValue};
 use steel_utils::translations;
@@ -14,106 +12,102 @@ use text_components::TextComponent;
 
 /// Returns the handler for the "gamerule" command.
 #[must_use]
-pub fn command_handler() -> impl CommandHandlerDyn {
-    let mut handler = DynCommandHandler::new(
-        &["gamerule"],
-        "Gets or sets a game rule value.",
-        "minecraft:command.gamerule",
-    );
+pub fn command() -> CommandNodeBuilder {
+    let mut command = literal("gamerule");
 
     for (_, rule) in REGISTRY.game_rules.iter() {
-        let Cow::Borrowed(rule_name) = &rule.key.path else {
-            unreachable!("registry identifiers are always static")
+        let rule_name = rule.key.path.to_string();
+        let rule_node = match rule.value_type {
+            GameRuleType::Bool => literal(rule_name)
+                .executes(move |context, _| query_rule(context, rule))
+                .then(
+                    argument("value", BoolParser).executes(move |context, arguments| {
+                        set_bool_rule(context, arguments, rule)
+                    }),
+                ),
+            GameRuleType::Int => literal(rule_name)
+                .executes(move |context, _| query_rule(context, rule))
+                .then(
+                    argument(
+                        "value",
+                        IntegerParser::bounded(rule.min_value, rule.max_value),
+                    )
+                    .executes(move |context, arguments| set_int_rule(context, arguments, rule)),
+                ),
         };
-
-        match rule.value_type {
-            GameRuleType::Bool => {
-                handler = handler.then(
-                    literal(rule_name)
-                        .executes(QueryExecutor(rule))
-                        .then(argument("value", BoolArgument).executes(SetBoolExecutor(rule))),
-                );
-            }
-            GameRuleType::Int => {
-                handler = handler.then(
-                    literal(rule_name).executes(QueryExecutor(rule)).then(
-                        argument(
-                            "value",
-                            IntegerArgument::bounded(rule.min_value, rule.max_value),
-                        )
-                        .executes(SetIntExecutor(rule)),
-                    ),
-                );
-            }
-        }
+        command = command.then(rule_node);
     }
 
-    handler
+    command
 }
 
-struct QueryExecutor(GameRuleRef);
+fn query_rule(
+    context: &mut CommandContext,
+    rule: GameRuleRef,
+) -> Result<CommandResult, CommandError> {
+    let world = &context.world;
+    let rule_name = rule.key.path.to_string();
+    let value = world.get_game_rule(rule);
 
-impl CommandExecutor<()> for QueryExecutor {
-    fn execute(&self, _args: (), context: &mut CommandContext) -> Result<(), CommandError> {
-        let world = &context.world;
-        let rule_name = self.0.key.path.to_string();
-        let value = world.get_game_rule(self.0);
+    context.sender.send_message(
+        &translations::COMMANDS_GAMERULE_QUERY
+            .message([
+                TextComponent::from(rule_name),
+                TextComponent::from(value.to_string()),
+            ])
+            .into(),
+    );
 
-        context.sender.send_message(
-            &translations::COMMANDS_GAMERULE_QUERY
-                .message([
-                    TextComponent::from(rule_name),
-                    TextComponent::from(value.to_string()),
-                ])
-                .into(),
-        );
-
-        Ok(())
-    }
+    Ok(CommandResult::success())
 }
 
-struct SetBoolExecutor(GameRuleRef);
+fn set_bool_rule(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    rule: GameRuleRef,
+) -> Result<CommandResult, CommandError> {
+    let value = arguments
+        .get::<bool>("value")
+        .map_err(invalid_parsed_argument)?;
 
-impl CommandExecutor<((), bool)> for SetBoolExecutor {
-    fn execute(&self, args: ((), bool), context: &mut CommandContext) -> Result<(), CommandError> {
-        let ((), value) = args;
-        let world = &context.world;
-        let rule_name = self.0.key.path.to_string();
-
-        world.set_game_rule(self.0, GameRuleValue::Bool(value));
-
-        context.sender.send_message(
-            &translations::COMMANDS_GAMERULE_SET
-                .message([
-                    TextComponent::from(rule_name),
-                    TextComponent::from(value.to_string()),
-                ])
-                .into(),
-        );
-
-        Ok(())
-    }
+    set_rule(context, rule, GameRuleValue::Bool(value), value.to_string())
 }
 
-struct SetIntExecutor(GameRuleRef);
+fn set_int_rule(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    rule: GameRuleRef,
+) -> Result<CommandResult, CommandError> {
+    let value = arguments
+        .get::<i32>("value")
+        .map_err(invalid_parsed_argument)?;
 
-impl CommandExecutor<((), i32)> for SetIntExecutor {
-    fn execute(&self, args: ((), i32), context: &mut CommandContext) -> Result<(), CommandError> {
-        let ((), value) = args;
-        let world = &context.world;
-        let rule_name = self.0.key.path.to_string();
+    set_rule(context, rule, GameRuleValue::Int(value), value.to_string())
+}
 
-        world.set_game_rule(self.0, GameRuleValue::Int(value));
+fn set_rule(
+    context: &mut CommandContext,
+    rule: GameRuleRef,
+    value: GameRuleValue,
+    displayed_value: String,
+) -> Result<CommandResult, CommandError> {
+    let world = &context.world;
+    let rule_name = rule.key.path.to_string();
 
-        context.sender.send_message(
-            &translations::COMMANDS_GAMERULE_SET
-                .message([
-                    TextComponent::from(rule_name),
-                    TextComponent::from(value.to_string()),
-                ])
-                .into(),
-        );
+    world.set_game_rule(rule, value);
 
-        Ok(())
-    }
+    context.sender.send_message(
+        &translations::COMMANDS_GAMERULE_SET
+            .message([
+                TextComponent::from(rule_name),
+                TextComponent::from(displayed_value),
+            ])
+            .into(),
+    );
+
+    Ok(CommandResult::success())
+}
+
+fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
+    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }
