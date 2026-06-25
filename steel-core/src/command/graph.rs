@@ -6,6 +6,7 @@ use steel_protocol::packets::game::{
     ArgumentStringTypeBehavior, ArgumentType, CommandNode as ProtocolCommandNode, CommandNodeInfo,
     SuggestionEntry, SuggestionType,
 };
+use steel_utils::BlockPos;
 use steel_utils::types::GameType;
 use text_components::TextComponent;
 
@@ -116,6 +117,10 @@ pub enum CommandParseErrorKind {
     InvalidDomain(String),
     /// A world argument was invalid.
     InvalidWorld(String),
+    /// A block position argument was invalid.
+    InvalidBlockPos(String),
+    /// A rotation argument was invalid.
+    InvalidRotation(String),
     /// A text component argument was invalid.
     InvalidComponent(String),
     /// A time argument was invalid.
@@ -140,6 +145,8 @@ impl CommandParseErrorKind {
             | Self::InvalidEntity(_)
             | Self::InvalidDomain(_)
             | Self::InvalidWorld(_)
+            | Self::InvalidBlockPos(_)
+            | Self::InvalidRotation(_)
             | Self::InvalidComponent(_)
             | Self::InvalidTime(_)
             | Self::MissingCommandContext(_)
@@ -174,6 +181,10 @@ pub enum ParsedArgument {
     Entities(Vec<Arc<dyn LivingEntity + Send + Sync>>),
     /// Loaded world argument.
     World(Arc<World>),
+    /// Block position argument.
+    BlockPos(BlockPos),
+    /// Rotation argument.
+    Rotation((f32, f32)),
     /// Text component argument.
     Component(TextComponent),
 }
@@ -195,6 +206,8 @@ impl fmt::Debug for ParsedArgument {
                 .field("count", &value.len())
                 .finish(),
             Self::World(value) => f.debug_tuple("World").field(&value.key).finish(),
+            Self::BlockPos(value) => f.debug_tuple("BlockPos").field(value).finish(),
+            Self::Rotation(value) => f.debug_tuple("Rotation").field(value).finish(),
             Self::Component(_) => f.debug_tuple("Component").finish(),
         }
     }
@@ -256,6 +269,8 @@ impl ParsedArgument {
             Self::Players(_) => "players",
             Self::Entities(_) => "entities",
             Self::World(_) => "world",
+            Self::BlockPos(_) => "block_pos",
+            Self::Rotation(_) => "rotation",
             Self::Component(_) => "component",
         }
     }
@@ -355,6 +370,28 @@ impl FromParsedArgument for Arc<World> {
             return None;
         };
         Some(Arc::clone(value))
+    }
+}
+
+impl FromParsedArgument for BlockPos {
+    const TYPE_NAME: &'static str = "block_pos";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::BlockPos(value) = value else {
+            return None;
+        };
+        Some(*value)
+    }
+}
+
+impl FromParsedArgument for (f32, f32) {
+    const TYPE_NAME: &'static str = "rotation";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::Rotation(value) = value else {
+            return None;
+        };
+        Some(*value)
     }
 }
 

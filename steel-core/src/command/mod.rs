@@ -51,7 +51,9 @@ impl CommandDispatcher {
         dispatcher.register(commands::locate::command_handler());
         dispatcher.register(commands::give::command_handler());
         dispatcher.graph.register_root(commands::seed::command());
-        dispatcher.register(commands::setworldspawn::command_handler());
+        dispatcher
+            .graph
+            .register_root(commands::setworldspawn::command());
         dispatcher.graph.register_root(commands::stop::command());
         dispatcher.register(commands::summon::command_handler());
         dispatcher.graph.register_root(commands::tellraw::command());
@@ -240,6 +242,12 @@ impl CommandDispatcher {
             }
             CommandParseErrorKind::InvalidWorld(value) => {
                 format!("Invalid world '{value}'")
+            }
+            CommandParseErrorKind::InvalidBlockPos(value) => {
+                format!("Invalid block position '{value}'")
+            }
+            CommandParseErrorKind::InvalidRotation(value) => {
+                format!("Invalid rotation '{value}'")
             }
             CommandParseErrorKind::InvalidComponent(value) => {
                 format!("Invalid component '{value}'")

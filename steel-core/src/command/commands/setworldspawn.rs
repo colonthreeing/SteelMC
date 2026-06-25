@@ -6,45 +6,64 @@ use text_components::TextComponent;
 use text_components::translation::TranslatedMessage;
 
 use crate::command::{
-    arguments::block_pos::BlockPosArgument,
-    arguments::rotation::RotationArgument,
-    commands::{CommandHandlerBuilder, CommandHandlerDyn, argument},
     context::CommandContext,
     error::CommandError,
+    graph::{
+        CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments, argument, literal,
+    },
+    parsers::{BlockPosParser, RotationParser},
 };
 use crate::level_data::RespawnData;
 use crate::world::World;
 use steel_utils::BlockPos;
 
-type PositionRotationArgs = (((), BlockPos), (f32, f32));
-
 /// Handler for the `setworldspawn` command.
 #[must_use]
-pub fn command_handler() -> impl CommandHandlerDyn {
-    CommandHandlerBuilder::new(
-        &["setworldspawn"],
-        "Sets the world spawn.",
-        "minecraft:command.setworldspawn",
+pub fn command() -> CommandNodeBuilder {
+    literal("setworldspawn").executes(set_default_spawn).then(
+        argument("pos", BlockPosParser)
+            .executes(set_spawn_at_pos)
+            .then(argument("rotation", RotationParser).executes(set_spawn_at_pos_rotation)),
     )
-    .executes(|(), context: &mut CommandContext| {
-        set_spawn(context, BlockPos::from(context.position), (0.0, 0.0))
-    })
-    .then(
-        argument("pos", BlockPosArgument)
-            .executes(|((), pos), context: &mut CommandContext| set_spawn(context, pos, (0.0, 0.0)))
-            .then(argument("rotation", RotationArgument).executes(
-                |(((), pos), rotation): PositionRotationArgs, context: &mut CommandContext| {
-                    set_spawn(context, pos, rotation)
-                },
-            )),
-    )
+}
+
+fn set_default_spawn(
+    context: &mut CommandContext,
+    _: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    set_spawn(context, BlockPos::from(context.position), (0.0, 0.0))
+}
+
+fn set_spawn_at_pos(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let pos = arguments
+        .get::<BlockPos>("pos")
+        .map_err(invalid_parsed_argument)?;
+
+    set_spawn(context, pos, (0.0, 0.0))
+}
+
+fn set_spawn_at_pos_rotation(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let pos = arguments
+        .get::<BlockPos>("pos")
+        .map_err(invalid_parsed_argument)?;
+    let rotation = arguments
+        .get::<(f32, f32)>("rotation")
+        .map_err(invalid_parsed_argument)?;
+
+    set_spawn(context, pos, rotation)
 }
 
 fn set_spawn(
     context: &mut CommandContext,
     pos: BlockPos,
     rotation: (f32, f32),
-) -> Result<(), CommandError> {
+) -> Result<CommandResult, CommandError> {
     if !World::is_in_spawnable_bounds(pos) {
         return Err(CommandError::CommandFailed(Box::new(translated(
             "argument.pos.outofbounds",
@@ -70,11 +89,15 @@ fn set_spawn(
         ],
     ));
 
-    Ok(())
+    Ok(CommandResult::success())
 }
 
 fn command_failed(error: String) -> CommandError {
     CommandError::CommandFailed(Box::new(TextComponent::from(error)))
+}
+
+fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
+    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }
 
 fn translated<const N: usize>(key: &'static str, args: [TextComponent; N]) -> TextComponent {

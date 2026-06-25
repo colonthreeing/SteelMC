@@ -8,7 +8,10 @@ use std::{
 use glam::DVec3;
 
 use crate::{
-    command::{context::CommandContext, sender::CommandSender},
+    command::{
+        context::{CommandContext, EntityAnchor},
+        sender::CommandSender,
+    },
     player::Player,
     server::Server,
     world::World,
@@ -54,6 +57,16 @@ pub trait CommandInputContext: RequirementContext {
     /// Returns the command source position when available.
     fn position(&self) -> Option<DVec3> {
         None
+    }
+
+    /// Returns the command source rotation when available.
+    fn rotation(&self) -> Option<(f32, f32)> {
+        None
+    }
+
+    /// Returns the entity anchor for local coordinates.
+    fn anchor(&self) -> EntityAnchor {
+        EntityAnchor::Feet
     }
 }
 
@@ -290,6 +303,14 @@ impl CommandInputContext for CommandContext {
 
     fn position(&self) -> Option<DVec3> {
         Some(self.position)
+    }
+
+    fn rotation(&self) -> Option<(f32, f32)> {
+        self.rotation
+    }
+
+    fn anchor(&self) -> EntityAnchor {
+        self.anchor
     }
 }
 
