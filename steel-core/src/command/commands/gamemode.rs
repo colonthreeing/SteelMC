@@ -2,11 +2,14 @@
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments, argument, literal,
+    CommandNodeBuilder, CommandPermissionArgument, CommandResult, ParsedArgumentError,
+    ParsedArguments, argument, literal,
 };
 use crate::command::parsers::{GameModeParser, PlayerParser};
+use crate::command::requirement::RequirementContext;
 use crate::command::{CommandRegistration, CommandRegistrationError};
 use crate::entity::Entity;
+use crate::permission::{PermissionExpr, PermissionKey, PermissionKeyError};
 use crate::player::Player;
 use std::sync::Arc;
 use steel_utils::translations;
@@ -27,6 +30,60 @@ pub fn command() -> CommandNodeBuilder {
             .executes(set_own_game_mode)
             .then(argument("targets", PlayerParser::multiple()).executes(set_target_game_mode)),
     )
+}
+
+pub(crate) fn can_use_client_gamemode_switcher(context: &dyn RequirementContext) -> bool {
+    context_allows_builtin_permission(context, client_gamemode_switcher_permission())
+}
+
+pub(crate) fn can_change_game_mode(context: &dyn RequirementContext, game_mode: GameType) -> bool {
+    context_allows_builtin_permission(context, change_game_mode_permission(game_mode))
+}
+
+fn context_allows_builtin_permission(
+    context: &dyn RequirementContext,
+    permission: Result<PermissionExpr, PermissionKeyError>,
+) -> bool {
+    match permission {
+        Ok(permission) => context.has_permission(&permission),
+        Err(error) => {
+            log::error!("invalid built-in gamemode permission key: {error}");
+            false
+        }
+    }
+}
+
+fn client_gamemode_switcher_permission() -> Result<PermissionExpr, PermissionKeyError> {
+    let root = gamemode_root_permission()?;
+    let game_modes = [
+        GameType::Survival,
+        GameType::Creative,
+        GameType::Adventure,
+        GameType::Spectator,
+    ];
+    let mode_permissions = game_modes
+        .into_iter()
+        .map(|game_mode| gamemode_value_permission(&root, game_mode).map(PermissionExpr::key))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(PermissionExpr::key(root) & PermissionExpr::Any(mode_permissions))
+}
+
+fn change_game_mode_permission(game_mode: GameType) -> Result<PermissionExpr, PermissionKeyError> {
+    let root = gamemode_root_permission()?;
+    let mode = gamemode_value_permission(&root, game_mode)?;
+    Ok(PermissionExpr::key(root) & PermissionExpr::key(mode))
+}
+
+fn gamemode_root_permission() -> Result<PermissionKey, PermissionKeyError> {
+    PermissionKey::parse("minecraft.command.gamemode")
+}
+
+fn gamemode_value_permission(
+    root: &PermissionKey,
+    game_mode: GameType,
+) -> Result<PermissionKey, PermissionKeyError> {
+    root.child(&game_mode.permission_segment()?)
 }
 
 fn set_own_game_mode(
@@ -96,5 +153,81 @@ pub fn get_gamemode_translation(gamemode: GameType) -> &'static Translation<0> {
         GameType::Creative => &translations::GAME_MODE_CREATIVE,
         GameType::Adventure => &translations::GAME_MODE_ADVENTURE,
         GameType::Spectator => &translations::GAME_MODE_SPECTATOR,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{can_change_game_mode, can_use_client_gamemode_switcher};
+    use crate::command::requirement::{CommandSourceKind, RequirementContext};
+    use crate::permission::{PermissionEntry, PermissionExpr, PermissionKey, PermissionSet};
+    use steel_utils::types::GameType;
+
+    struct TestContext {
+        permissions: PermissionSet,
+    }
+
+    impl RequirementContext for TestContext {
+        fn source_kind(&self) -> CommandSourceKind {
+            CommandSourceKind::Player
+        }
+
+        fn has_permission(&self, permission: &PermissionExpr) -> bool {
+            self.permissions.allows(permission)
+        }
+    }
+
+    fn context(permissions: impl IntoIterator<Item = &'static str>) -> TestContext {
+        TestContext {
+            permissions: PermissionSet::from_entries(permissions.into_iter().map(|permission| {
+                PermissionEntry::allow(
+                    PermissionKey::parse(permission).expect("test permission key parses"),
+                )
+            })),
+        }
+    }
+
+    #[test]
+    fn root_and_one_game_mode_allow_client_switcher() {
+        let context = context([
+            "minecraft.command.gamemode",
+            "minecraft.command.gamemode.creative",
+        ]);
+
+        assert!(can_use_client_gamemode_switcher(&context));
+    }
+
+    #[test]
+    fn global_wildcard_allows_client_switcher_and_game_mode_changes() {
+        let context = context(["*"]);
+
+        assert!(can_use_client_gamemode_switcher(&context));
+        assert!(can_change_game_mode(&context, GameType::Creative));
+        assert!(can_change_game_mode(&context, GameType::Survival));
+    }
+
+    #[test]
+    fn root_permission_alone_does_not_allow_client_switcher() {
+        let context = context(["minecraft.command.gamemode"]);
+
+        assert!(!can_use_client_gamemode_switcher(&context));
+    }
+
+    #[test]
+    fn game_mode_permission_without_root_does_not_allow_client_switcher() {
+        let context = context(["minecraft.command.gamemode.creative"]);
+
+        assert!(!can_use_client_gamemode_switcher(&context));
+    }
+
+    #[test]
+    fn client_game_mode_change_requires_requested_mode_permission() {
+        let context = context([
+            "minecraft.command.gamemode",
+            "minecraft.command.gamemode.creative",
+        ]);
+
+        assert!(can_change_game_mode(&context, GameType::Creative));
+        assert!(!can_change_game_mode(&context, GameType::Survival));
     }
 }

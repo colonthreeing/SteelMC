@@ -15,7 +15,7 @@ use crate::chunk::{
     chunk_access::ChunkStatus,
     chunk_request::{ChunkRequestHandle, ChunkRequestState, ChunkTicketKind},
 };
-use crate::command::CommandDispatcher;
+use crate::command::{CommandDispatcher, commands::gamemode};
 use crate::config::{ResolvedWorldConfig, RuntimeConfig, WorldsConfig};
 use crate::entity::{Entity, EntityBase, RemovalReason, SharedEntity, init_entities};
 
@@ -1651,14 +1651,7 @@ impl Server {
         player.send_difficulty();
         player.send_inventory_to_remote();
 
-        let commands = self.command_dispatcher.read().get_commands(player);
-        player.send_packet(commands);
-
-        // TODO: Set permissions level to match player's level.
-        player.send_packet(CEntityEvent {
-            entity_id: player.id(),
-            event: EntityStatus::PermissionLevelOwners,
-        });
+        self.resend_player_permission_context(player);
 
         self.send_ticking_state_to_player(player);
 
@@ -1667,6 +1660,26 @@ impl Server {
             data: player.game_mode().into(),
         });
     }
+
+    /// Resends client-visible permission affordances and the filtered command tree.
+    pub fn resend_player_permission_context(&self, player: &Player) {
+        player.send_packet(CEntityEvent {
+            entity_id: player.id(),
+            event: Self::client_permission_level(player),
+        });
+
+        let commands = self.command_dispatcher.read().get_commands(player);
+        player.send_packet(commands);
+    }
+
+    fn client_permission_level(player: &Player) -> EntityStatus {
+        if gamemode::can_use_client_gamemode_switcher(player) {
+            EntityStatus::PermissionLevelGamemasters
+        } else {
+            EntityStatus::PermissionLevelAll
+        }
+    }
+
     /// Queues a world change to be processed after the current tick.
     pub fn queue_world_change(&self, entity: SharedEntity, request: WorldChangeRequest) {
         self.pending_world_changes.lock().push((entity, request));
