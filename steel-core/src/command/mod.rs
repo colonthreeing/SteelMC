@@ -4,6 +4,7 @@ pub mod commands;
 pub mod context;
 pub mod error;
 pub mod graph;
+pub mod parsers;
 pub mod reader;
 pub mod requirement;
 pub mod sender;
@@ -41,7 +42,9 @@ impl CommandDispatcher {
         dispatcher.register(commands::enchant::command_handler());
         dispatcher.register(commands::execute::command_handler());
         dispatcher.register(commands::fly::command_handler());
-        dispatcher.register(commands::gamemode::command_handler());
+        dispatcher
+            .graph
+            .register_root(commands::gamemode::command());
         dispatcher.register(commands::gamerule::command_handler());
         dispatcher.register(commands::kill::command_handler());
         dispatcher.graph.register_root(commands::list::command());
@@ -210,6 +213,15 @@ impl CommandDispatcher {
             }
             CommandParseErrorKind::IntegerTooHigh { value, max } => {
                 format!("Integer {value} must be at most {max}")
+            }
+            CommandParseErrorKind::InvalidGameMode(value) => {
+                format!("Invalid game mode '{value}'")
+            }
+            CommandParseErrorKind::InvalidPlayer(value) => {
+                format!("Invalid player '{value}'")
+            }
+            CommandParseErrorKind::MissingCommandContext(name) => {
+                format!("Missing command context '{name}'")
             }
         };
 

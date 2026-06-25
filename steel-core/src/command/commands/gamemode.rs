@@ -1,11 +1,10 @@
 //! Handler for the "gamemode" command.
-use crate::command::arguments::gamemode::GameModeArgument;
-use crate::command::arguments::player::PlayerArgument;
-use crate::command::commands::{
-    CommandExecutor, CommandHandlerBuilder, CommandHandlerDyn, argument,
-};
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
+use crate::command::graph::{
+    CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments, argument, literal,
+};
+use crate::command::parsers::{GameModeParser, PlayerParser};
 use crate::entity::Entity;
 use crate::player::Player;
 use std::sync::Arc;
@@ -16,81 +15,71 @@ use text_components::translation::Translation;
 
 /// Handler for the "gamemode" command.
 #[must_use]
-pub fn command_handler() -> impl CommandHandlerDyn {
-    CommandHandlerBuilder::new(
-        &["gamemode"],
-        "Sets the game mode.",
-        "minecraft:command.gamemode",
-    )
-    .then(
-        argument("gamemode", GameModeArgument)
-            .executes(GameModeCommandExecutor)
-            .then(
-                argument("targets", PlayerArgument::multiple())
-                    .executes(GameModeTargetCommandExecutor),
-            ),
+pub fn command() -> CommandNodeBuilder {
+    literal("gamemode").then(
+        argument("gamemode", GameModeParser)
+            .executes(set_own_game_mode)
+            .then(argument("targets", PlayerParser::multiple()).executes(set_target_game_mode)),
     )
 }
 
-struct GameModeCommandExecutor;
+fn set_own_game_mode(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let gamemode = arguments
+        .get::<GameType>("gamemode")
+        .map_err(invalid_parsed_argument)?;
 
-impl CommandExecutor<((), GameType)> for GameModeCommandExecutor {
-    fn execute(
-        &self,
-        args: ((), GameType),
-        context: &mut CommandContext,
-    ) -> Result<(), CommandError> {
-        let ((), gamemode) = args;
+    let player = context
+        .sender
+        .get_player()
+        .ok_or(CommandError::InvalidRequirement)?;
 
-        // Get the player executing the command
-        let player = context
-            .sender
-            .get_player()
-            .ok_or(CommandError::InvalidRequirement)?;
+    player.set_game_mode(gamemode);
 
-        // Set the player's game mode
-        player.set_game_mode(gamemode);
-
-        Ok(())
-    }
+    Ok(CommandResult::success())
 }
 
-struct GameModeTargetCommandExecutor;
+fn set_target_game_mode(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let gamemode = arguments
+        .get::<GameType>("gamemode")
+        .map_err(invalid_parsed_argument)?;
+    let targets = arguments
+        .get::<Vec<Arc<Player>>>("targets")
+        .map_err(invalid_parsed_argument)?;
 
-impl CommandExecutor<(((), GameType), Vec<Arc<Player>>)> for GameModeTargetCommandExecutor {
-    fn execute(
-        &self,
-        args: (((), GameType), Vec<Arc<Player>>),
-        context: &mut CommandContext,
-    ) -> Result<(), CommandError> {
-        let (((), gamemode), targets) = args;
+    let mode_translation = get_gamemode_translation(gamemode);
 
-        let mode_translation = get_gamemode_translation(gamemode);
+    for target in targets {
+        if target.set_game_mode(gamemode) {
+            let sender_is_target = if let Some(sender_player) = context.sender.get_player() {
+                sender_player.id() == target.id()
+            } else {
+                false
+            };
 
-        for target in targets {
-            if target.set_game_mode(gamemode) {
-                // Send feedback to sender if sender is not the target
-                let sender_is_target = if let Some(sender_player) = context.sender.get_player() {
-                    sender_player.id() == target.id()
-                } else {
-                    false
-                };
-
-                if !sender_is_target {
-                    context.sender.send_message(
-                        &translations::COMMANDS_GAMEMODE_SUCCESS_OTHER
-                            .message([
-                                TextComponent::plain(target.gameprofile.name.clone()),
-                                TextComponent::from(mode_translation),
-                            ])
-                            .into(),
-                    );
-                }
+            if !sender_is_target {
+                context.sender.send_message(
+                    &translations::COMMANDS_GAMEMODE_SUCCESS_OTHER
+                        .message([
+                            TextComponent::plain(target.gameprofile.name.clone()),
+                            TextComponent::from(mode_translation),
+                        ])
+                        .into(),
+                );
             }
         }
-
-        Ok(())
     }
+
+    Ok(CommandResult::success())
+}
+
+fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
+    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }
 
 /// Retrieves the translation for a `GameType`

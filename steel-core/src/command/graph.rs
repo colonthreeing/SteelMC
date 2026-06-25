@@ -1,11 +1,12 @@
 //! Dynamic command graph, parsers, and structured parse results.
 
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use steel_protocol::packets::game::{
     ArgumentStringTypeBehavior, ArgumentType, CommandNode as ProtocolCommandNode, CommandNodeInfo,
     SuggestionEntry, SuggestionType,
 };
+use steel_utils::types::GameType;
 
 use crate::command::{
     context::CommandContext,
@@ -13,6 +14,7 @@ use crate::command::{
     reader::{CommandReader, StringMode},
     requirement::{CommandInputContext, Requirement, RequirementContext},
 };
+use crate::player::Player;
 
 /// Structured command parse error.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,6 +87,12 @@ pub enum CommandParseErrorKind {
         /// Maximum accepted value.
         max: i32,
     },
+    /// A game mode argument was invalid.
+    InvalidGameMode(String),
+    /// A player argument was invalid.
+    InvalidPlayer(String),
+    /// A parser required live command context that was not available.
+    MissingCommandContext(&'static str),
 }
 
 impl CommandParseErrorKind {
@@ -95,6 +103,9 @@ impl CommandParseErrorKind {
             | Self::InvalidInteger(_)
             | Self::IntegerTooLow { .. }
             | Self::IntegerTooHigh { .. }
+            | Self::InvalidGameMode(_)
+            | Self::InvalidPlayer(_)
+            | Self::MissingCommandContext(_)
             | Self::UnclosedQuote
             | Self::InvalidEscape(_) => 6,
             Self::ExpectedArgument => 5,
@@ -108,7 +119,7 @@ impl CommandParseErrorKind {
 }
 
 /// A parsed command argument value.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone)]
 pub enum ParsedArgument {
     /// Boolean argument.
     Bool(bool),
@@ -116,15 +127,34 @@ pub enum ParsedArgument {
     I32(i32),
     /// String-like argument.
     String(String),
+    /// Game mode argument.
+    GameMode(GameType),
+    /// Player target argument.
+    Players(Vec<Arc<Player>>),
+}
+
+impl fmt::Debug for ParsedArgument {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bool(value) => f.debug_tuple("Bool").field(value).finish(),
+            Self::I32(value) => f.debug_tuple("I32").field(value).finish(),
+            Self::String(value) => f.debug_tuple("String").field(value).finish(),
+            Self::GameMode(value) => f.debug_tuple("GameMode").field(value).finish(),
+            Self::Players(value) => f
+                .debug_struct("Players")
+                .field("count", &value.len())
+                .finish(),
+        }
+    }
 }
 
 /// Typed command argument storage.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct ParsedArguments {
     values: Vec<ParsedArgumentEntry>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 struct ParsedArgumentEntry {
     name: String,
     value: ParsedArgument,
@@ -169,6 +199,8 @@ impl ParsedArgument {
             Self::Bool(_) => "bool",
             Self::I32(_) => "i32",
             Self::String(_) => "string",
+            Self::GameMode(_) => "gamemode",
+            Self::Players(_) => "players",
         }
     }
 }
@@ -209,6 +241,28 @@ impl FromParsedArgument for String {
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
         let ParsedArgument::String(value) = value else {
+            return None;
+        };
+        Some(value.clone())
+    }
+}
+
+impl FromParsedArgument for GameType {
+    const TYPE_NAME: &'static str = "gamemode";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::GameMode(value) = value else {
+            return None;
+        };
+        Some(*value)
+    }
+}
+
+impl FromParsedArgument for Vec<Arc<Player>> {
+    const TYPE_NAME: &'static str = "players";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::Players(value) = value else {
             return None;
         };
         Some(value.clone())
