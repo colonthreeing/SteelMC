@@ -7,10 +7,13 @@ use text_components::TextComponent;
 
 use crate::{
     command::{
-        arguments::{integer::IntegerArgument, item::ItemStackArgument, player::PlayerArgument},
-        commands::{CommandExecutor, CommandHandlerBuilder, CommandHandlerDyn, argument},
         context::CommandContext,
         error::CommandError,
+        graph::{
+            CommandNodeBuilder, CommandResult, IntegerParser, ParsedArgumentError, ParsedArguments,
+            argument, literal,
+        },
+        parsers::{ItemParser, PlayerParser},
         sender::CommandSender,
     },
     inventory::container::Container,
@@ -19,156 +22,158 @@ use crate::{
 
 /// Handler for the "clear" command.
 #[must_use]
-pub fn command_handler() -> impl CommandHandlerDyn {
-    CommandHandlerBuilder::new(
-        &["clear"],
-        "Clears the Player's inventory.",
-        "minecraft:command.clear",
-    )
-    .executes(ClearNoArgumentExecutor)
-    .then(
-        argument("targets", PlayerArgument::multiple())
-            .executes(ClearMultipleArgumentExecutor)
+pub fn command() -> CommandNodeBuilder {
+    literal("clear").executes(clear_self).then(
+        argument("targets", PlayerParser::multiple())
+            .executes(clear_targets)
             .then(
-                argument("item", ItemStackArgument)
-                    .executes(ClearWithItemExecutor) // FIXME: item predicate instead
+                argument("item", ItemParser)
+                    .executes(clear_targets_with_item) // FIXME: item predicate instead
                     .then(
-                        argument("maxCount", IntegerArgument::bounded(Some(0), None))
-                            .executes(ClearWithMaxAmountExecutor),
+                        argument("maxCount", IntegerParser::bounded(Some(0), None))
+                            .executes(clear_targets_with_max_amount),
                     ),
             ),
     )
 }
 
-struct ClearNoArgumentExecutor;
+fn clear_self(
+    context: &mut CommandContext,
+    _: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let player = context
+        .sender
+        .get_player()
+        .ok_or(CommandError::InvalidRequirement)?;
 
-impl CommandExecutor<()> for ClearNoArgumentExecutor {
-    fn execute(&self, _args: (), context: &mut CommandContext) -> Result<(), CommandError> {
-        let player = context
-            .sender
-            .get_player()
-            .ok_or(CommandError::InvalidRequirement)?;
+    let count = { player.inventory.lock().clear_content() };
 
-        let count = { player.inventory.lock().clear_content() };
+    clear_messages(
+        &context.sender,
+        count,
+        1,
+        Some(player.gameprofile.name.clone()),
+        false,
+    );
 
-        clear_messages(
-            &context.sender,
-            count,
-            1,
-            Some(player.gameprofile.name.clone()),
-            false,
-        );
-
-        Ok(())
-    }
+    Ok(CommandResult::success())
 }
 
-struct ClearMultipleArgumentExecutor;
+fn clear_targets(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let targets = targets(arguments)?;
 
-impl CommandExecutor<((), Vec<Arc<Player>>)> for ClearMultipleArgumentExecutor {
-    fn execute(
-        &self,
-        args: ((), Vec<Arc<Player>>),
-        context: &mut CommandContext,
-    ) -> Result<(), CommandError> {
-        let ((), targets) = args;
+    let count = targets
+        .iter()
+        .map(|player| player.inventory.lock().clear_content())
+        .sum();
 
-        let count = targets
-            .iter()
-            .map(|player| player.inventory.lock().clear_content())
-            .sum();
+    clear_messages(
+        &context.sender,
+        count,
+        targets.len(),
+        targets.first().map(|it| it.gameprofile.name.clone()),
+        false,
+    );
 
-        clear_messages(
-            &context.sender,
-            count,
-            targets.len(),
-            targets.first().map(|it| it.gameprofile.name.clone()),
-            false,
-        );
-
-        Ok(())
-    }
+    Ok(CommandResult::success())
 }
 
-struct ClearWithItemExecutor;
+fn clear_targets_with_item(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let targets = targets(arguments)?;
+    let item = item(arguments)?;
+    let mut filter = |item_stack: &mut ItemStack| item_stack.is(item);
 
-impl CommandExecutor<(((), Vec<Arc<Player>>), ItemRef)> for ClearWithItemExecutor {
-    fn execute(
-        &self,
-        args: (((), Vec<Arc<Player>>), ItemRef),
-        context: &mut CommandContext,
-    ) -> Result<(), CommandError> {
-        let (((), targets), item) = args;
+    let count: i32 = targets
+        .iter()
+        .map(|it| it.inventory.lock().clear_content_matching(&mut filter))
+        .sum();
 
-        let mut filter = |item_stack: &mut ItemStack| item_stack.is(item);
+    clear_messages(
+        &context.sender,
+        count,
+        targets.len(),
+        targets.first().map(|it| it.gameprofile.name.clone()),
+        false,
+    );
 
-        let count: i32 = targets
-            .iter()
-            .map(|it| it.inventory.lock().clear_content_matching(&mut filter))
-            .sum();
-
-        clear_messages(
-            &context.sender,
-            count,
-            targets.len(),
-            targets.first().map(|it| it.gameprofile.name.clone()),
-            false,
-        );
-
-        Ok(())
-    }
+    Ok(CommandResult::success())
 }
 
-struct ClearWithMaxAmountExecutor;
+fn clear_targets_with_max_amount(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let targets = targets(arguments)?;
+    let item = item(arguments)?;
+    let max_amount = max_amount(arguments)?;
 
-impl CommandExecutor<((((), Vec<Arc<Player>>), ItemRef), i32)> for ClearWithMaxAmountExecutor {
-    fn execute(
-        &self,
-        args: ((((), Vec<Arc<Player>>), ItemRef), i32),
-        context: &mut CommandContext,
-    ) -> Result<(), CommandError> {
-        let ((((), targets), item), max_amount) = args;
-
-        let count: i32 = targets
-            .iter()
-            .map(|it| {
-                let mut current_amount = max_amount;
-                let mut inventory = it.inventory.lock();
-                let mut removed = 0;
-                for i in 0..inventory.get_container_size() {
-                    if max_amount > 0 && current_amount == 0 {
-                        break;
-                    }
-                    let current_item = inventory.get_item_mut(i);
-                    if current_item.is_empty() || !current_item.is(item) {
-                        continue;
-                    }
-                    if max_amount == 0 {
-                        removed += current_item.count();
-                    } else {
-                        let amount_to_remove = current_amount.min(current_item.count());
-                        current_amount -= amount_to_remove;
-                        removed += amount_to_remove;
-                        current_item.shrink(amount_to_remove);
-                    }
+    let count: i32 = targets
+        .iter()
+        .map(|it| {
+            let mut current_amount = max_amount;
+            let mut inventory = it.inventory.lock();
+            let mut removed = 0;
+            for i in 0..inventory.get_container_size() {
+                if max_amount > 0 && current_amount == 0 {
+                    break;
                 }
-                if max_amount > 0 && removed > 0 {
-                    inventory.set_changed();
+                let current_item = inventory.get_item_mut(i);
+                if current_item.is_empty() || !current_item.is(item) {
+                    continue;
                 }
-                removed
-            })
-            .sum();
+                if max_amount == 0 {
+                    removed += current_item.count();
+                } else {
+                    let amount_to_remove = current_amount.min(current_item.count());
+                    current_amount -= amount_to_remove;
+                    removed += amount_to_remove;
+                    current_item.shrink(amount_to_remove);
+                }
+            }
+            if max_amount > 0 && removed > 0 {
+                inventory.set_changed();
+            }
+            removed
+        })
+        .sum();
 
-        clear_messages(
-            &context.sender,
-            count,
-            targets.len(),
-            targets.first().map(|it| it.gameprofile.name.clone()),
-            max_amount == 0,
-        );
+    clear_messages(
+        &context.sender,
+        count,
+        targets.len(),
+        targets.first().map(|it| it.gameprofile.name.clone()),
+        max_amount == 0,
+    );
 
-        Ok(())
-    }
+    Ok(CommandResult::success())
+}
+
+fn targets(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
+    arguments
+        .get::<Vec<Arc<Player>>>("targets")
+        .map_err(invalid_parsed_argument)
+}
+
+fn item(arguments: &ParsedArguments) -> Result<ItemRef, CommandError> {
+    arguments
+        .get::<ItemRef>("item")
+        .map_err(invalid_parsed_argument)
+}
+
+fn max_amount(arguments: &ParsedArguments) -> Result<i32, CommandError> {
+    arguments
+        .get::<i32>("maxCount")
+        .map_err(invalid_parsed_argument)
+}
+
+fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
+    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }
 
 fn clear_messages(

@@ -37,7 +37,7 @@ impl CommandDispatcher {
     #[must_use]
     pub fn new() -> Self {
         let mut dispatcher = CommandDispatcher::new_empty();
-        dispatcher.register(commands::clear::command_handler());
+        dispatcher.graph.register_root(commands::clear::command());
         dispatcher.graph.register_root(commands::domain::command());
         dispatcher.register(commands::enchant::command_handler());
         dispatcher.register(commands::execute::command_handler());
@@ -242,6 +242,9 @@ impl CommandDispatcher {
             }
             CommandParseErrorKind::InvalidEntityType(value) => {
                 format!("Invalid entity type '{value}'")
+            }
+            CommandParseErrorKind::InvalidItem(value) => {
+                format!("Invalid item '{value}'")
             }
             CommandParseErrorKind::InvalidDomain(value) => {
                 format!("Invalid domain '{value}'")

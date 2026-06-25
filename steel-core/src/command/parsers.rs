@@ -406,6 +406,56 @@ fn can_summon_entity_type(entity_type: EntityTypeRef) -> bool {
             .is_some_and(|registry| registry.has_factory(entity_type))
 }
 
+/// Item stack argument parser.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ItemParser;
+
+impl CommandArgumentParser for ItemParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let raw = reader.read_string(StringMode::SingleWord)?;
+        let key = raw.strip_prefix("minecraft:").unwrap_or(&raw).to_owned();
+
+        let Some(item) = REGISTRY.items.by_key(&Identifier::vanilla(key)) else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidItem(raw),
+                cursor,
+            ));
+        };
+
+        Ok(ParsedArgument::Item(item))
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        (ArgumentType::ItemStack, Some(SuggestionType::AskServer))
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        _arguments: &ParsedArguments,
+        _context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        let stripped_prefix = prefix.strip_prefix("minecraft:").unwrap_or(prefix);
+        REGISTRY
+            .items
+            .iter()
+            .map(|(_, item)| SuggestionEntry::new(item.key.to_string()))
+            .filter(|suggestion| {
+                suggestion
+                    .text
+                    .strip_prefix("minecraft:")
+                    .unwrap_or(&suggestion.text)
+                    .starts_with(stripped_prefix)
+            })
+            .collect()
+    }
+}
+
 /// Configured domain name argument parser.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DomainParser;
@@ -935,7 +985,7 @@ impl CommandArgumentParser for TimeParser {
 #[cfg(test)]
 mod tests {
     use glam::DVec3;
-    use steel_registry::vanilla_entities;
+    use steel_registry::{test_support::init_test_registry, vanilla_entities, vanilla_items};
 
     use crate::{
         command::{
@@ -944,7 +994,8 @@ mod tests {
             },
             parsers::{
                 BlockPosParser, ComponentParser, DomainParser, EntityParser, EntitySummonParser,
-                GameModeParser, PlayerParser, RotationParser, TimeParser, Vec3Parser, WorldParser,
+                GameModeParser, ItemParser, PlayerParser, RotationParser, TimeParser, Vec3Parser,
+                WorldParser,
             },
             reader::CommandReader,
             requirement::{
@@ -1058,6 +1109,21 @@ mod tests {
         assert!(matches!(
             value,
             ParsedArgument::EntityType(entity_type) if entity_type == &vanilla_entities::PIG
+        ));
+    }
+
+    #[test]
+    fn item_parser_resolves_default_namespace() {
+        init_test_registry();
+
+        let mut reader = CommandReader::new("stone");
+        let value = ItemParser
+            .parse(&mut reader, &TestContext)
+            .expect("item parses");
+
+        assert!(matches!(
+            value,
+            ParsedArgument::Item(item) if item == &vanilla_items::ITEMS.stone
         ));
     }
 
