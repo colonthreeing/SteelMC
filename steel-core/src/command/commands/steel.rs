@@ -4,11 +4,12 @@ use std::sync::Arc;
 
 use text_components::TextComponent;
 
-use crate::command::arguments::player::PlayerArgument;
-use crate::command::arguments::world::WorldArgument;
-use crate::command::commands::{CommandHandlerBuilder, CommandHandlerDyn, argument, literal};
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
+use crate::command::graph::{
+    CommandNodeBuilder, CommandResult, ParsedArgumentError, ParsedArguments, argument, literal,
+};
+use crate::command::parsers::{PlayerParser, WorldParser};
 use crate::entity::SharedEntity;
 use crate::player::Player;
 use crate::portal::WorldChangeRequest;
@@ -16,66 +17,68 @@ use crate::world::World;
 
 /// Handler for the "steel" command group.
 #[must_use]
-pub fn command_handler() -> impl CommandHandlerDyn {
-    CommandHandlerBuilder::new(
-        &["steel"],
-        "Steel server commands.",
-        "minecraft:command.steel",
+pub fn command() -> CommandNodeBuilder {
+    literal("steel").then(
+        literal("tp").then(
+            argument("targets", PlayerParser::multiple())
+                .then(argument("world", WorldParser).executes(teleport_to_world)),
+        ),
     )
-    .then(
-        literal("tp").then(argument("targets", PlayerArgument::multiple()).then(
-            argument("world", WorldArgument).executes(
-                |(((), targets), world): (((), Vec<Arc<Player>>), Arc<World>),
-                 context: &mut CommandContext|
-                 -> Result<(), CommandError> {
-                    let dim_name = &world.key;
-                    let count = targets.len();
+}
 
-                    for target in &targets {
-                        if target.is_domain_switching() {
-                            return Err(CommandError::CommandFailed(Box::new(
-                                TextComponent::plain(format!(
-                                    "{} is already switching domains",
-                                    target.gameprofile.name
-                                )),
-                            )));
-                        }
-                    }
+fn teleport_to_world(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let targets = arguments
+        .get::<Vec<Arc<Player>>>("targets")
+        .map_err(invalid_parsed_argument)?;
+    let world = arguments
+        .get::<Arc<World>>("world")
+        .map_err(invalid_parsed_argument)?;
+    let dim_name = &world.key;
+    let count = targets.len();
 
-                    for target in &targets {
-                        let current_world = target.get_world();
-                        if current_world.domain() == world.domain() {
-                            context.server.queue_world_change(
-                                target.clone() as SharedEntity,
-                                WorldChangeRequest::WorldSpawn {
-                                    target_world: world.clone(),
-                                },
-                            );
-                        } else {
-                            context
-                                .server
-                                .queue_domain_switch_to_world(target.clone(), world.clone())
-                                .map_err(|error| {
-                                    CommandError::CommandFailed(Box::new(TextComponent::plain(
-                                        error,
-                                    )))
-                                })?;
-                        }
-                    }
+    for target in &targets {
+        if target.is_domain_switching() {
+            return Err(CommandError::CommandFailed(Box::new(TextComponent::plain(
+                format!("{} is already switching domains", target.gameprofile.name),
+            ))));
+        }
+    }
 
-                    let msg = if count == 1 {
-                        format!(
-                            "Teleporting {} to {}",
-                            targets[0].gameprofile.name, dim_name
-                        )
-                    } else {
-                        format!("Teleporting {count} players to {dim_name}")
-                    };
-                    context.sender.send_message(&TextComponent::from(msg));
-
-                    Ok(())
+    for target in &targets {
+        let current_world = target.get_world();
+        if current_world.domain() == world.domain() {
+            context.server.queue_world_change(
+                target.clone() as SharedEntity,
+                WorldChangeRequest::WorldSpawn {
+                    target_world: world.clone(),
                 },
-            ),
-        )),
-    )
+            );
+        } else {
+            context
+                .server
+                .queue_domain_switch_to_world(target.clone(), world.clone())
+                .map_err(|error| {
+                    CommandError::CommandFailed(Box::new(TextComponent::plain(error)))
+                })?;
+        }
+    }
+
+    let msg = if count == 1 {
+        format!(
+            "Teleporting {} to {}",
+            targets[0].gameprofile.name, dim_name
+        )
+    } else {
+        format!("Teleporting {count} players to {dim_name}")
+    };
+    context.sender.send_message(&TextComponent::from(msg));
+
+    Ok(CommandResult::success())
+}
+
+fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
+    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }

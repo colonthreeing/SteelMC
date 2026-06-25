@@ -16,6 +16,7 @@ use crate::command::{
     requirement::{CommandInputContext, Requirement, RequirementContext},
 };
 use crate::player::Player;
+use crate::world::World;
 
 /// Structured command parse error.
 #[derive(Clone, Debug, PartialEq)]
@@ -110,6 +111,8 @@ pub enum CommandParseErrorKind {
     InvalidPlayer(String),
     /// A domain argument was invalid.
     InvalidDomain(String),
+    /// A world argument was invalid.
+    InvalidWorld(String),
     /// A text component argument was invalid.
     InvalidComponent(String),
     /// A time argument was invalid.
@@ -132,6 +135,7 @@ impl CommandParseErrorKind {
             | Self::InvalidGameMode(_)
             | Self::InvalidPlayer(_)
             | Self::InvalidDomain(_)
+            | Self::InvalidWorld(_)
             | Self::InvalidComponent(_)
             | Self::InvalidTime(_)
             | Self::MissingCommandContext(_)
@@ -162,6 +166,8 @@ pub enum ParsedArgument {
     GameMode(GameType),
     /// Player target argument.
     Players(Vec<Arc<Player>>),
+    /// Loaded world argument.
+    World(Arc<World>),
     /// Text component argument.
     Component(TextComponent),
 }
@@ -178,6 +184,7 @@ impl fmt::Debug for ParsedArgument {
                 .debug_struct("Players")
                 .field("count", &value.len())
                 .finish(),
+            Self::World(value) => f.debug_tuple("World").field(&value.key).finish(),
             Self::Component(_) => f.debug_tuple("Component").finish(),
         }
     }
@@ -237,6 +244,7 @@ impl ParsedArgument {
             Self::String(_) => "string",
             Self::GameMode(_) => "gamemode",
             Self::Players(_) => "players",
+            Self::World(_) => "world",
             Self::Component(_) => "component",
         }
     }
@@ -314,6 +322,17 @@ impl FromParsedArgument for Vec<Arc<Player>> {
             return None;
         };
         Some(value.clone())
+    }
+}
+
+impl FromParsedArgument for Arc<World> {
+    const TYPE_NAME: &'static str = "world";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::World(value) = value else {
+            return None;
+        };
+        Some(Arc::clone(value))
     }
 }
 

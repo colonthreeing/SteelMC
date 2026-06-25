@@ -62,7 +62,7 @@ impl CommandDispatcher {
         dispatcher
             .graph
             .register_root(commands::difficulty::command());
-        dispatcher.register(commands::steel::command_handler());
+        dispatcher.graph.register_root(commands::steel::command());
         dispatcher.register(commands::xp::command_handler());
         dispatcher
     }
@@ -231,6 +231,9 @@ impl CommandDispatcher {
             }
             CommandParseErrorKind::InvalidDomain(value) => {
                 format!("Invalid domain '{value}'")
+            }
+            CommandParseErrorKind::InvalidWorld(value) => {
+                format!("Invalid world '{value}'")
             }
             CommandParseErrorKind::InvalidComponent(value) => {
                 format!("Invalid component '{value}'")

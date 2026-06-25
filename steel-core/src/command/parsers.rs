@@ -5,6 +5,7 @@ use std::sync::Arc;
 use rand::seq::IteratorRandom;
 use steel_protocol::packets::game::{ArgumentType, SuggestionEntry, SuggestionType};
 use steel_utils::{
+    Identifier,
     translations::{
         ARGUMENT_ENTITY_SELECTOR_ALL_PLAYERS, ARGUMENT_ENTITY_SELECTOR_NEAREST_PLAYER,
         ARGUMENT_ENTITY_SELECTOR_RANDOM_PLAYER, ARGUMENT_ENTITY_SELECTOR_SELF,
@@ -250,6 +251,86 @@ impl CommandArgumentParser for DomainParser {
     }
 }
 
+/// Loaded world argument parser.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WorldParser;
+
+impl CommandArgumentParser for WorldParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let raw = reader.read_string(StringMode::SingleWord)?;
+        let Some(server) = context.server() else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::MissingCommandContext("server"),
+                cursor,
+            ));
+        };
+
+        if let Some(world) = raw
+            .parse::<Identifier>()
+            .ok()
+            .and_then(|key| server.worlds.get(&key).cloned())
+        {
+            return Ok(ParsedArgument::World(world));
+        }
+
+        let Some(current_world) = context.world() else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::MissingCommandContext("world"),
+                cursor,
+            ));
+        };
+
+        let key = Identifier::new(current_world.domain().to_owned(), raw.clone());
+        let Some(world) = server.worlds.get(&key).cloned() else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidWorld(raw),
+                cursor,
+            ));
+        };
+
+        Ok(ParsedArgument::World(world))
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        (ArgumentType::Dimension, Some(SuggestionType::AskServer))
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        _arguments: &ParsedArguments,
+        context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        let (Some(server), Some(current_world)) = (context.server(), context.world()) else {
+            return Vec::new();
+        };
+        let current_domain = current_world.domain();
+
+        let mut suggestions = server
+            .worlds
+            .keys()
+            .map(|id| SuggestionEntry::new(id.to_string()))
+            .collect::<Vec<_>>();
+
+        for id in server.worlds.keys() {
+            if id.namespace.as_ref() == current_domain {
+                let path = id.path.as_ref();
+                if !suggestions.iter().any(|suggestion| suggestion.text == path) {
+                    suggestions.push(SuggestionEntry::new(path));
+                }
+            }
+        }
+
+        suggestions.retain(|suggestion| suggestion.text.starts_with(prefix));
+        suggestions
+    }
+}
+
 /// Text component argument parser.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ComponentParser;
@@ -349,7 +430,9 @@ impl CommandArgumentParser for TimeParser {
 mod tests {
     use crate::command::{
         graph::{CommandArgumentParser, CommandParseErrorKind, ParsedArgument, ParsedArguments},
-        parsers::{ComponentParser, DomainParser, GameModeParser, PlayerParser, TimeParser},
+        parsers::{
+            ComponentParser, DomainParser, GameModeParser, PlayerParser, TimeParser, WorldParser,
+        },
         reader::CommandReader,
         requirement::{CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext},
     };
@@ -422,6 +505,19 @@ mod tests {
         let error = DomainParser
             .parse(&mut reader, &TestContext)
             .expect_err("domain parser requires a server");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::MissingCommandContext("server")
+        ));
+    }
+
+    #[test]
+    fn world_parser_requires_live_server_context() {
+        let mut reader = CommandReader::new("minecraft:overworld");
+        let error = WorldParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("world parser requires a server");
 
         assert!(matches!(
             error.kind(),
