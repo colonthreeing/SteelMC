@@ -18,6 +18,7 @@ use super::player_data::{
 };
 use crate::chunk_saver::PersistentEntity;
 use crate::config::StorageSelection;
+use crate::permission::{PermissionEntry, PermissionKey, PermissionSet, PermissionState};
 use crate::player::Player;
 use steel_registry::item_stack::ItemStack;
 use steel_utils::Identifier;
@@ -26,14 +27,16 @@ use steel_utils::locks::{AsyncMutex, SyncMutex};
 const PLAYER_MAGIC: [u8; 4] = *b"STLP";
 const GLOBAL_MAGIC: [u8; 4] = *b"STLG";
 const PLAYER_STORAGE_VERSION: u16 = 6;
-const GLOBAL_STORAGE_VERSION: u16 = 1;
-const GLOBAL_PLAYER_DATA_VERSION: i32 = 1;
+const GLOBAL_STORAGE_VERSION: u16 = 2;
+const GLOBAL_PLAYER_DATA_VERSION: i32 = 2;
 
 /// Server-wide player data.
 #[derive(Debug, Clone)]
 pub struct GlobalPlayerData {
     /// Last active domain for reconnects.
     pub last_active_domain: String,
+    /// Player-level permission overrides.
+    pub permissions: PermissionSet,
 }
 
 /// Manages player data persistence.
@@ -108,6 +111,13 @@ struct SlotFile {
 struct GlobalPlayerDataFile {
     data_version: i32,
     last_active_domain: String,
+    permissions: Vec<PermissionEntryFile>,
+}
+
+#[derive(SchemaWrite, SchemaRead)]
+struct PermissionEntryFile {
+    key: String,
+    allow: bool,
 }
 
 impl PlayerDataStorage {
@@ -131,6 +141,7 @@ impl PlayerDataStorage {
             player.gameprofile.id,
             &GlobalPlayerData {
                 last_active_domain: domain,
+                permissions: player.permissions(),
             },
         )
         .await
@@ -253,16 +264,11 @@ impl FilePlayerDataStorage {
         }
         let bytes = fs::read(&path).await?;
         let file = decode_global_file(&bytes)?;
-        Ok(Some(GlobalPlayerData {
-            last_active_domain: file.last_active_domain,
-        }))
+        file.into_global_data().map(Some)
     }
 
     async fn save_global(&self, uuid: Uuid, data: &GlobalPlayerData) -> io::Result<()> {
-        let file = GlobalPlayerDataFile {
-            data_version: GLOBAL_PLAYER_DATA_VERSION,
-            last_active_domain: data.last_active_domain.clone(),
-        };
+        let file = GlobalPlayerDataFile::from_global_data(data);
         let bytes = encode_global_file(&file)?;
         self.write_atomic(&self.global_players_dir(), uuid, bytes)
             .await
@@ -312,6 +318,59 @@ impl FilePlayerDataStorage {
             fs::rename(&final_path, &backup_path).await?;
         }
         fs::rename(&temp_path, &final_path).await
+    }
+}
+
+impl GlobalPlayerDataFile {
+    fn from_global_data(data: &GlobalPlayerData) -> Self {
+        Self {
+            data_version: GLOBAL_PLAYER_DATA_VERSION,
+            last_active_domain: data.last_active_domain.clone(),
+            permissions: data
+                .permissions
+                .entries()
+                .iter()
+                .map(|entry| PermissionEntryFile {
+                    key: entry.key().as_str().to_owned(),
+                    allow: entry.state() == PermissionState::Allow,
+                })
+                .collect(),
+        }
+    }
+
+    fn into_global_data(self) -> io::Result<GlobalPlayerData> {
+        if self.data_version != GLOBAL_PLAYER_DATA_VERSION {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "unsupported global player data payload version {}",
+                    self.data_version
+                ),
+            ));
+        }
+
+        let mut permissions = PermissionSet::new();
+        for entry in self.permissions {
+            let key = PermissionKey::parse(entry.key).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("invalid permission key in global player data: {error:?}"),
+                )
+            })?;
+            permissions.push(PermissionEntry::new(
+                key,
+                if entry.allow {
+                    PermissionState::Allow
+                } else {
+                    PermissionState::Deny
+                },
+            ));
+        }
+
+        Ok(GlobalPlayerData {
+            last_active_domain: self.last_active_domain,
+            permissions,
+        })
     }
 }
 
@@ -636,6 +695,7 @@ mod tests {
         let file = GlobalPlayerDataFile {
             data_version: GLOBAL_PLAYER_DATA_VERSION,
             last_active_domain: "minecraft".to_owned(),
+            permissions: Vec::new(),
         };
 
         let encoded = encode_global_file(&file).expect("global file should encode");
@@ -646,6 +706,30 @@ mod tests {
             GLOBAL_STORAGE_VERSION
         );
         assert_eq!(decoded.last_active_domain, "minecraft");
+    }
+
+    #[test]
+    fn global_file_roundtrip_preserves_permissions() {
+        let data = GlobalPlayerData {
+            last_active_domain: "minecraft".to_owned(),
+            permissions: PermissionSet::from_entries([
+                PermissionEntry::allow(
+                    PermissionKey::parse("minecraft.command.give").expect("key parses"),
+                ),
+                PermissionEntry::deny(
+                    PermissionKey::parse("minecraft.command.stop").expect("key parses"),
+                ),
+            ]),
+        };
+
+        let file = GlobalPlayerDataFile::from_global_data(&data);
+        let encoded = encode_global_file(&file).expect("global file should encode");
+        let decoded = decode_global_file(&encoded).expect("global file should decode");
+        let decoded = decoded
+            .into_global_data()
+            .expect("global file should convert");
+
+        assert_eq!(decoded.permissions, data.permissions);
     }
 
     #[test]

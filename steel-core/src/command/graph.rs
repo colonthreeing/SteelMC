@@ -1703,10 +1703,12 @@ mod tests {
             RequirementContext,
         },
     };
+    use crate::permission::{PermissionEntry, PermissionSet};
+    use steel_protocol::packets::game::CommandNode as ProtocolCommandNode;
 
     struct TestContext {
         source_kind: CommandSourceKind,
-        permissions: Vec<PermissionKey>,
+        permissions: PermissionSet,
     }
 
     impl RequirementContext for TestContext {
@@ -1715,15 +1717,7 @@ mod tests {
         }
 
         fn has_permission(&self, permission: &PermissionExpr) -> bool {
-            match permission {
-                PermissionExpr::Key(key) => self.permissions.iter().any(|perm| perm.matches(key)),
-                PermissionExpr::All(children) => {
-                    children.iter().all(|child| self.has_permission(child))
-                }
-                PermissionExpr::Any(children) => {
-                    children.iter().any(|child| self.has_permission(child))
-                }
-            }
+            self.permissions.allows(permission)
         }
     }
 
@@ -1732,7 +1726,14 @@ mod tests {
     fn player_context() -> TestContext {
         TestContext {
             source_kind: CommandSourceKind::Player,
-            permissions: Vec::new(),
+            permissions: PermissionSet::default(),
+        }
+    }
+
+    fn player_context_with(permission: PermissionKey) -> TestContext {
+        TestContext {
+            source_kind: CommandSourceKind::Player,
+            permissions: PermissionSet::from_entries([PermissionEntry::allow(permission)]),
         }
     }
 
@@ -1903,6 +1904,37 @@ mod tests {
     }
 
     #[test]
+    fn usage_hides_unusable_roots() {
+        let graph =
+            CommandGraph::new()
+                .with_root(literal("open"))
+                .with_root(literal("admin").requires(Requirement::Permission(
+                    PermissionExpr::key(PermissionKey::parse("steel.admin").expect("key parses")),
+                )));
+        let mut nodes = vec![ProtocolCommandNode::new_root()];
+        let mut root_children = Vec::new();
+
+        graph.usage(&mut nodes, &mut root_children, &player_context());
+
+        assert_eq!(
+            literal_names(&nodes, &root_children),
+            vec!["open".to_owned()]
+        );
+
+        let allowed_context =
+            player_context_with(PermissionKey::parse("steel.admin").expect("key parses"));
+        let mut nodes = vec![ProtocolCommandNode::new_root()];
+        let mut root_children = Vec::new();
+
+        graph.usage(&mut nodes, &mut root_children, &allowed_context);
+
+        assert_eq!(
+            literal_names(&nodes, &root_children),
+            vec!["open".to_owned(), "admin".to_owned()]
+        );
+    }
+
+    #[test]
     fn root_suggestions_include_partial_literals() {
         let graph = CommandGraph::new().with_root(literal("list"));
 
@@ -1973,6 +2005,19 @@ mod tests {
         assert_eq!(suggestion_texts(&result), vec!["false".to_owned()]);
         assert_eq!(result.start, 5);
         assert_eq!(result.length, 1);
+    }
+
+    fn literal_names(nodes: &[ProtocolCommandNode], indexes: &[i32]) -> Vec<String> {
+        indexes
+            .iter()
+            .filter_map(|index| {
+                let index = usize::try_from(*index).ok()?;
+                match &nodes[index] {
+                    ProtocolCommandNode::Literal { name, .. } => Some(name.to_string()),
+                    ProtocolCommandNode::Root { .. } | ProtocolCommandNode::Argument { .. } => None,
+                }
+            })
+            .collect()
     }
 
     #[test]

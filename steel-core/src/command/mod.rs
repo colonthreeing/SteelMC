@@ -16,7 +16,7 @@ use crate::command::error::CommandError;
 use crate::command::graph::{
     CommandGraph, CommandParseError, CommandParseErrorKind, CommandResult,
 };
-use crate::command::requirement::{CommandSourceKind, PermissionExpr, RequirementContext};
+use crate::command::requirement::RequirementContext;
 use crate::command::sender::CommandSender;
 use crate::player::Player;
 use crate::server::Server;
@@ -230,16 +230,14 @@ impl CommandDispatcher {
         ))))
     }
 
-    /// Generates the `CCommands` packet, containing the usage information of every registered commands.
+    /// Generates the `CCommands` packet visible to `context`.
     #[must_use]
-    pub fn get_commands(&self) -> CCommands {
+    pub fn get_commands(&self, context: &dyn RequirementContext) -> CCommands {
         let mut nodes = Vec::with_capacity(1);
         nodes.push(CommandNode::new_root());
 
         let mut root_children = Vec::new();
-        let command_tree_context = CommandTreeRequirementContext;
-        self.graph
-            .usage(&mut nodes, &mut root_children, &command_tree_context);
+        self.graph.usage(&mut nodes, &mut root_children, context);
         nodes[0].set_children(root_children);
 
         CCommands {
@@ -275,17 +273,5 @@ impl CommandDispatcher {
             .map_or((Vec::new(), 0, 0), |result| {
                 (result.suggestions, result.start, result.length)
             })
-    }
-}
-
-struct CommandTreeRequirementContext;
-
-impl RequirementContext for CommandTreeRequirementContext {
-    fn source_kind(&self) -> CommandSourceKind {
-        CommandSourceKind::Player
-    }
-
-    fn has_permission(&self, _permission: &PermissionExpr) -> bool {
-        false
     }
 }

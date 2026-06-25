@@ -100,6 +100,7 @@ use crate::entity::{
 use crate::fluid::get_fluid_state;
 use crate::inventory::{SyncPlayerInv, equipment::EquipmentSlot};
 use crate::level_data::RespawnData;
+use crate::permission::{PermissionExpr, PermissionSet};
 use crate::physics::MoveResult;
 use crate::player::experience::Experience;
 use crate::player::player_data::PersistentRootVehicle;
@@ -272,6 +273,9 @@ pub struct Player {
 
     /// The Player's Experience
     pub experience: SyncMutex<Experience>,
+
+    /// Effective player-level permissions.
+    permissions: SyncMutex<PermissionSet>,
 
     /// Monotonic counter bumped on world teleport/reset. The chunk sending tick
     /// snapshots this before encoding and compares after to detect stale batches.
@@ -501,6 +505,7 @@ impl Player {
             food_data: SyncMutex::new(FoodData::new()),
             health_sync: SyncMutex::new(HealthSyncState::new()),
             experience: SyncMutex::new(Experience::default()),
+            permissions: SyncMutex::new(PermissionSet::default()),
             chunk_send_epoch: SyncMutex::new(0),
             pending_root_vehicle: SyncMutex::new(None),
         }
@@ -1048,6 +1053,23 @@ impl Player {
         self.server
             .upgrade()
             .expect("player must not outlive server")
+    }
+
+    /// Replaces the player's effective permission set.
+    pub fn set_permissions(&self, permissions: PermissionSet) {
+        *self.permissions.lock() = permissions;
+    }
+
+    /// Returns a snapshot of the player's effective permission set.
+    #[must_use]
+    pub fn permissions(&self) -> PermissionSet {
+        self.permissions.lock().clone()
+    }
+
+    /// Returns whether this player satisfies `permission`.
+    #[must_use]
+    pub fn has_permission(&self, permission: &PermissionExpr) -> bool {
+        self.permissions.lock().allows(permission)
     }
 
     /// Sets the world the player is in.

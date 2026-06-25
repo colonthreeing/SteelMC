@@ -138,6 +138,7 @@ impl World {
                 uuid,
                 &GlobalPlayerData {
                     last_active_domain: domain,
+                    permissions: player.permissions(),
                 },
             )
             .await

@@ -21,6 +21,7 @@ use crate::entity::{Entity, EntityBase, RemovalReason, SharedEntity, init_entiti
 
 use crate::chunk_saver::{ChunkStorage, registry::WorldStorageRegistry};
 use crate::level_data::{LevelDataManager, RespawnData, WorldGenerationSettings};
+use crate::permission::PermissionSet;
 use crate::player::chunk_sender::{ChunkSender, EncodedChunk};
 use crate::player::connection::NetworkConnection;
 use crate::player::player_data::{PersistentPlayerData, PersistentRootVehicle};
@@ -606,6 +607,7 @@ impl Server {
             .await
         {
             Ok(Some(global)) if self.worlds.has_domain(&global.last_active_domain) => {
+                player.set_permissions(global.permissions);
                 Ok(global.last_active_domain)
             }
             Ok(Some(global)) => {
@@ -614,9 +616,13 @@ impl Server {
                     player.gameprofile.name,
                     global.last_active_domain
                 );
+                player.set_permissions(global.permissions);
                 Ok(self.worlds.default_domain().to_owned())
             }
-            Ok(None) => Ok(self.worlds.default_domain().to_owned()),
+            Ok(None) => {
+                player.set_permissions(PermissionSet::default());
+                Ok(self.worlds.default_domain().to_owned())
+            }
             Err(e) => Err(format!("failed to load global player data: {e}")),
         }
     }
@@ -1445,6 +1451,7 @@ impl Server {
                 player.gameprofile.id,
                 &GlobalPlayerData {
                     last_active_domain: target_domain,
+                    permissions: player.permissions(),
                 },
             )
             .await
@@ -1602,7 +1609,7 @@ impl Server {
         player.send_difficulty();
         player.send_inventory_to_remote();
 
-        let commands = self.command_dispatcher.read().get_commands();
+        let commands = self.command_dispatcher.read().get_commands(player);
         player.send_packet(commands);
 
         // TODO: Set permissions level to match player's level.
