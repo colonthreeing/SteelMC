@@ -49,7 +49,7 @@ impl CommandDispatcher {
         dispatcher.graph.register_root(commands::kill::command());
         dispatcher.graph.register_root(commands::list::command());
         dispatcher.register(commands::locate::command_handler());
-        dispatcher.register(commands::give::command_handler());
+        dispatcher.graph.register_root(commands::give::command());
         dispatcher.graph.register_root(commands::seed::command());
         dispatcher
             .graph

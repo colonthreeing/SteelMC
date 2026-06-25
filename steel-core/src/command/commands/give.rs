@@ -7,51 +7,60 @@ use text_components::{Modifier, TextComponent, interactivity::HoverEvent};
 
 use crate::{
     command::{
-        arguments::{integer::IntegerArgument, item::ItemStackArgument, player::PlayerArgument},
-        commands::{CommandHandlerBuilder, CommandHandlerDyn, argument},
         context::CommandContext,
+        error::CommandError,
+        graph::{
+            CommandNodeBuilder, CommandResult, IntegerParser, ParsedArgumentError, ParsedArguments,
+            argument, literal,
+        },
+        parsers::{ItemParser, PlayerParser},
         sender::CommandSender,
     },
     inventory::container::Container,
     player::Player,
 };
 
-type GiveWithCountArgs = ((((), Vec<Arc<Player>>), ItemRef), i32);
-
 /// Handler for the "give" command.
 #[must_use]
-pub fn command_handler() -> impl CommandHandlerDyn {
-    CommandHandlerBuilder::new(
-        &["give"],
-        "Give players the specified item with a specific amount.",
-        "minecraft:command.give",
-    )
-    .then(
-        argument("targets", PlayerArgument::multiple()).then(
-            argument("item", ItemStackArgument) // FIXME: should be item predicate instead to also handle tags and components
-                .executes(
-                    |(((), targets), item): (((), Vec<Arc<Player>>), ItemRef),
-                     ctx: &mut CommandContext| {
-                        give(&targets, item, 1, &ctx.sender);
-
-                        Ok(())
-                    },
-                )
+pub fn command() -> CommandNodeBuilder {
+    literal("give").then(
+        argument("targets", PlayerParser::multiple()).then(
+            argument("item", ItemParser) // FIXME: should be item predicate instead to also handle tags and components
+                .executes(give_default_count)
                 .then(
-                    argument("count", IntegerArgument::bounded(Some(1), None)).executes(
-                        |((((), targets), item), input_count): GiveWithCountArgs,
-                         ctx: &mut CommandContext| {
-                            give(&targets, item, input_count, &ctx.sender);
-
-                            Ok(())
-                        },
-                    ),
+                    argument("count", IntegerParser::bounded(Some(1), None))
+                        .executes(give_with_count),
                 ),
         ),
     )
 }
 
-fn give(targets: &Vec<Arc<Player>>, item: ItemRef, count: i32, sender: &CommandSender) {
+fn give_default_count(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let targets = targets(arguments)?;
+    let item = item(arguments)?;
+
+    give(&targets, item, 1, &context.sender);
+
+    Ok(CommandResult::success())
+}
+
+fn give_with_count(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let targets = targets(arguments)?;
+    let item = item(arguments)?;
+    let count = count(arguments)?;
+
+    give(&targets, item, count, &context.sender);
+
+    Ok(CommandResult::success())
+}
+
+fn give(targets: &[Arc<Player>], item: ItemRef, count: i32, sender: &CommandSender) {
     let max_stack_size = item
         .components
         .get(vanilla_components::MAX_STACK_SIZE)
@@ -89,7 +98,9 @@ fn give(targets: &Vec<Arc<Player>>, item: ItemRef, count: i32, sender: &CommandS
         }
     }
 
-    if targets.len() == 1 {
+    if let Some(target) = targets.first()
+        && targets.len() == 1
+    {
         sender.send_message(
             &translations::COMMANDS_GIVE_SUCCESS_SINGLE
                 .message([
@@ -98,14 +109,7 @@ fn give(targets: &Vec<Arc<Player>>, item: ItemRef, count: i32, sender: &CommandS
                         // FIXME: display name
                         HoverEvent::show_item(item.key.path.clone(), None, None::<&str>),
                     ),
-                    TextComponent::from(
-                        targets
-                            .first()
-                            .expect("targets cannot be empty.")
-                            .gameprofile
-                            .name
-                            .clone(),
-                    ),
+                    TextComponent::from(target.gameprofile.name.clone()),
                 ])
                 .into(),
         );
@@ -123,4 +127,26 @@ fn give(targets: &Vec<Arc<Player>>, item: ItemRef, count: i32, sender: &CommandS
                 .into(),
         );
     }
+}
+
+fn targets(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
+    arguments
+        .get::<Vec<Arc<Player>>>("targets")
+        .map_err(invalid_parsed_argument)
+}
+
+fn item(arguments: &ParsedArguments) -> Result<ItemRef, CommandError> {
+    arguments
+        .get::<ItemRef>("item")
+        .map_err(invalid_parsed_argument)
+}
+
+fn count(arguments: &ParsedArguments) -> Result<i32, CommandError> {
+    arguments
+        .get::<i32>("count")
+        .map_err(invalid_parsed_argument)
+}
+
+fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
+    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }
