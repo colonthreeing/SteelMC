@@ -486,13 +486,27 @@ mod tests {
     }
 
     fn player_context_with_all<const N: usize>(permissions: [&str; N]) -> TestContext {
+        player_context_with_entries(permissions.map(|permission| {
+            PermissionEntry::allow(
+                PermissionKey::parse(permission).expect("test permission key parses"),
+            )
+        }))
+    }
+
+    fn player_context_with_entries<const N: usize>(entries: [PermissionEntry; N]) -> TestContext {
         TestContext {
-            permissions: PermissionSet::from_entries(permissions.map(|permission| {
-                PermissionEntry::allow(
-                    PermissionKey::parse(permission).expect("test permission key parses"),
-                )
-            })),
+            permissions: PermissionSet::from_entries(entries),
         }
+    }
+
+    fn allow(permission: &str) -> PermissionEntry {
+        PermissionEntry::allow(
+            PermissionKey::parse(permission).expect("test permission key parses"),
+        )
+    }
+
+    fn deny(permission: &str) -> PermissionEntry {
+        PermissionEntry::deny(PermissionKey::parse(permission).expect("test permission key parses"))
     }
 
     fn text_content(component: &TextComponent) -> &str {
@@ -580,6 +594,17 @@ mod tests {
                 .graph
                 .parse("tick freeze", &tick_freeze_player)
                 .is_ok()
+        );
+
+        let tick_root_without_freeze = player_context_with_entries([
+            allow("minecraft.command.tick"),
+            deny("minecraft.command.tick.freeze"),
+        ]);
+        assert!(
+            dispatcher
+                .graph
+                .parse("tick freeze", &tick_root_without_freeze)
+                .is_err()
         );
     }
 

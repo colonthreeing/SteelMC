@@ -245,8 +245,7 @@ impl CommandNodeBuilder {
             let requirement_permission = match permission_mode {
                 DerivedSubcommandPermissionMode::AlternativeToRoot => {
                     push_unique_permission(alternate_root_permissions, current_permission.clone());
-                    PermissionExpr::key(root_permission.clone())
-                        | PermissionExpr::key(current_permission.clone())
+                    PermissionExpr::scoped_key(root_permission.clone(), current_permission.clone())
                 }
                 DerivedSubcommandPermissionMode::AdditionalToRoot => {
                     PermissionExpr::key(root_permission.clone())
@@ -398,6 +397,17 @@ fn collect_permission_expr_keys(
 ) {
     match permission {
         PermissionExpr::Key(key) => {
+            if !catalog_permissions.iter().any(|existing| existing == key) {
+                catalog_permissions.push(key.clone());
+            }
+        }
+        PermissionExpr::ScopedKey { parent, key } => {
+            if !catalog_permissions
+                .iter()
+                .any(|existing| existing == parent)
+            {
+                catalog_permissions.push(parent.clone());
+            }
             if !catalog_permissions.iter().any(|existing| existing == key) {
                 catalog_permissions.push(key.clone());
             }

@@ -407,7 +407,7 @@ type CommandExecutor = Arc<
         + Sync,
 >;
 type UnresolvedDynamicPermissionResolver = Arc<
-    dyn Fn(&PermissionKey, &ParsedArguments) -> Result<PermissionExpr, DynamicPermissionError>
+    dyn Fn(&PermissionKey, &ParsedArguments) -> Result<PermissionKey, DynamicPermissionError>
         + Send
         + Sync,
 >;
@@ -435,7 +435,7 @@ impl UnresolvedDynamicPermission {
             resolver: Arc::new(move |base_permission, arguments| {
                 let value = arguments.get::<T>(&argument_name)?;
                 let segment = value.permission_segment()?;
-                Ok(PermissionExpr::key(base_permission.child(&segment)?))
+                Ok(base_permission.child(&segment)?)
             }),
         }
     }
@@ -450,8 +450,8 @@ impl UnresolvedDynamicPermission {
         let resolver = self.resolver;
         DynamicPermission {
             resolver: Arc::new(move |arguments| {
-                Ok(PermissionExpr::key(root_permission.clone())
-                    | resolver(&base_permission, arguments)?)
+                let key = resolver(&base_permission, arguments)?;
+                Ok(PermissionExpr::scoped_key(root_permission.clone(), key))
             }),
         }
     }
@@ -806,9 +806,13 @@ mod tests {
     }
 
     fn player_context_with_all<const N: usize>(permissions: [PermissionKey; N]) -> TestContext {
+        player_context_with_entries(permissions.map(PermissionEntry::allow))
+    }
+
+    fn player_context_with_entries<const N: usize>(entries: [PermissionEntry; N]) -> TestContext {
         TestContext {
             source_kind: CommandSourceKind::Player,
-            permissions: PermissionSet::from_entries(permissions.map(PermissionEntry::allow)),
+            permissions: PermissionSet::from_entries(entries),
         }
     }
 
@@ -1038,6 +1042,24 @@ mod tests {
         );
         assert!(graph.parse("gamemode creative", &creative).is_ok());
         assert!(graph.parse("gamemode survival", &creative).is_err());
+
+        let root_allow_creative_deny = player_context_with_entries([
+            PermissionEntry::allow(root_permission),
+            PermissionEntry::deny(
+                PermissionKey::parse("minecraft.command.gamemode.creative")
+                    .expect("permission key parses"),
+            ),
+        ]);
+        assert!(
+            graph
+                .parse("gamemode creative", &root_allow_creative_deny)
+                .is_err()
+        );
+        assert!(
+            graph
+                .parse("gamemode survival", &root_allow_creative_deny)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1062,7 +1084,7 @@ mod tests {
 
         assert_eq!(suggestion_texts(&result), vec!["survival".to_owned()]);
 
-        let root = player_context_with(root_permission);
+        let root = player_context_with(root_permission.clone());
         let result = graph.suggest("gamemode ", &root).expect("root suggestions");
 
         assert_eq!(
@@ -1070,6 +1092,26 @@ mod tests {
             vec![
                 "survival".to_owned(),
                 "creative".to_owned(),
+                "adventure".to_owned(),
+                "spectator".to_owned()
+            ]
+        );
+
+        let root_without_creative = player_context_with_entries([
+            PermissionEntry::allow(root_permission.clone()),
+            PermissionEntry::deny(
+                PermissionKey::parse("minecraft.command.gamemode.creative")
+                    .expect("permission key parses"),
+            ),
+        ]);
+        let result = graph
+            .suggest("gamemode ", &root_without_creative)
+            .expect("root suggestions");
+
+        assert_eq!(
+            suggestion_texts(&result),
+            vec![
+                "survival".to_owned(),
                 "adventure".to_owned(),
                 "spectator".to_owned()
             ]

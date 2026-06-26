@@ -65,16 +65,19 @@ fn client_gamemode_switcher_permission() -> Result<PermissionExpr, PermissionKey
     ];
     let mode_permissions = game_modes
         .into_iter()
-        .map(|game_mode| gamemode_value_permission(&root, game_mode).map(PermissionExpr::key))
+        .map(|game_mode| {
+            gamemode_value_permission(&root, game_mode)
+                .map(|mode| PermissionExpr::scoped_key(root.clone(), mode))
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(PermissionExpr::key(root) | PermissionExpr::Any(mode_permissions))
+    Ok(PermissionExpr::Any(mode_permissions))
 }
 
 fn change_game_mode_permission(game_mode: GameType) -> Result<PermissionExpr, PermissionKeyError> {
     let root = gamemode_root_permission()?;
     let mode = gamemode_value_permission(&root, game_mode)?;
-    Ok(PermissionExpr::key(root) | PermissionExpr::key(mode))
+    Ok(PermissionExpr::scoped_key(root, mode))
 }
 
 fn gamemode_root_permission() -> Result<PermissionKey, PermissionKeyError> {
@@ -185,6 +188,22 @@ mod tests {
         }
     }
 
+    fn context_with_entries(entries: impl IntoIterator<Item = PermissionEntry>) -> TestContext {
+        TestContext {
+            permissions: PermissionSet::from_entries(entries),
+        }
+    }
+
+    fn allow(permission: &'static str) -> PermissionEntry {
+        PermissionEntry::allow(
+            PermissionKey::parse(permission).expect("test permission key parses"),
+        )
+    }
+
+    fn deny(permission: &'static str) -> PermissionEntry {
+        PermissionEntry::deny(PermissionKey::parse(permission).expect("test permission key parses"))
+    }
+
     #[test]
     fn root_and_one_game_mode_allow_client_switcher() {
         let context = context([
@@ -232,5 +251,30 @@ mod tests {
 
         assert!(can_change_game_mode(&context, GameType::Creative));
         assert!(!can_change_game_mode(&context, GameType::Survival));
+    }
+
+    #[test]
+    fn specific_game_mode_deny_overrides_root_permission() {
+        let context = context_with_entries([
+            allow("minecraft.command.gamemode"),
+            deny("minecraft.command.gamemode.creative"),
+        ]);
+
+        assert!(can_use_client_gamemode_switcher(&context));
+        assert!(!can_change_game_mode(&context, GameType::Creative));
+        assert!(can_change_game_mode(&context, GameType::Survival));
+    }
+
+    #[test]
+    fn client_switcher_rejects_when_every_game_mode_is_denied() {
+        let context = context_with_entries([
+            allow("minecraft.command.gamemode"),
+            deny("minecraft.command.gamemode.survival"),
+            deny("minecraft.command.gamemode.creative"),
+            deny("minecraft.command.gamemode.adventure"),
+            deny("minecraft.command.gamemode.spectator"),
+        ]);
+
+        assert!(!can_use_client_gamemode_switcher(&context));
     }
 }

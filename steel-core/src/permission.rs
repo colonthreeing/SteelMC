@@ -115,6 +115,16 @@ impl PermissionKey {
             .split('.')
             .count()
     }
+
+    fn scopes(&self, key: &Self) -> bool {
+        if self == key {
+            return true;
+        }
+
+        key.0
+            .strip_prefix(self.as_str())
+            .is_some_and(|remaining| remaining.starts_with('.'))
+    }
 }
 
 /// One non-wildcard segment in a permission key.
@@ -356,6 +366,18 @@ impl Error for PermissionKeyError {}
 pub enum PermissionExpr {
     /// A single permission key.
     Key(PermissionKey),
+    /// A key that may also be granted by a parent key.
+    ///
+    /// The parent is treated as a broad grant for this key, but entries that
+    /// target this key or one of its wildcard ancestors are more specific and
+    /// can override the parent. This is used for command paths such as
+    /// `minecraft.command.gamemode` granting `minecraft.command.gamemode.creative`.
+    ScopedKey {
+        /// Broad parent permission.
+        parent: PermissionKey,
+        /// Requested child permission.
+        key: PermissionKey,
+    },
     /// All child expressions must be allowed.
     All(Vec<PermissionExpr>),
     /// At least one child expression must be allowed.
@@ -367,6 +389,12 @@ impl PermissionExpr {
     #[must_use]
     pub const fn key(key: PermissionKey) -> Self {
         Self::Key(key)
+    }
+
+    /// Creates a key expression that may also be granted by `parent`.
+    #[must_use]
+    pub const fn scoped_key(parent: PermissionKey, key: PermissionKey) -> Self {
+        Self::ScopedKey { parent, key }
     }
 }
 
@@ -531,19 +559,37 @@ impl PermissionSet {
                 continue;
             }
 
-            let specificity = entry.key.specificity();
-            match best {
-                None => best = Some((specificity, entry.state)),
-                Some((best_specificity, _)) if specificity > best_specificity => {
-                    best = Some((specificity, entry.state));
-                }
-                Some((best_specificity, PermissionState::Allow))
-                    if specificity == best_specificity && entry.state == PermissionState::Deny =>
-                {
-                    best = Some((specificity, PermissionState::Deny));
-                }
-                _ => {}
+            push_permission_candidate(&mut best, entry.key.specificity(), entry.state);
+        }
+
+        best.map(|(_, state)| state)
+    }
+
+    /// Resolves a child key while treating `parent` as a broad grant.
+    ///
+    /// Unset permissions return `None`. If both parent and child-side entries
+    /// match, the more specific entry wins; tied specificity resolves to deny.
+    #[must_use]
+    pub fn resolve_scoped_key(
+        &self,
+        parent: &PermissionKey,
+        key: &PermissionKey,
+    ) -> Option<PermissionState> {
+        let mut best = None;
+        let parent_scopes_key = parent.scopes(key);
+
+        for entry in &self.entries {
+            let matches_parent = parent_scopes_key && entry.key.matches(parent);
+            let matches_key = entry.key.matches(key);
+            if !matches_parent && !matches_key {
+                continue;
             }
+
+            let mut specificity = entry.key.specificity();
+            if matches_key && !matches_parent {
+                specificity += 1;
+            }
+            push_permission_candidate(&mut best, specificity, entry.state);
         }
 
         best.map(|(_, state)| state)
@@ -555,14 +601,40 @@ impl PermissionSet {
         self.resolve_key(key) == Some(PermissionState::Allow)
     }
 
+    /// Returns whether a child key is allowed through itself or a broad parent.
+    #[must_use]
+    pub fn allows_scoped_key(&self, parent: &PermissionKey, key: &PermissionKey) -> bool {
+        self.resolve_scoped_key(parent, key) == Some(PermissionState::Allow)
+    }
+
     /// Returns whether this set allows a permission expression.
     #[must_use]
     pub fn allows(&self, permission: &PermissionExpr) -> bool {
         match permission {
             PermissionExpr::Key(key) => self.allows_key(key),
+            PermissionExpr::ScopedKey { parent, key } => self.allows_scoped_key(parent, key),
             PermissionExpr::All(children) => children.iter().all(|child| self.allows(child)),
             PermissionExpr::Any(children) => children.iter().any(|child| self.allows(child)),
         }
+    }
+}
+
+fn push_permission_candidate(
+    best: &mut Option<(usize, PermissionState)>,
+    specificity: usize,
+    state: PermissionState,
+) {
+    match best {
+        None => *best = Some((specificity, state)),
+        Some((best_specificity, _)) if specificity > *best_specificity => {
+            *best = Some((specificity, state));
+        }
+        Some((best_specificity, PermissionState::Allow))
+            if specificity == *best_specificity && state == PermissionState::Deny =>
+        {
+            *best = Some((specificity, PermissionState::Deny));
+        }
+        _ => {}
     }
 }
 
@@ -930,6 +1002,62 @@ mod tests {
 
         assert!(permissions.allows_key(&key("minecraft.command.give")));
         assert!(!permissions.allows_key(&key("minecraft.command.kill")));
+    }
+
+    #[test]
+    fn scoped_key_specific_entry_overrides_parent_grant() {
+        let permissions = PermissionSet::from_entries([
+            PermissionEntry::allow(key("minecraft.command.gamemode")),
+            PermissionEntry::deny(key("minecraft.command.gamemode.creative")),
+        ]);
+        let parent = key("minecraft.command.gamemode");
+        let creative = key("minecraft.command.gamemode.creative");
+        let survival = key("minecraft.command.gamemode.survival");
+
+        assert_eq!(
+            permissions.resolve_scoped_key(&parent, &creative),
+            Some(PermissionState::Deny)
+        );
+        assert!(!permissions.allows(&PermissionExpr::scoped_key(parent.clone(), creative)));
+        assert!(permissions.allows(&PermissionExpr::scoped_key(parent, survival)));
+    }
+
+    #[test]
+    fn scoped_key_specific_grant_overrides_parent_deny() {
+        let permissions = PermissionSet::from_entries([
+            PermissionEntry::deny(key("minecraft.command.gamemode")),
+            PermissionEntry::allow(key("minecraft.command.gamemode.creative")),
+        ]);
+
+        assert!(permissions.allows(&PermissionExpr::scoped_key(
+            key("minecraft.command.gamemode"),
+            key("minecraft.command.gamemode.creative")
+        )));
+    }
+
+    #[test]
+    fn scoped_key_descendant_wildcard_overrides_parent() {
+        let permissions = PermissionSet::from_entries([
+            PermissionEntry::deny(key("minecraft.command.gamemode")),
+            PermissionEntry::allow(key("minecraft.command.gamemode.*")),
+        ]);
+
+        assert!(permissions.allows(&PermissionExpr::scoped_key(
+            key("minecraft.command.gamemode"),
+            key("minecraft.command.gamemode.creative")
+        )));
+    }
+
+    #[test]
+    fn scoped_key_parent_does_not_grant_unrelated_key() {
+        let permissions = PermissionSet::from_entries([PermissionEntry::allow(key(
+            "minecraft.command.gamemode",
+        ))]);
+
+        assert!(!permissions.allows(&PermissionExpr::scoped_key(
+            key("minecraft.command.gamemode"),
+            key("steel.command.fly")
+        )));
     }
 
     #[test]
