@@ -5,6 +5,7 @@ use crate::command::{
 };
 
 pub mod clear;
+pub mod deop;
 pub mod difficulty;
 pub mod domain;
 pub mod enchant;
@@ -39,6 +40,7 @@ fn invalid_parsed_argument(error: ParsedArgumentError) -> CommandError {
 
 const BUILT_IN_COMMANDS: &[RegistrationFactory] = &[
     clear::registration,
+    deop::registration,
     domain::registration,
     enchant::registration,
     execute::registration,

@@ -8,6 +8,7 @@ use std::{
 };
 
 use serde::Deserialize;
+use uuid::Uuid;
 
 /// Built-in operator group name used by `/op`.
 pub(crate) const OP_GROUP: &str = "op";
@@ -244,6 +245,71 @@ impl PermissionCatalog {
                 key.starts_with(prefix).then(|| key.to_owned())
             })
             .collect()
+    }
+}
+
+/// Persisted permission state for one player.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PermissionSubjectState {
+    groups: Vec<String>,
+    overrides: PermissionSet,
+}
+
+impl PermissionSubjectState {
+    /// Creates a persisted permission-state snapshot.
+    #[must_use]
+    pub const fn new(groups: Vec<String>, overrides: PermissionSet) -> Self {
+        Self { groups, overrides }
+    }
+
+    /// Returns assigned permission groups.
+    #[must_use]
+    pub fn groups(&self) -> &[String] {
+        &self.groups
+    }
+
+    /// Returns direct permission overrides.
+    #[must_use]
+    pub const fn overrides(&self) -> &PermissionSet {
+        &self.overrides
+    }
+
+    /// Splits this snapshot into owned groups and overrides.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<String>, PermissionSet) {
+        (self.groups, self.overrides)
+    }
+}
+
+/// In-memory index of persisted player permission state.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PermissionSubjectIndex {
+    states: BTreeMap<Uuid, PermissionSubjectState>,
+}
+
+impl PermissionSubjectIndex {
+    /// Creates an empty index.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            states: BTreeMap::new(),
+        }
+    }
+
+    /// Returns one player's cached permission state.
+    #[must_use]
+    pub fn get(&self, uuid: Uuid) -> Option<&PermissionSubjectState> {
+        self.states.get(&uuid)
+    }
+
+    /// Inserts or replaces one player's cached permission state.
+    pub fn set(&mut self, uuid: Uuid, state: PermissionSubjectState) {
+        self.states.insert(uuid, state);
+    }
+
+    /// Returns all cached entries sorted by UUID.
+    pub fn entries(&self) -> impl Iterator<Item = (Uuid, &PermissionSubjectState)> {
+        self.states.iter().map(|(uuid, state)| (*uuid, state))
     }
 }
 

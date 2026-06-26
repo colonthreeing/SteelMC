@@ -21,7 +21,9 @@ use crate::entity::{Entity, EntityBase, RemovalReason, SharedEntity, init_entiti
 
 use crate::chunk_saver::{ChunkStorage, registry::WorldStorageRegistry};
 use crate::level_data::{LevelDataManager, RespawnData, WorldGenerationSettings};
-use crate::permission::{PermissionGroups, PermissionSet};
+use crate::permission::{
+    PermissionGroups, PermissionSet, PermissionSubjectIndex, PermissionSubjectState,
+};
 use crate::player::chunk_sender::{ChunkSender, EncodedChunk};
 use crate::player::connection::NetworkConnection;
 use crate::player::known_players::KnownPlayers;
@@ -463,6 +465,8 @@ pub struct Server {
     known_players: SyncRwLock<KnownPlayers>,
     /// Monotonic version for suppressing stale known-player snapshot saves.
     known_players_version: SyncMutex<u64>,
+    /// Persisted global permission state keyed by player UUID.
+    global_permission_states: SyncRwLock<PermissionSubjectIndex>,
     /// Player joins prepared by async I/O and finalized at the game tick safe point.
     pending_player_joins: PlayerJoinQueue,
     /// Queued world changes to process after the tick.
@@ -533,6 +537,10 @@ impl Server {
             .load_known_players()
             .await
             .map_err(|e| format!("failed to load known player index: {e}"))?;
+        let global_permission_states = player_data_storage
+            .load_global_permission_states()
+            .await
+            .map_err(|e| format!("failed to load global permission index: {e}"))?;
         let mut worlds = WorldMap::new(
             resolved_worlds.default_domain.clone(),
             &resolved_worlds.domains,
@@ -613,6 +621,7 @@ impl Server {
             player_data_storage,
             known_players: SyncRwLock::new(known_players),
             known_players_version: SyncMutex::new(0),
+            global_permission_states: SyncRwLock::new(global_permission_states),
             pending_player_joins: PlayerJoinQueue::new(),
             pending_world_changes: SyncMutex::new(vec![]),
             pending_domain_switches: SyncMutex::new(vec![]),
@@ -758,6 +767,11 @@ impl Server {
             .config
             .permission_groups
             .effective_permissions(&groups, &overrides);
+        self.set_cached_global_permission_state(
+            player.gameprofile.id,
+            groups.clone(),
+            overrides.clone(),
+        );
         player.set_permission_state(groups, overrides, permissions)
     }
 
@@ -829,8 +843,20 @@ impl Server {
             .await
             .map_err(|error| PlayerPermissionUpdateError::Storage(error.to_string()))?;
 
+        self.set_cached_global_permission_state(uuid, groups.clone(), overrides.clone());
         self.queue_online_global_permission_refresh(uuid, groups, overrides);
         Ok(())
+    }
+
+    fn set_cached_global_permission_state(
+        &self,
+        uuid: Uuid,
+        groups: Vec<String>,
+        overrides: PermissionSet,
+    ) {
+        self.global_permission_states
+            .write()
+            .set(uuid, PermissionSubjectState::new(groups, overrides));
     }
 
     fn queue_online_global_permission_refresh(
@@ -881,6 +907,12 @@ impl Server {
     #[must_use]
     pub fn known_players(&self) -> KnownPlayers {
         self.known_players.read().clone()
+    }
+
+    /// Returns cached global permission state for one player.
+    #[must_use]
+    pub fn global_permission_state(&self, uuid: Uuid) -> Option<PermissionSubjectState> {
+        self.global_permission_states.read().get(uuid).cloned()
     }
 
     /// Records a player profile in the known-player index and persists it if changed.

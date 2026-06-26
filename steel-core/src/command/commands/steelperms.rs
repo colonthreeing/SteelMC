@@ -116,8 +116,8 @@ impl CommandArgumentParser for PermissionOverrideParser {
 
         let overrides = targets
             .into_iter()
-            .filter_map(|target| permission_targets::online_state(server, &target))
-            .map(|(_, state)| state.overrides);
+            .filter_map(|target| permission_targets::cached_state(server, &target))
+            .map(|state| state.overrides);
         direct_permission_override_suggestions(prefix, overrides)
     }
 }
@@ -174,8 +174,8 @@ impl CommandArgumentParser for PermissionAssignedGroupParser {
 
         let groups = targets
             .into_iter()
-            .filter_map(|target| permission_targets::online_state(server, &target))
-            .map(|(_, state)| state.groups);
+            .filter_map(|target| permission_targets::cached_state(server, &target))
+            .map(|state| state.groups);
         assigned_group_suggestions(prefix, groups)
     }
 }

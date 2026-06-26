@@ -6,6 +6,7 @@ use crate::player::player_data_storage::GlobalPlayerData;
 use crate::server::Server;
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub(super) struct PermissionTargetState {
     pub(super) groups: Vec<String>,
     pub(super) overrides: PermissionSet,
@@ -47,6 +48,18 @@ pub(super) fn online_state(
         overrides: player.permission_overrides(),
     };
     Some((player, state))
+}
+
+pub(super) fn cached_state(
+    server: &Server,
+    target: &PermissionTarget,
+) -> Option<PermissionTargetState> {
+    if let Some((_, state)) = online_state(server, target) {
+        return Some(state);
+    }
+    let state = server.global_permission_state(target.uuid())?;
+    let (groups, overrides) = state.into_parts();
+    Some(PermissionTargetState { groups, overrides })
 }
 
 pub(super) async fn save_offline_state(

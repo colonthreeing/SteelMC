@@ -18,7 +18,10 @@ use super::player_data::{
 };
 use crate::chunk_saver::PersistentEntity;
 use crate::config::StorageSelection;
-use crate::permission::{PermissionEntry, PermissionKey, PermissionSet, PermissionState};
+use crate::permission::{
+    PermissionEntry, PermissionKey, PermissionSet, PermissionState, PermissionSubjectIndex,
+    PermissionSubjectState,
+};
 use crate::player::Player;
 use crate::player::known_players::{KnownPlayer, KnownPlayers};
 use steel_registry::item_stack::ItemStack;
@@ -206,6 +209,15 @@ impl PlayerDataStorage {
         }
     }
 
+    /// Loads cached permission state for all persisted global player data.
+    pub async fn load_global_permission_states(&self) -> io::Result<PermissionSubjectIndex> {
+        match &self.backend {
+            PlayerDataStorageBackend::File(storage) => {
+                storage.load_global_permission_states().await
+            }
+        }
+    }
+
     /// Saves server-wide player data.
     pub async fn save_global(&self, uuid: Uuid, data: &GlobalPlayerData) -> io::Result<()> {
         match &self.backend {
@@ -330,6 +342,42 @@ impl FilePlayerDataStorage {
         let bytes = fs::read(&path).await?;
         let file = decode_global_file(&bytes)?;
         file.into_global_data().map(Some)
+    }
+
+    async fn load_global_permission_states(&self) -> io::Result<PermissionSubjectIndex> {
+        let mut states = PermissionSubjectIndex::new();
+        let mut entries = fs::read_dir(self.global_players_dir()).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("dat") {
+                continue;
+            }
+            let Some(file_stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("invalid global playerdata filename {}", path.display()),
+                ));
+            };
+            let uuid = Uuid::parse_str(file_stem).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "invalid global playerdata UUID in {}: {error}",
+                        path.display()
+                    ),
+                )
+            })?;
+
+            let lock = self.file_lock(&path);
+            let _guard = lock.lock().await;
+            let bytes = fs::read(&path).await?;
+            let data = decode_global_file(&bytes)?.into_global_data()?;
+            states.set(
+                uuid,
+                PermissionSubjectState::new(data.groups, data.permissions),
+            );
+        }
+        Ok(states)
     }
 
     async fn save_global(&self, uuid: Uuid, data: &GlobalPlayerData) -> io::Result<()> {
@@ -963,6 +1011,57 @@ mod tests {
 
         assert_eq!(decoded.permissions, data.permissions);
         assert_eq!(decoded.groups, data.groups);
+    }
+
+    #[tokio::test]
+    async fn global_permission_index_loads_persisted_permission_state() {
+        let root = temp_storage_root("global-permissions");
+        let storage = PlayerDataStorage::new(root.clone(), StorageSelection::default_player_file())
+            .await
+            .expect("storage should initialize");
+        let op_uuid = Uuid::from_u128(1);
+        let default_uuid = Uuid::from_u128(2);
+        let op_permissions = PermissionSet::from_entries([PermissionEntry::allow(
+            PermissionKey::parse("minecraft.command.give").expect("permission key parses"),
+        )]);
+
+        storage
+            .save_global(
+                op_uuid,
+                &GlobalPlayerData {
+                    last_active_domain: "minecraft".to_owned(),
+                    groups: vec!["op".to_owned()],
+                    permissions: op_permissions.clone(),
+                },
+            )
+            .await
+            .expect("op global data should save");
+        storage
+            .save_global(
+                default_uuid,
+                &GlobalPlayerData {
+                    last_active_domain: "minecraft".to_owned(),
+                    groups: Vec::new(),
+                    permissions: PermissionSet::default(),
+                },
+            )
+            .await
+            .expect("default global data should save");
+
+        let index = storage
+            .load_global_permission_states()
+            .await
+            .expect("permission index should load");
+
+        let op_state = index.get(op_uuid).expect("op state should be indexed");
+        assert_eq!(op_state.groups(), &["op".to_owned()]);
+        assert_eq!(op_state.overrides(), &op_permissions);
+        let default_state = index
+            .get(default_uuid)
+            .expect("default state should be indexed");
+        assert!(default_state.groups().is_empty());
+
+        let _ = fs::remove_dir_all(root).await;
     }
 
     #[test]

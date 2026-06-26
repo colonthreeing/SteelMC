@@ -1,5 +1,5 @@
-//! Handler for the "op" command.
-//! Mirrors `net.minecraft.server.commands.OpCommand`, backed by Steel permission groups.
+//! Handler for the "deop" command.
+//! Mirrors `net.minecraft.server.commands.DeOpCommands`, backed by Steel permission groups.
 
 use std::sync::Arc;
 
@@ -27,13 +27,13 @@ pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationE
     CommandRegistration::minecraft(command())
 }
 
-/// Creates the `/op` command handler.
+/// Creates the `/deop` command handler.
 #[must_use]
 pub fn command() -> CommandNodeBuilder {
-    literal("op").then(argument("targets", OpTargetsParser).executes(op_targets))
+    literal("deop").then(argument("targets", DeOpTargetsParser).executes(deop_targets))
 }
 
-fn op_targets(
+fn deop_targets(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
@@ -41,7 +41,9 @@ fn op_targets(
         .get::<Vec<PermissionTarget>>("targets")
         .map_err(super::invalid_parsed_argument)?;
     if targets.is_empty() {
-        return Err(CommandError::failure("No player was found"));
+        return Err(CommandError::failure(
+            translations::COMMANDS_DEOP_FAILED.msg(),
+        ));
     }
 
     let mut changed_count = 0;
@@ -50,14 +52,13 @@ fn op_targets(
         if let Some((player, mut state)) =
             permission_targets::online_state(&context.server, &target)
         {
-            if state.groups.iter().any(|group| group == OP_GROUP) {
+            if !remove_op_group(&mut state.groups) {
                 continue;
             }
 
-            state.groups.push(OP_GROUP.to_owned());
             permission_targets::save_online_state(&context.server, &player, state)?;
             changed_count += 1;
-            send_op_success(&context.sender, &target);
+            send_deop_success(&context.sender, &target);
         } else {
             offline_targets.push(target);
         }
@@ -65,7 +66,7 @@ fn op_targets(
 
     let scheduled = offline_targets.len();
     if scheduled != 0 {
-        spawn_offline_op(
+        spawn_offline_deop(
             Arc::clone(&context.server),
             context.sender.clone(),
             offline_targets,
@@ -74,7 +75,7 @@ fn op_targets(
 
     if changed_count == 0 && scheduled == 0 {
         return Err(CommandError::failure(
-            translations::COMMANDS_OP_FAILED.msg(),
+            translations::COMMANDS_DEOP_FAILED.msg(),
         ));
     }
 
@@ -83,7 +84,7 @@ fn op_targets(
     })
 }
 
-fn spawn_offline_op(server: Arc<Server>, sender: CommandSender, targets: Vec<PermissionTarget>) {
+fn spawn_offline_deop(server: Arc<Server>, sender: CommandSender, targets: Vec<PermissionTarget>) {
     tokio::spawn(async move {
         let mut changed_count = 0;
         for target in &targets {
@@ -93,42 +94,47 @@ fn spawn_offline_op(server: Arc<Server>, sender: CommandSender, targets: Vec<Per
             }) else {
                 continue;
             };
-            if state.groups.iter().any(|group| group == OP_GROUP) {
+            if !remove_op_group(&mut state.groups) {
                 continue;
             }
 
-            state.groups.push(OP_GROUP.to_owned());
             match permission_targets::save_offline_state(&server, target, state).await {
                 Ok(()) => {
                     changed_count += 1;
-                    send_op_success(&sender, target);
+                    send_deop_success(&sender, target);
                 }
                 Err(error) => send_background_error(&sender, error),
             }
         }
 
         if changed_count == 0 {
-            sender.send_failure(translations::COMMANDS_OP_FAILED.msg());
+            sender.send_failure(translations::COMMANDS_DEOP_FAILED.msg());
         }
     });
 }
 
-fn send_op_success(sender: &CommandSender, target: &PermissionTarget) {
+fn remove_op_group(groups: &mut Vec<String>) -> bool {
+    let old_len = groups.len();
+    groups.retain(|group| group != OP_GROUP);
+    groups.len() != old_len
+}
+
+fn send_deop_success(sender: &CommandSender, target: &PermissionTarget) {
     sender.send_message(
-        &translations::COMMANDS_OP_SUCCESS
+        &translations::COMMANDS_DEOP_SUCCESS
             .message([TextComponent::plain(target.name().to_owned())])
             .into(),
     );
 }
 
 fn send_background_error(sender: &CommandSender, error: CommandError) {
-    sender.send_failure_feedback(error.into_feedback("op"));
+    sender.send_failure_feedback(error.into_feedback("deop"));
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-struct OpTargetsParser;
+struct DeOpTargetsParser;
 
-impl CommandArgumentParser for OpTargetsParser {
+impl CommandArgumentParser for DeOpTargetsParser {
     fn parse(
         &self,
         reader: &mut CommandReader<'_>,
@@ -156,31 +162,16 @@ impl CommandArgumentParser for OpTargetsParser {
         };
 
         let mut suggestions = Vec::new();
-        let mut hidden_online_names = Vec::new();
         for player in server.get_players() {
             if player
                 .permission_groups()
                 .iter()
                 .any(|group| group == OP_GROUP)
             {
-                hidden_online_names.push(player.gameprofile.name.clone());
-                continue;
+                suggestions.push(SuggestionEntry::new(player.gameprofile.name.clone()));
             }
-            suggestions.push(SuggestionEntry::new(player.gameprofile.name.clone()));
         }
         for known in server.known_players().entries() {
-            if server
-                .global_permission_state(known.uuid())
-                .is_some_and(|state| state.groups().iter().any(|group| group == OP_GROUP))
-            {
-                continue;
-            }
-            if hidden_online_names
-                .iter()
-                .any(|name| name.eq_ignore_ascii_case(known.last_known_name()))
-            {
-                continue;
-            }
             if suggestions.iter().any(|suggestion| {
                 suggestion
                     .text
@@ -188,10 +179,29 @@ impl CommandArgumentParser for OpTargetsParser {
             }) {
                 continue;
             }
-            suggestions.push(SuggestionEntry::new(known.last_known_name().to_owned()));
+            if server
+                .global_permission_state(known.uuid())
+                .is_some_and(|state| state.groups().iter().any(|group| group == OP_GROUP))
+            {
+                suggestions.push(SuggestionEntry::new(known.last_known_name().to_owned()));
+            }
         }
 
         suggestions.retain(|suggestion| suggestion.text.starts_with(prefix));
         suggestions
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remove_op_group;
+
+    #[test]
+    fn remove_op_group_removes_only_op_assignments() {
+        let mut groups = vec!["default".to_owned(), "op".to_owned(), "admin".to_owned()];
+
+        assert!(remove_op_group(&mut groups));
+        assert_eq!(groups, vec!["default", "admin"]);
+        assert!(!remove_op_group(&mut groups));
     }
 }
