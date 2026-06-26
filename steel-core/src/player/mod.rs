@@ -28,6 +28,7 @@ pub mod player_data;
 pub mod player_data_storage;
 pub mod player_inventory;
 pub mod profile_key;
+pub mod profile_lookup;
 mod signature_cache;
 mod spam_throttler;
 mod teleport_state;
@@ -54,7 +55,7 @@ use tick_state::PlayerTickState;
 use block_breaking::BlockBreakingManager;
 use enum_dispatch::enum_dispatch;
 use game_mode_state::PlayerGameModeState;
-pub use game_profile::{GameProfile, GameProfileAction};
+pub use game_profile::{GameProfile, GameProfileAction, is_valid_player_name, offline_uuid};
 use std::sync::{Arc, Weak};
 use steel_macros::entity_impl;
 use steel_protocol::packets::game::{

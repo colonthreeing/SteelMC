@@ -393,9 +393,9 @@ fn unset_permission(
 
 fn spawn_user_info(server: Arc<Server>, sender: CommandSender, targets: Vec<PermissionTarget>) {
     tokio::spawn(async move {
-        for target in &targets {
-            match permission_targets::load_offline_state(&server, target).await {
-                Ok(state) => send_user_info(&sender, target, &state),
+        for target in targets {
+            match permission_targets::load_state(&server, target).await {
+                Ok(loaded) => send_user_info(&sender, loaded.target(), loaded.state()),
                 Err(error) => send_background_error(&sender, "steelperms user info", error),
             }
         }
@@ -410,16 +410,17 @@ fn spawn_add_group(
 ) {
     tokio::spawn(async move {
         let mut changed = 0;
-        for target in &targets {
-            let Ok(mut state) = load_offline_or_report(&server, &sender, target).await else {
+        for target in targets {
+            let Ok(mut loaded) = load_or_report(&server, &sender, target).await else {
                 continue;
             };
+            let state = loaded.state_mut();
             if state.groups.iter().any(|assigned| assigned == &group) {
                 continue;
             }
 
             state.groups.push(group.clone());
-            if save_offline_or_report(&server, &sender, target, state).await {
+            if save_or_report(&server, &sender, loaded).await {
                 changed += 1;
             }
         }
@@ -439,17 +440,18 @@ fn spawn_remove_group(
 ) {
     tokio::spawn(async move {
         let mut changed = 0;
-        for target in &targets {
-            let Ok(mut state) = load_offline_or_report(&server, &sender, target).await else {
+        for target in targets {
+            let Ok(mut loaded) = load_or_report(&server, &sender, target).await else {
                 continue;
             };
+            let state = loaded.state_mut();
             let old_len = state.groups.len();
             state.groups.retain(|assigned| assigned != &group);
             if state.groups.len() == old_len {
                 continue;
             }
 
-            if save_offline_or_report(&server, &sender, target, state).await {
+            if save_or_report(&server, &sender, loaded).await {
                 changed += 1;
             }
         }
@@ -470,14 +472,14 @@ fn spawn_set_permission(
 ) {
     tokio::spawn(async move {
         let mut changed = 0;
-        for target in &targets {
-            let Ok(mut target_state) = load_offline_or_report(&server, &sender, target).await
-            else {
+        for target in targets {
+            let Ok(mut loaded) = load_or_report(&server, &sender, target).await else {
                 continue;
             };
+            let target_state = loaded.state_mut();
             target_state.overrides.set(permission.clone(), state);
 
-            if save_offline_or_report(&server, &sender, target, target_state).await {
+            if save_or_report(&server, &sender, loaded).await {
                 changed += 1;
             }
         }
@@ -494,16 +496,16 @@ fn spawn_unset_permission(
 ) {
     tokio::spawn(async move {
         let mut changed = 0;
-        for target in &targets {
-            let Ok(mut target_state) = load_offline_or_report(&server, &sender, target).await
-            else {
+        for target in targets {
+            let Ok(mut loaded) = load_or_report(&server, &sender, target).await else {
                 continue;
             };
+            let target_state = loaded.state_mut();
             if !target_state.overrides.unset(&permission) {
                 continue;
             }
 
-            if save_offline_or_report(&server, &sender, target, target_state).await {
+            if save_or_report(&server, &sender, loaded).await {
                 changed += 1;
             }
         }
@@ -512,25 +514,24 @@ fn spawn_unset_permission(
     });
 }
 
-async fn load_offline_or_report(
+async fn load_or_report(
     server: &Arc<Server>,
     sender: &CommandSender,
-    target: &PermissionTarget,
-) -> Result<permission_targets::PermissionTargetState, ()> {
-    permission_targets::load_offline_state(server, target)
+    target: PermissionTarget,
+) -> Result<permission_targets::LoadedPermissionTargetState, ()> {
+    permission_targets::load_state(server, target)
         .await
         .map_err(|error| {
             send_background_error(sender, "steelperms", error);
         })
 }
 
-async fn save_offline_or_report(
+async fn save_or_report(
     server: &Arc<Server>,
     sender: &CommandSender,
-    target: &PermissionTarget,
-    state: permission_targets::PermissionTargetState,
+    loaded: permission_targets::LoadedPermissionTargetState,
 ) -> bool {
-    permission_targets::save_offline_state(server, target, state)
+    permission_targets::save_state(server, loaded)
         .await
         .map_or_else(
             |error| {

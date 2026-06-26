@@ -75,7 +75,7 @@ pub enum StructureArgumentValue {
 /// Player target for permission-management commands.
 #[derive(Clone)]
 pub struct PermissionTarget {
-    uuid: Uuid,
+    uuid: Option<Uuid>,
     name: String,
 }
 
@@ -84,7 +84,7 @@ impl PermissionTarget {
     #[must_use]
     pub fn online(player: &Player) -> Self {
         Self {
-            uuid: player.gameprofile.id,
+            uuid: Some(player.gameprofile.id),
             name: player.gameprofile.name.clone(),
         }
     }
@@ -93,15 +93,30 @@ impl PermissionTarget {
     #[must_use]
     pub fn offline(uuid: Uuid, name: impl Into<String>) -> Self {
         Self {
-            uuid,
+            uuid: Some(uuid),
             name: name.into(),
         }
     }
 
-    /// Returns the target UUID.
+    /// Creates a target from a name that still needs profile resolution.
     #[must_use]
-    pub const fn uuid(&self) -> Uuid {
+    pub fn unresolved(name: impl Into<String>) -> Self {
+        Self {
+            uuid: None,
+            name: name.into(),
+        }
+    }
+
+    /// Returns the target UUID when the profile has already been resolved.
+    #[must_use]
+    pub const fn uuid(&self) -> Option<Uuid> {
         self.uuid
+    }
+
+    /// Returns whether the target already has a resolved UUID.
+    #[must_use]
+    pub const fn is_resolved(&self) -> bool {
+        self.uuid.is_some()
     }
 
     /// Returns the target display name.

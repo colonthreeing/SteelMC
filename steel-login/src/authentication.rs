@@ -3,10 +3,8 @@
 //! Handles authentication with Mojang's session servers for online mode.
 
 use reqwest::{StatusCode, Url};
-use steel_core::player::GameProfile;
+use steel_core::{config::AuthServiceConfig, player::GameProfile};
 use thiserror::Error;
-
-const DEFAULT_AUTH_SERVER: &str = "https://sessionserver.mojang.com/session/minecraft/hasJoined";
 
 /// An error that can occur during Mojang authentication.
 #[derive(Error, Debug)]
@@ -29,9 +27,9 @@ pub enum AuthError {
     /// Failed to parse JSON into Game Profile.
     #[error("Failed to parse JSON into Game Profile")]
     FailedParse,
-    /// Authentication server URL is invalid.
-    #[error("Invalid authentication server URL")]
-    InvalidAuthServer(String),
+    /// Authentication service URL is invalid.
+    #[error("Invalid authentication service URL")]
+    InvalidAuthServiceUrl(String),
     /// An unknown status code was returned.
     #[error("Unknown Status Code {0}")]
     UnknownStatusCode(StatusCode),
@@ -63,9 +61,9 @@ const MAX_RETRIES: u32 = 3;
 pub async fn mojang_authenticate(
     username: &str,
     server_hash: &str,
-    auth_server: Option<&str>,
+    auth: &AuthServiceConfig,
 ) -> Result<GameProfile, AuthError> {
-    let auth_url = build_auth_url(auth_server, username, server_hash)?;
+    let auth_url = build_auth_url(auth, username, server_hash)?;
 
     let mut last_error = AuthError::FailedResponse;
 
@@ -90,13 +88,16 @@ pub async fn mojang_authenticate(
 }
 
 fn build_auth_url(
-    auth_server: Option<&str>,
+    auth: &AuthServiceConfig,
     username: &str,
     server_hash: &str,
 ) -> Result<Url, AuthError> {
-    let endpoint = auth_server.unwrap_or(DEFAULT_AUTH_SERVER);
-    let mut url =
-        Url::parse(endpoint).map_err(|_| AuthError::InvalidAuthServer(endpoint.to_string()))?;
+    let endpoint = format!(
+        "{}/session/minecraft/hasJoined",
+        auth.session_host().trim_end_matches('/')
+    );
+    let mut url = Url::parse(&endpoint)
+        .map_err(|_| AuthError::InvalidAuthServiceUrl(endpoint.to_string()))?;
     url.query_pairs_mut()
         .append_pair("username", username)
         .append_pair("serverId", server_hash);
@@ -216,7 +217,8 @@ mod tests {
 
     #[test]
     fn auth_url_defaults_to_mojang_session_server() {
-        let url = build_auth_url(None, "Steve", "abc123").expect("auth URL builds");
+        let url = build_auth_url(&AuthServiceConfig::default(), "Steve", "abc123")
+            .expect("auth URL builds");
 
         assert_eq!(
             url.as_str(),
@@ -225,13 +227,12 @@ mod tests {
     }
 
     #[test]
-    fn auth_url_uses_configured_endpoint() {
-        let url = build_auth_url(
-            Some("https://auth.example.com/session/minecraft/hasJoined"),
-            "Steve",
-            "abc123",
-        )
-        .expect("auth URL builds");
+    fn auth_url_uses_configured_session_host() {
+        let auth = AuthServiceConfig {
+            session_host: "https://auth.example.com".to_owned(),
+            ..AuthServiceConfig::default()
+        };
+        let url = build_auth_url(&auth, "Steve", "abc123").expect("auth URL builds");
 
         assert_eq!(
             url.as_str(),

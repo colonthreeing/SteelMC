@@ -53,6 +53,10 @@ small-map.workspace = true
 
 # UUID
 uuid.workspace = true
+md5.workspace = true
+
+# Networking
+reqwest.workspace = true
 
 # Logging
 log.workspace = true
@@ -82,7 +86,6 @@ syn = { workspace = true, features = ["full"] }
 glob = "0.3"
 
 [dev-dependencies]
-md5.workspace = true
 criterion.workspace = true
 steel-registry = { workspace = true, features = ["test-utils"] }
 

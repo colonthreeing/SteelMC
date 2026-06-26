@@ -87,21 +87,23 @@ fn deop_targets(
 fn spawn_offline_deop(server: Arc<Server>, sender: CommandSender, targets: Vec<PermissionTarget>) {
     tokio::spawn(async move {
         let mut changed_count = 0;
-        for target in &targets {
-            let state = permission_targets::load_offline_state(&server, target).await;
-            let Ok(mut state) = state.map_err(|error| {
+        for target in targets {
+            let loaded = permission_targets::load_state(&server, target).await;
+            let Ok(mut loaded) = loaded.map_err(|error| {
                 send_background_error(&sender, error);
             }) else {
                 continue;
             };
+            let state = loaded.state_mut();
             if !remove_op_group(&mut state.groups) {
                 continue;
             }
 
-            match permission_targets::save_offline_state(&server, target, state).await {
+            let target = loaded.target().clone();
+            match permission_targets::save_state(&server, loaded).await {
                 Ok(()) => {
                     changed_count += 1;
-                    send_deop_success(&sender, target);
+                    send_deop_success(&sender, &target);
                 }
                 Err(error) => send_background_error(&sender, error),
             }

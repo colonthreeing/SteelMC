@@ -270,16 +270,15 @@ impl CommandArgumentParser for PermissionTargetParser {
                     let known = uuid
                         .and_then(|uuid| known_players.by_uuid(uuid))
                         .or_else(|| known_players.by_name(name));
-                    let Some(known) = known else {
-                        return Err(CommandParseError::new(
-                            CommandParseErrorKind::InvalidPlayer(value),
-                            cursor,
-                        ));
-                    };
-                    vec![PermissionTarget::offline(
-                        known.uuid(),
-                        known.last_known_name().to_owned(),
-                    )]
+                    known.map_or_else(
+                        || vec![PermissionTarget::unresolved(name.to_owned())],
+                        |known| {
+                            vec![PermissionTarget::offline(
+                                known.uuid(),
+                                known.last_known_name().to_owned(),
+                            )]
+                        },
+                    )
                 }
             }
         };

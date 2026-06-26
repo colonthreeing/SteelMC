@@ -22,6 +22,55 @@ use crate::chunk_saver::registry::WorldStorageRegistry;
 use crate::permission::PermissionGroups;
 use crate::worldgen::registry::{ValidatedWorldGeneratorConfig, WorldGeneratorRegistry};
 
+/// Mojang authentication service hosts used by authlib.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct AuthServiceConfig {
+    /// Host used for session checks such as `hasJoined`.
+    pub session_host: String,
+    /// Host used for Minecraft services APIs.
+    pub services_host: String,
+    /// Host used for profile lookups.
+    pub profiles_host: String,
+}
+
+impl AuthServiceConfig {
+    /// Default Mojang session host.
+    pub const DEFAULT_SESSION_HOST: &'static str = "https://sessionserver.mojang.com";
+    /// Default Mojang services host.
+    pub const DEFAULT_SERVICES_HOST: &'static str = "https://api.minecraftservices.com";
+    /// Default Mojang profiles host.
+    pub const DEFAULT_PROFILES_HOST: &'static str = "https://api.mojang.com";
+
+    /// Returns the configured session host.
+    #[must_use]
+    pub fn session_host(&self) -> &str {
+        &self.session_host
+    }
+
+    /// Returns the configured services host.
+    #[must_use]
+    pub fn services_host(&self) -> &str {
+        &self.services_host
+    }
+
+    /// Returns the configured profiles host.
+    #[must_use]
+    pub fn profiles_host(&self) -> &str {
+        &self.profiles_host
+    }
+}
+
+impl Default for AuthServiceConfig {
+    fn default() -> Self {
+        Self {
+            session_host: Self::DEFAULT_SESSION_HOST.to_owned(),
+            services_host: Self::DEFAULT_SERVICES_HOST.to_owned(),
+            profiles_host: Self::DEFAULT_PROFILES_HOST.to_owned(),
+        }
+    }
+}
+
 /// Runtime server configuration — the subset of settings needed after startup.
 ///
 /// Stored on `Server` and accessed by game logic at runtime.
@@ -35,8 +84,8 @@ pub struct RuntimeConfig {
     pub simulation_distance: u8,
     /// Whether the server is in online mode.
     pub online_mode: bool,
-    /// Optional authentication endpoint for online-mode `hasJoined` checks.
-    pub auth_server: Option<String>,
+    /// Authentication service hosts.
+    pub auth: AuthServiceConfig,
     /// Whether the server should use encryption.
     pub encryption: bool,
     /// Whether vanilla floating/flying movement checks permit unauthorized flight.

@@ -26,10 +26,11 @@ use crate::permission::{
 };
 use crate::player::chunk_sender::{ChunkSender, EncodedChunk};
 use crate::player::connection::NetworkConnection;
-use crate::player::known_players::KnownPlayers;
+use crate::player::known_players::{KnownPlayer, KnownPlayers};
 use crate::player::player_data::{PersistentPlayerData, PersistentRootVehicle};
 use crate::player::player_data_storage::{GlobalPlayerData, PlayerDataStorage};
-use crate::player::{GameProfile, Player, ResetReason};
+use crate::player::profile_lookup::{ProfileLookupError, lookup_online_profile};
+use crate::player::{GameProfile, Player, ResetReason, is_valid_player_name, offline_uuid};
 use crate::portal::{TeleportTransition, WorldChangeRequest};
 use crate::server::jobs::{FnServerJob, JobPoll, ServerJob, ServerJobContext, ServerJobQueue};
 use crate::server::registry_cache::RegistryCache;
@@ -463,6 +464,8 @@ pub struct Server {
     pub player_data_storage: PlayerDataStorage,
     /// Player profiles known to this server, keyed by UUID and last known name.
     known_players: SyncRwLock<KnownPlayers>,
+    /// HTTP client for online profile lookup.
+    profile_lookup_client: reqwest::Client,
     /// Monotonic version for suppressing stale known-player snapshot saves.
     known_players_version: SyncMutex<u64>,
     /// Persisted global permission state keyed by player UUID.
@@ -620,6 +623,7 @@ impl Server {
             jobs: ServerJobQueue::new(),
             player_data_storage,
             known_players: SyncRwLock::new(known_players),
+            profile_lookup_client: reqwest::Client::new(),
             known_players_version: SyncMutex::new(0),
             global_permission_states: SyncRwLock::new(global_permission_states),
             pending_player_joins: PlayerJoinQueue::new(),
@@ -917,10 +921,15 @@ impl Server {
 
     /// Records a player profile in the known-player index and persists it if changed.
     pub fn record_known_player(self: &Arc<Self>, profile: &GameProfile) {
+        self.record_known_profile(profile.id, profile.name.clone());
+    }
+
+    /// Records a known player profile by UUID and name.
+    pub fn record_known_profile(self: &Arc<Self>, uuid: Uuid, last_known_name: impl Into<String>) {
         let changed = self
             .known_players
             .write()
-            .record(profile.id, profile.name.clone());
+            .record(uuid, last_known_name.into());
         if changed {
             let version = {
                 let mut version = self.known_players_version.lock();
@@ -929,6 +938,57 @@ impl Server {
             };
             self.save_known_players(version);
         }
+    }
+
+    /// Resolves a player name for permission-management commands.
+    ///
+    /// The lookup order follows the same shape as vanilla's command profile argument:
+    /// online players, cached known players, offline UUIDs when online-mode is disabled,
+    /// then online profile lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when online-mode profile lookup cannot resolve the player or
+    /// the configured profile service fails.
+    pub async fn resolve_player_profile(
+        self: &Arc<Self>,
+        name: &str,
+    ) -> Result<KnownPlayer, ProfileLookupError> {
+        if let Some(profile) = self.cached_player_profile(name) {
+            return Ok(profile);
+        }
+
+        if !self.config.online_mode {
+            let profile = KnownPlayer::new(offline_uuid(name), name.to_owned());
+            self.record_known_profile(profile.uuid(), profile.last_known_name().to_owned());
+            return Ok(profile);
+        }
+
+        if !is_valid_player_name(name) {
+            return Err(ProfileLookupError::UnknownPlayer(name.to_owned()));
+        }
+
+        let profile =
+            lookup_online_profile(&self.profile_lookup_client, &self.config.auth, name).await?;
+        self.record_known_profile(profile.uuid(), profile.last_known_name().to_owned());
+        Ok(profile)
+    }
+
+    fn cached_player_profile(&self, name: &str) -> Option<KnownPlayer> {
+        let uuid = Uuid::parse_str(name).ok();
+        if let Some(player) = self.get_players().into_iter().find(|player| {
+            player.gameprofile.name.eq_ignore_ascii_case(name)
+                || uuid.is_some_and(|uuid| player.uuid() == uuid)
+        }) {
+            return Some(KnownPlayer::new(
+                player.gameprofile.id,
+                player.gameprofile.name.clone(),
+            ));
+        }
+
+        let known_players = self.known_players();
+        uuid.and_then(|uuid| known_players.by_uuid(uuid).cloned())
+            .or_else(|| known_players.by_name(name).cloned())
     }
 
     fn save_known_players(self: &Arc<Self>, version: u64) {

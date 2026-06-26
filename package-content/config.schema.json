@@ -46,10 +46,30 @@
           "description": "Whether to use Mojang's authentication service",
           "default": true
         },
-        "auth_server": {
-          "type": "string",
-          "description": "Optional authentication endpoint for online-mode hasJoined checks. Omit to use Mojang's session server.",
-          "format": "uri"
+        "auth": {
+          "type": "object",
+          "description": "Authentication service hosts",
+          "properties": {
+            "session_host": {
+              "type": "string",
+              "description": "Host used for session checks such as hasJoined",
+              "format": "uri",
+              "default": "https://sessionserver.mojang.com"
+            },
+            "services_host": {
+              "type": "string",
+              "description": "Host used for Minecraft services APIs",
+              "format": "uri",
+              "default": "https://api.minecraftservices.com"
+            },
+            "profiles_host": {
+              "type": "string",
+              "description": "Host used for player profile lookups",
+              "format": "uri",
+              "default": "https://api.mojang.com"
+            }
+          },
+          "additionalProperties": false
         },
         "encryption": {
           "type": "boolean",

@@ -13,8 +13,6 @@ view_distance = 10
 simulation_distance = 10
 # Whether to use Mojang's authentication service
 online_mode = true
-# Optional authentication endpoint for online mode. Omit to use Mojang's session server.
-# auth_server = "https://sessionserver.mojang.com/session/minecraft/hasJoined"
 # Whether to enable encryption for client-server communication
 encryption = true
 # Whether the server allows unauthorized client flight
@@ -32,6 +30,12 @@ enforce_secure_chat = false
 chat_spam_threshold_seconds = 10
 # Vanilla command spam threshold window in seconds
 command_spam_threshold_seconds = 10
+
+# Authentication service hosts. Change all three hosts together when using a custom auth service.
+[server.auth]
+session_host = "https://sessionserver.mojang.com"
+services_host = "https://api.minecraftservices.com"
+profiles_host = "https://api.mojang.com"
 
 # Optional worker counts for server thread pools. 0 or omitted uses each pool's automatic default.
 [server.threads]
