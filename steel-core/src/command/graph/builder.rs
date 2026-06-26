@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use super::node::{CommandNode, CommandNodeKind, CommandRedirect};
 use super::{
-    CommandArgumentParser, CommandExecutor, CommandFuture, CommandGraphError,
-    CommandPermissionArgument, CommandRedirectTarget, CommandResult, DynamicPermission,
-    ParsedArguments, UnresolvedDynamicPermission,
+    CommandArgumentParser, CommandExecutor, CommandGraphError, CommandPermissionArgument,
+    CommandRedirectTarget, CommandResult, DynamicPermission, ParsedArguments,
+    UnresolvedDynamicPermission,
 };
 use crate::command::{context::CommandContext, error::CommandError, requirement::Requirement};
 use crate::permission::{PermissionExpr, PermissionKey, PermissionSegment};
@@ -108,23 +108,6 @@ impl CommandNodeBuilder {
         + Sync
         + 'static,
     ) -> Self {
-        self.executor = Some(Arc::new(
-            move |context: &mut CommandContext, arguments: &ParsedArguments| {
-                Box::pin(std::future::ready(executor(context, arguments))) as CommandFuture<'_>
-            },
-        ));
-        self
-    }
-
-    /// Marks this node executable with an async executor.
-    #[must_use]
-    pub fn executes_async(
-        mut self,
-        executor: impl for<'a> Fn(&'a mut CommandContext, &'a ParsedArguments) -> CommandFuture<'a>
-        + Send
-        + Sync
-        + 'static,
-    ) -> Self {
         self.executor = Some(Arc::new(executor));
         self
     }
@@ -135,27 +118,6 @@ impl CommandNodeBuilder {
         mut self,
         target: CommandRedirectTarget,
         executor: impl Fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>
-        + Send
-        + Sync
-        + 'static,
-    ) -> Self {
-        self.redirect = Some(CommandRedirect {
-            target,
-            executor: Arc::new(
-                move |context: &mut CommandContext, arguments: &ParsedArguments| {
-                    Box::pin(std::future::ready(executor(context, arguments))) as CommandFuture<'_>
-                },
-            ),
-        });
-        self
-    }
-
-    /// Redirects from this node after running an async `executor`.
-    #[must_use]
-    pub fn redirects_async(
-        mut self,
-        target: CommandRedirectTarget,
-        executor: impl for<'a> Fn(&'a mut CommandContext, &'a ParsedArguments) -> CommandFuture<'a>
         + Send
         + Sync
         + 'static,

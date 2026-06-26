@@ -43,13 +43,13 @@ impl CommandQueue {
         Ok(())
     }
 
-    pub(crate) async fn tick(&self, server: &Arc<Server>, max_commands: usize) -> usize {
+    pub(crate) fn tick(&self, server: &Arc<Server>, max_commands: usize) -> usize {
         let mut handled = 0;
         for _ in 0..max_commands {
             let Some(command) = self.pop_front() else {
                 break;
             };
-            execute_command(server, command).await;
+            execute_command(server, command);
             handled += 1;
         }
         handled
@@ -70,15 +70,13 @@ impl Default for CommandQueue {
     }
 }
 
-async fn execute_command(server: &Arc<Server>, command: QueuedCommand) {
+fn execute_command(server: &Arc<Server>, command: QueuedCommand) {
     if sender_is_closed_player(&command.sender) {
         return;
     }
 
     let dispatcher = server.command_dispatcher.read().clone();
-    dispatcher
-        .handle_command(command.sender, command.command, server)
-        .await;
+    dispatcher.handle_command(command.sender, command.command, server);
 }
 
 fn sender_is_closed_player(sender: &CommandSender) -> bool {

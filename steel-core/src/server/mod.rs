@@ -1361,7 +1361,7 @@ impl Server {
                 (tick_manager.tick_count, runs_normally)
             };
 
-            self.tick_commands().await;
+            self.tick_commands();
             self.tick_worlds_game(tick_count, runs_normally).await;
             self.tick_jobs(tick_count, runs_normally);
             self.process_player_joins();
@@ -1394,8 +1394,8 @@ impl Server {
         self.command_queue.clear();
     }
 
-    async fn tick_commands(self: &Arc<Self>) {
-        let handled = self.command_queue.tick(self, COMMANDS_PER_TICK_LIMIT).await;
+    fn tick_commands(self: &Arc<Self>) {
+        let handled = self.command_queue.tick(self, COMMANDS_PER_TICK_LIMIT);
         if handled == COMMANDS_PER_TICK_LIMIT {
             tracing::debug!(handled, "Command tick reached per-tick processing limit");
         }

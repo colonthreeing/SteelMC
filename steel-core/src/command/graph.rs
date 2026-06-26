@@ -1,6 +1,6 @@
 //! Dynamic command graph, parsers, and structured parse results.
 
-use std::{error::Error, fmt, future::Future, pin::Pin, sync::Arc};
+use std::{error::Error, fmt, sync::Arc};
 
 use steel_protocol::packets::game::{CommandNode as ProtocolCommandNode, SuggestionEntry};
 
@@ -390,12 +390,10 @@ pub struct SuggestionResult {
     pub length: i32,
 }
 
-/// Future returned by a command executor.
-pub type CommandFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<CommandResult, CommandError>> + Send + 'a>>;
-
 type CommandExecutor = Arc<
-    dyn for<'a> Fn(&'a mut CommandContext, &'a ParsedArguments) -> CommandFuture<'a> + Send + Sync,
+    dyn Fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>
+        + Send
+        + Sync,
 >;
 type UnresolvedDynamicPermissionResolver = Arc<
     dyn Fn(&PermissionKey, &ParsedArguments) -> Result<PermissionExpr, DynamicPermissionError>
@@ -534,15 +532,12 @@ impl ParseResults {
     /// # Errors
     ///
     /// Returns a command execution error from the matched executor.
-    pub async fn execute(
-        &self,
-        context: &mut CommandContext,
-    ) -> Result<CommandResult, CommandError> {
+    pub fn execute(&self, context: &mut CommandContext) -> Result<CommandResult, CommandError> {
         self.check_dynamic_permissions(context)?;
         match &self.action {
-            ParsedCommandAction::Execute(executor) => executor(context, &self.arguments).await,
+            ParsedCommandAction::Execute(executor) => executor(context, &self.arguments),
             ParsedCommandAction::Redirect(redirect) => {
-                (redirect.executor)(context, &self.arguments).await?;
+                (redirect.executor)(context, &self.arguments)?;
                 let command = match redirect.target {
                     CommandRedirectTarget::Current => {
                         format!("{} {}", redirect.current_root, redirect.command)
@@ -561,25 +556,23 @@ impl ParseResults {
     /// # Errors
     ///
     /// Returns an error from either this command's executor or the redirected command.
-    pub(crate) async fn execute_with_dispatcher(
+    pub(crate) fn execute_with_dispatcher(
         &self,
         context: &mut CommandContext,
         dispatcher: &CommandDispatcher,
     ) -> Result<CommandResult, CommandError> {
         self.check_dynamic_permissions(context)?;
         match &self.action {
-            ParsedCommandAction::Execute(executor) => executor(context, &self.arguments).await,
+            ParsedCommandAction::Execute(executor) => executor(context, &self.arguments),
             ParsedCommandAction::Redirect(redirect) => {
-                (redirect.executor)(context, &self.arguments).await?;
+                (redirect.executor)(context, &self.arguments)?;
                 match redirect.target {
                     CommandRedirectTarget::Current => {
                         let command = format!("{} {}", redirect.current_root, redirect.command);
-                        dispatcher.dispatch_with_context(command, context).await
+                        dispatcher.dispatch_with_context(command, context)
                     }
                     CommandRedirectTarget::All => {
-                        dispatcher
-                            .dispatch_with_context(redirect.command.clone(), context)
-                            .await
+                        dispatcher.dispatch_with_context(redirect.command.clone(), context)
                     }
                 }
             }
