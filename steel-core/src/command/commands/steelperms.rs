@@ -1,18 +1,22 @@
 //! Steel permission management commands.
 
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
+use steel_protocol::packets::game::{ArgumentType, SuggestionEntry, SuggestionType};
 use text_components::TextComponent;
 
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandNodeBuilder, CommandResult, ParsedArguments, PermissionTarget, argument, literal,
+    CommandArgumentParser, CommandNodeBuilder, CommandParseError, CommandResult, ParsedArgument,
+    ParsedArguments, PermissionTarget, argument, literal,
 };
 use crate::command::parsers::{PermissionGroupParser, PermissionKeyParser, PermissionTargetParser};
+use crate::command::reader::CommandReader;
+use crate::command::requirement::CommandInputContext;
 use crate::command::sender::CommandSender;
 use crate::command::{CommandRegistration, CommandRegistrationError};
-use crate::permission::{PermissionEntry, PermissionKey, PermissionState};
+use crate::permission::{PermissionEntry, PermissionKey, PermissionSet, PermissionState};
 use crate::server::Server;
 
 use super::permission_targets;
@@ -44,7 +48,8 @@ pub fn command() -> CommandNodeBuilder {
                 )
                 .then(
                     literal("unset").requires_subcommand_permission().then(
-                        argument("permission", PermissionKeyParser).executes(unset_permission),
+                        argument("permission", PermissionOverrideParser::new("targets"))
+                            .executes(unset_permission),
                     ),
                 )
                 .then(
@@ -63,6 +68,55 @@ pub fn command() -> CommandNodeBuilder {
                 ),
         ),
     )
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PermissionOverrideParser {
+    targets_argument: &'static str,
+}
+
+impl PermissionOverrideParser {
+    const fn new(targets_argument: &'static str) -> Self {
+        Self { targets_argument }
+    }
+}
+
+impl CommandArgumentParser for PermissionOverrideParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        PermissionKeyParser.parse(reader, context)
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        PermissionKeyParser.usage()
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        PermissionKeyParser.parsed_type()
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        arguments: &ParsedArguments,
+        context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        let Ok(targets) = arguments.get::<Vec<PermissionTarget>>(self.targets_argument) else {
+            return Vec::new();
+        };
+        let Some(server) = context.server() else {
+            return Vec::new();
+        };
+
+        let overrides = targets
+            .into_iter()
+            .filter_map(|target| permission_targets::online_state(server, &target))
+            .map(|(_, state)| state.overrides);
+        direct_permission_override_suggestions(prefix, overrides)
+    }
 }
 
 fn user_info(
@@ -517,6 +571,23 @@ fn permission_entries_text(entries: &[PermissionEntry]) -> String {
         .join(", ")
 }
 
+fn direct_permission_override_suggestions(
+    prefix: &str,
+    overrides: impl IntoIterator<Item = PermissionSet>,
+) -> Vec<SuggestionEntry> {
+    let mut permissions = BTreeSet::new();
+    for overrides in overrides {
+        for entry in overrides.entries() {
+            let key = entry.key().as_str();
+            if key.starts_with(prefix) {
+                permissions.insert(key.to_owned());
+            }
+        }
+    }
+
+    permissions.into_iter().map(SuggestionEntry::new).collect()
+}
+
 fn permission_state_text(state: PermissionState) -> &'static str {
     match state {
         PermissionState::Allow => "allow",
@@ -541,5 +612,47 @@ fn target_count_text(count: usize) -> String {
 fn command_result(count: usize) -> CommandResult {
     CommandResult {
         success_count: i32::try_from(count).map_or(i32::MAX, |count| count),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::direct_permission_override_suggestions;
+    use crate::permission::{PermissionEntry, PermissionKey, PermissionSet};
+
+    fn key(value: &str) -> PermissionKey {
+        PermissionKey::parse(value).expect("permission key parses")
+    }
+
+    fn suggestion_texts(
+        suggestions: Vec<steel_protocol::packets::game::SuggestionEntry>,
+    ) -> Vec<String> {
+        suggestions
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect()
+    }
+
+    #[test]
+    fn unset_permission_suggestions_only_include_direct_overrides() {
+        let first = PermissionSet::from_entries([
+            PermissionEntry::allow(key("minecraft.command.gamemode.creative")),
+            PermissionEntry::deny(key("steel.command.steelperms.user.allow")),
+        ]);
+        let second = PermissionSet::from_entries([
+            PermissionEntry::allow(key("minecraft.command.gamemode.survival")),
+            PermissionEntry::deny(key("steel.command.steelperms.user.allow")),
+        ]);
+
+        assert_eq!(
+            suggestion_texts(direct_permission_override_suggestions(
+                "minecraft.command.gamemode.",
+                [first, second],
+            )),
+            vec![
+                "minecraft.command.gamemode.creative",
+                "minecraft.command.gamemode.survival",
+            ]
+        );
     }
 }
