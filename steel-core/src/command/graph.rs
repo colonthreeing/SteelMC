@@ -682,8 +682,7 @@ impl CommandGraph {
         let (input_without_slash, cursor_offset) = input
             .strip_prefix('/')
             .map_or((input, 0), |stripped| (stripped, 1));
-        let mut reader = CommandReader::with_offset(input_without_slash, cursor_offset);
-        reader.skip_whitespace();
+        let reader = CommandReader::with_offset(input_without_slash, cursor_offset);
 
         suggest_children(
             &reader,
@@ -711,7 +710,6 @@ impl CommandGraph {
             .strip_prefix('/')
             .map_or((input, 0), |stripped| (stripped, 1));
         let mut reader = CommandReader::with_offset(input_without_slash, cursor_offset);
-        reader.skip_whitespace();
 
         if !reader.can_read() {
             return Err(CommandParseError::new(
@@ -1088,6 +1086,18 @@ mod tests {
     }
 
     #[test]
+    fn leading_whitespace_is_not_skipped_at_root() {
+        let graph = graph_with_root(literal("list").executes(|_, _| Ok(CommandResult::success())));
+
+        let error = graph
+            .parse(" list", &player_context())
+            .expect_err("leading whitespace should not be accepted");
+
+        assert_eq!(error.kind(), &CommandParseErrorKind::ExpectedArgument);
+        assert_eq!(error.cursor(), 0);
+    }
+
+    #[test]
     fn parses_named_arguments_for_executors() {
         let graph =
             graph_with_root(literal("flag").then(
@@ -1303,6 +1313,13 @@ mod tests {
         assert_eq!(suggestion_texts(&result), vec!["list".to_owned()]);
         assert_eq!(result.start, 1);
         assert_eq!(result.length, 2);
+    }
+
+    #[test]
+    fn leading_whitespace_does_not_suggest_roots() {
+        let graph = graph_with_root(literal("list"));
+
+        assert!(graph.suggest(" l", &player_context()).is_none());
     }
 
     #[test]
