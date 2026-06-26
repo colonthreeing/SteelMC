@@ -9,8 +9,7 @@ use steel_registry::{REGISTRY, RegistryExt, TaggedRegistryExt, entity_type::Enti
 use steel_utils::{
     BlockPos, Identifier,
     translations::{
-        ARGUMENT_ENTITY_SELECTOR_ALL_ENTITIES, ARGUMENT_ENTITY_SELECTOR_ALL_PLAYERS,
-        ARGUMENT_ENTITY_SELECTOR_NEAREST_ENTITY, ARGUMENT_ENTITY_SELECTOR_NEAREST_PLAYER,
+        ARGUMENT_ENTITY_SELECTOR_ALL_PLAYERS, ARGUMENT_ENTITY_SELECTOR_NEAREST_PLAYER,
         ARGUMENT_ENTITY_SELECTOR_RANDOM_PLAYER, ARGUMENT_ENTITY_SELECTOR_SELF,
     },
     types::GameType,
@@ -119,11 +118,13 @@ impl CommandArgumentParser for PlayerParser {
         };
 
         let players = server.get_players();
-        if players.is_empty() {
-            return Ok(ParsedArgument::Players(Vec::new()));
-        }
-
         let targets = match value.as_str() {
+            "@a" if self.one => {
+                return Err(CommandParseError::new(
+                    CommandParseErrorKind::InvalidPlayer(value),
+                    cursor,
+                ));
+            }
             "@a" => players,
             "@p" => {
                 let Some(position) = context.position() else {
@@ -133,7 +134,10 @@ impl CommandArgumentParser for PlayerParser {
                     ));
                 };
 
-                let mut nearest = (f64::MAX, Arc::clone(&players[0]));
+                let Some(first) = players.first() else {
+                    return Ok(ParsedArgument::Players(Vec::new()));
+                };
+                let mut nearest = (f64::MAX, Arc::clone(first));
                 for player in players {
                     let distance = player.position().distance_squared(position);
                     if distance < nearest.0 {
@@ -152,11 +156,11 @@ impl CommandArgumentParser for PlayerParser {
                 .player()
                 .map_or_else(Vec::new, |player| vec![Arc::clone(player)]),
             name => {
-                let uuid = Uuid::parse_str(name).unwrap_or_else(|_| Uuid::nil());
-                let Some(player) = players
-                    .into_iter()
-                    .find(|player| player.gameprofile.name == name || player.uuid() == uuid)
-                else {
+                let uuid = Uuid::parse_str(name).ok();
+                let Some(player) = players.into_iter().find(|player| {
+                    player.gameprofile.name == name
+                        || uuid.is_some_and(|uuid| player.uuid() == uuid)
+                }) else {
                     return Err(CommandParseError::new(
                         CommandParseErrorKind::InvalidPlayer(value),
                         cursor,
@@ -165,6 +169,12 @@ impl CommandArgumentParser for PlayerParser {
                 vec![player]
             }
         };
+        if self.one && targets.len() != 1 {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidPlayer(value),
+                cursor,
+            ));
+        }
 
         Ok(ParsedArgument::Players(targets))
     }
@@ -188,12 +198,18 @@ impl CommandArgumentParser for PlayerParser {
         _arguments: &ParsedArguments,
         context: &dyn CommandInputContext,
     ) -> Vec<SuggestionEntry> {
-        let mut suggestions = vec![
-            SuggestionEntry::with_tooltip("@a", &ARGUMENT_ENTITY_SELECTOR_ALL_PLAYERS),
+        let mut suggestions = Vec::new();
+        if !self.one {
+            suggestions.push(SuggestionEntry::with_tooltip(
+                "@a",
+                &ARGUMENT_ENTITY_SELECTOR_ALL_PLAYERS,
+            ));
+        }
+        suggestions.extend([
             SuggestionEntry::with_tooltip("@p", &ARGUMENT_ENTITY_SELECTOR_NEAREST_PLAYER),
             SuggestionEntry::with_tooltip("@r", &ARGUMENT_ENTITY_SELECTOR_RANDOM_PLAYER),
             SuggestionEntry::with_tooltip("@s", &ARGUMENT_ENTITY_SELECTOR_SELF),
-        ];
+        ]);
 
         if let Some(server) = context.server() {
             let players = server.get_players();
@@ -258,6 +274,12 @@ impl CommandArgumentParser for PermissionTargetParser {
             "@s" => context
                 .player()
                 .map_or_else(Vec::new, |player| vec![PermissionTarget::online(player)]),
+            selector if selector.starts_with('@') => {
+                return Err(CommandParseError::new(
+                    CommandParseErrorKind::InvalidPlayer(value),
+                    cursor,
+                ));
+            }
             name => {
                 let uuid = Uuid::parse_str(name).ok();
                 if let Some(player) = players.into_iter().find(|player| {
@@ -287,10 +309,7 @@ impl CommandArgumentParser for PermissionTargetParser {
     }
 
     fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (
-            ArgumentType::Entity { flags: 2 },
-            Some(SuggestionType::AskServer),
-        )
+        (ArgumentType::GameProfile, Some(SuggestionType::AskServer))
     }
 
     fn parsed_type(&self) -> &'static str {
@@ -483,16 +502,18 @@ impl CommandArgumentParser for EntityParser {
         };
 
         let players = server.get_players();
-        if players.is_empty() {
-            return Ok(ParsedArgument::Entities(Vec::new()));
-        }
-
         let targets = match value.as_str() {
-            "@a" | "@e" => players
+            "@a" if self.one => {
+                return Err(CommandParseError::new(
+                    CommandParseErrorKind::InvalidEntity(value),
+                    cursor,
+                ));
+            }
+            "@a" => players
                 .into_iter()
                 .map(|player| player as Arc<dyn LivingEntity + Send + Sync>)
                 .collect(),
-            "@n" | "@p" => {
+            "@p" => {
                 let Some(position) = context.position() else {
                     return Err(CommandParseError::new(
                         CommandParseErrorKind::MissingCommandContext("position"),
@@ -500,7 +521,10 @@ impl CommandArgumentParser for EntityParser {
                     ));
                 };
 
-                let mut nearest = (f64::MAX, Arc::clone(&players[0]));
+                let Some(first) = players.first() else {
+                    return Ok(ParsedArgument::Entities(Vec::new()));
+                };
+                let mut nearest = (f64::MAX, Arc::clone(first));
                 for player in players {
                     let distance = player.position().distance_squared(position);
                     if distance < nearest.0 {
@@ -518,12 +542,18 @@ impl CommandArgumentParser for EntityParser {
             "@s" => context.player().map_or_else(Vec::new, |player| {
                 vec![Arc::clone(player) as Arc<dyn LivingEntity + Send + Sync>]
             }),
+            selector if selector.starts_with('@') => {
+                return Err(CommandParseError::new(
+                    CommandParseErrorKind::InvalidEntity(value),
+                    cursor,
+                ));
+            }
             name => {
-                let uuid = Uuid::parse_str(name).unwrap_or_else(|_| Uuid::nil());
-                let Some(player) = players
-                    .into_iter()
-                    .find(|player| player.gameprofile.name == name || player.uuid() == uuid)
-                else {
+                let uuid = Uuid::parse_str(name).ok();
+                let Some(player) = players.into_iter().find(|player| {
+                    player.gameprofile.name == name
+                        || uuid.is_some_and(|uuid| player.uuid() == uuid)
+                }) else {
                     return Err(CommandParseError::new(
                         CommandParseErrorKind::InvalidEntity(value),
                         cursor,
@@ -532,6 +562,12 @@ impl CommandArgumentParser for EntityParser {
                 vec![player as Arc<dyn LivingEntity + Send + Sync>]
             }
         };
+        if self.one && targets.len() != 1 {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidEntity(value),
+                cursor,
+            ));
+        }
 
         Ok(ParsedArgument::Entities(targets))
     }
@@ -539,7 +575,7 @@ impl CommandArgumentParser for EntityParser {
     fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
         (
             ArgumentType::Entity {
-                flags: u8::from(self.one),
+                flags: 2 | u8::from(self.one),
             },
             Some(SuggestionType::AskServer),
         )
@@ -555,14 +591,18 @@ impl CommandArgumentParser for EntityParser {
         _arguments: &ParsedArguments,
         context: &dyn CommandInputContext,
     ) -> Vec<SuggestionEntry> {
-        let mut suggestions = vec![
-            SuggestionEntry::with_tooltip("@a", &ARGUMENT_ENTITY_SELECTOR_ALL_PLAYERS),
-            SuggestionEntry::with_tooltip("@e", &ARGUMENT_ENTITY_SELECTOR_ALL_ENTITIES),
-            SuggestionEntry::with_tooltip("@n", &ARGUMENT_ENTITY_SELECTOR_NEAREST_ENTITY),
+        let mut suggestions = Vec::new();
+        if !self.one {
+            suggestions.push(SuggestionEntry::with_tooltip(
+                "@a",
+                &ARGUMENT_ENTITY_SELECTOR_ALL_PLAYERS,
+            ));
+        }
+        suggestions.extend([
             SuggestionEntry::with_tooltip("@p", &ARGUMENT_ENTITY_SELECTOR_NEAREST_PLAYER),
             SuggestionEntry::with_tooltip("@r", &ARGUMENT_ENTITY_SELECTOR_RANDOM_PLAYER),
             SuggestionEntry::with_tooltip("@s", &ARGUMENT_ENTITY_SELECTOR_SELF),
-        ];
+        ]);
 
         if let Some(server) = context.server() {
             let players = server.get_players();
@@ -1468,8 +1508,9 @@ mod tests {
             },
             parsers::{
                 BlockPosParser, ComponentParser, DomainParser, EnchantmentParser, EntityParser,
-                EntitySummonParser, GameModeParser, ItemParser, PermissionKeyParser, PlayerParser,
-                RotationParser, StructureParser, TimeParser, Vec3Parser, WorldParser,
+                EntitySummonParser, GameModeParser, ItemParser, PermissionKeyParser,
+                PermissionTargetParser, PlayerParser, RotationParser, StructureParser, TimeParser,
+                Vec3Parser, WorldParser,
             },
             reader::CommandReader,
             requirement::{
@@ -1598,6 +1639,10 @@ mod tests {
             super::PermissionGroupParser.usage().1,
             Some(SuggestionType::AskServer)
         ));
+        assert!(matches!(
+            PermissionTargetParser.usage().0,
+            steel_protocol::packets::game::ArgumentType::GameProfile
+        ));
     }
 
     #[test]
@@ -1638,6 +1683,18 @@ mod tests {
     }
 
     #[test]
+    fn single_player_parser_does_not_suggest_multi_player_selector() {
+        let suggestions =
+            PlayerParser::one().suggest("@", &ParsedArguments::default(), &TestContext);
+        let texts = suggestions
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+
+        assert_eq!(texts, vec!["@p", "@r", "@s"]);
+    }
+
+    #[test]
     fn entity_parser_suggests_selectors_without_live_server() {
         let suggestions =
             EntityParser::multiple().suggest("@", &ParsedArguments::default(), &TestContext);
@@ -1646,7 +1703,7 @@ mod tests {
             .map(|suggestion| suggestion.text)
             .collect::<Vec<_>>();
 
-        assert_eq!(texts, vec!["@a", "@e", "@n", "@p", "@r", "@s"]);
+        assert_eq!(texts, vec!["@a", "@p", "@r", "@s"]);
     }
 
     #[test]

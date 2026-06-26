@@ -68,13 +68,13 @@ fn client_gamemode_switcher_permission() -> Result<PermissionExpr, PermissionKey
         .map(|game_mode| gamemode_value_permission(&root, game_mode).map(PermissionExpr::key))
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(PermissionExpr::key(root) & PermissionExpr::Any(mode_permissions))
+    Ok(PermissionExpr::key(root) | PermissionExpr::Any(mode_permissions))
 }
 
 fn change_game_mode_permission(game_mode: GameType) -> Result<PermissionExpr, PermissionKeyError> {
     let root = gamemode_root_permission()?;
     let mode = gamemode_value_permission(&root, game_mode)?;
-    Ok(PermissionExpr::key(root) & PermissionExpr::key(mode))
+    Ok(PermissionExpr::key(root) | PermissionExpr::key(mode))
 }
 
 fn gamemode_root_permission() -> Result<PermissionKey, PermissionKeyError> {
@@ -205,25 +205,30 @@ mod tests {
     }
 
     #[test]
-    fn root_permission_alone_does_not_allow_client_switcher() {
+    fn root_permission_alone_allows_client_switcher() {
         let context = context(["minecraft.command.gamemode"]);
 
-        assert!(!can_use_client_gamemode_switcher(&context));
+        assert!(can_use_client_gamemode_switcher(&context));
     }
 
     #[test]
-    fn game_mode_permission_without_root_does_not_allow_client_switcher() {
+    fn game_mode_permission_without_root_allows_client_switcher() {
         let context = context(["minecraft.command.gamemode.creative"]);
 
-        assert!(!can_use_client_gamemode_switcher(&context));
+        assert!(can_use_client_gamemode_switcher(&context));
     }
 
     #[test]
-    fn client_game_mode_change_requires_requested_mode_permission() {
-        let context = context([
-            "minecraft.command.gamemode",
-            "minecraft.command.gamemode.creative",
-        ]);
+    fn root_permission_allows_every_game_mode_change() {
+        let context = context(["minecraft.command.gamemode"]);
+
+        assert!(can_change_game_mode(&context, GameType::Creative));
+        assert!(can_change_game_mode(&context, GameType::Survival));
+    }
+
+    #[test]
+    fn specific_game_mode_permission_only_allows_requested_mode() {
+        let context = context(["minecraft.command.gamemode.creative"]);
 
         assert!(can_change_game_mode(&context, GameType::Creative));
         assert!(!can_change_game_mode(&context, GameType::Survival));

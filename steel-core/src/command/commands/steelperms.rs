@@ -13,11 +13,12 @@ use crate::command::graph::{
 };
 use crate::command::parsers::{PermissionGroupParser, PermissionKeyParser, PermissionTargetParser};
 use crate::command::reader::{CommandReader, StringMode};
-use crate::command::requirement::CommandInputContext;
+use crate::command::requirement::{CommandInputContext, RequirementContext};
 use crate::command::sender::CommandSender;
 use crate::command::{CommandRegistration, CommandRegistrationError};
 use crate::permission::{
-    PermissionEntry, PermissionKey, PermissionSegment, PermissionSet, PermissionState,
+    PermissionEntry, PermissionExpr, PermissionKey, PermissionKeyError, PermissionSegment,
+    PermissionSet, PermissionState,
 };
 use crate::server::Server;
 
@@ -39,34 +40,42 @@ pub fn command() -> CommandNodeBuilder {
                         .executes(user_info),
                 )
                 .then(
-                    literal("allow").requires_subcommand_permission().then(
-                        argument("permission", PermissionKeyParser).executes(allow_permission),
-                    ),
+                    literal("allow")
+                        .requires_additional_subcommand_permission()
+                        .then(
+                            argument("permission", PermissionKeyParser).executes(allow_permission),
+                        ),
                 )
                 .then(
-                    literal("deny").requires_subcommand_permission().then(
-                        argument("permission", PermissionKeyParser).executes(deny_permission),
-                    ),
+                    literal("deny")
+                        .requires_additional_subcommand_permission()
+                        .then(
+                            argument("permission", PermissionKeyParser).executes(deny_permission),
+                        ),
                 )
                 .then(
-                    literal("unset").requires_subcommand_permission().then(
-                        argument("permission", PermissionOverrideParser::new("targets"))
-                            .executes(unset_permission),
-                    ),
+                    literal("unset")
+                        .requires_additional_subcommand_permission()
+                        .then(
+                            argument("permission", PermissionOverrideParser::new("targets"))
+                                .executes(unset_permission),
+                        ),
                 )
                 .then(
                     literal("group").then(
                         literal("add")
-                            .requires_subcommand_permission()
+                            .requires_additional_subcommand_permission()
                             .then(argument("group", PermissionGroupParser).executes(add_group)),
                     ),
                 )
                 .then(
                     literal("group").then(
-                        literal("remove").requires_subcommand_permission().then(
-                            argument("group", PermissionAssignedGroupParser::new("targets"))
-                                .executes(remove_group),
-                        ),
+                        literal("remove")
+                            .requires_additional_subcommand_permission()
+                            .then(
+                                argument("group", PermissionAssignedGroupParser::new("targets"))
+                                    .executes(remove_group),
+                            ),
                     ),
                 ),
         ),
@@ -118,7 +127,7 @@ impl CommandArgumentParser for PermissionOverrideParser {
             .into_iter()
             .filter_map(|target| permission_targets::cached_state(server, &target))
             .map(|state| state.overrides);
-        direct_permission_override_suggestions(prefix, overrides)
+        direct_permission_override_suggestions(prefix, overrides, context)
     }
 }
 
@@ -215,6 +224,7 @@ fn add_group(
 ) -> Result<CommandResult, CommandError> {
     let targets = targets(arguments)?;
     let group = group(arguments)?;
+    require_group_management(context, &group)?;
     let mut changed = 0;
     let mut offline_targets = Vec::new();
 
@@ -259,6 +269,7 @@ fn remove_group(
 ) -> Result<CommandResult, CommandError> {
     let targets = targets(arguments)?;
     let group = group(arguments)?;
+    require_group_management(context, &group)?;
     let mut changed = 0;
     let mut offline_targets = Vec::new();
 
@@ -319,6 +330,7 @@ fn set_permission(
 ) -> Result<CommandResult, CommandError> {
     let targets = targets(arguments)?;
     let permission = permission(arguments)?;
+    require_permission_management(context, &permission)?;
     let mut changed = 0;
     let mut offline_targets = Vec::new();
 
@@ -357,6 +369,7 @@ fn unset_permission(
 ) -> Result<CommandResult, CommandError> {
     let targets = targets(arguments)?;
     let permission = permission(arguments)?;
+    require_permission_management(context, &permission)?;
     let mut changed = 0;
     let mut offline_targets = Vec::new();
 
@@ -636,18 +649,65 @@ fn permission_entries_text(entries: &[PermissionEntry]) -> String {
 fn direct_permission_override_suggestions(
     prefix: &str,
     overrides: impl IntoIterator<Item = PermissionSet>,
+    context: &dyn RequirementContext,
 ) -> Vec<SuggestionEntry> {
     let mut permissions = BTreeSet::new();
     for overrides in overrides {
         for entry in overrides.entries() {
             let key = entry.key().as_str();
-            if key.starts_with(prefix) {
+            if key.starts_with(prefix) && can_manage_permission(context, entry.key()) {
                 permissions.insert(key.to_owned());
             }
         }
     }
 
     permissions.into_iter().map(SuggestionEntry::new).collect()
+}
+
+fn require_permission_management(
+    context: &dyn RequirementContext,
+    permission: &PermissionKey,
+) -> Result<(), CommandError> {
+    if can_manage_permission(context, permission) {
+        Ok(())
+    } else {
+        Err(CommandError::PermissionDenied)
+    }
+}
+
+fn can_manage_permission(context: &dyn RequirementContext, permission: &PermissionKey) -> bool {
+    let Ok(management_permission) = permission_management_key(permission) else {
+        return false;
+    };
+    context.has_permission(&PermissionExpr::key(management_permission))
+}
+
+fn permission_management_key(
+    permission: &PermissionKey,
+) -> Result<PermissionKey, PermissionKeyError> {
+    PermissionKey::parse(format!("steel.permission.manage.{}", permission.as_str()))
+}
+
+fn require_group_management(
+    context: &dyn RequirementContext,
+    group: &str,
+) -> Result<(), CommandError> {
+    if can_manage_group(context, group) {
+        Ok(())
+    } else {
+        Err(CommandError::PermissionDenied)
+    }
+}
+
+fn can_manage_group(context: &dyn RequirementContext, group: &str) -> bool {
+    let Ok(group) = PermissionSegment::parse(group) else {
+        return false;
+    };
+    let Ok(permission) = PermissionKey::parse(format!("steel.permission.group.{}", group.as_str()))
+    else {
+        return false;
+    };
+    context.has_permission(&PermissionExpr::key(permission))
 }
 
 fn assigned_group_suggestions(
@@ -699,8 +759,8 @@ fn command_result(count: usize) -> CommandResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        PermissionAssignedGroupParser, assigned_group_suggestions,
-        direct_permission_override_suggestions,
+        PermissionAssignedGroupParser, assigned_group_suggestions, can_manage_group,
+        can_manage_permission, direct_permission_override_suggestions,
     };
     use crate::command::graph::{CommandArgumentParser, CommandParseErrorKind, ParsedArgument};
     use crate::command::reader::CommandReader;
@@ -709,15 +769,33 @@ mod tests {
     };
     use crate::permission::{PermissionEntry, PermissionKey, PermissionSet};
 
-    struct TestContext;
+    struct TestContext {
+        permissions: PermissionSet,
+    }
+
+    impl TestContext {
+        fn empty() -> Self {
+            Self {
+                permissions: PermissionSet::new(),
+            }
+        }
+
+        fn with_permissions<const N: usize>(permissions: [&str; N]) -> Self {
+            Self {
+                permissions: PermissionSet::from_entries(
+                    permissions.map(|permission| PermissionEntry::allow(key(permission))),
+                ),
+            }
+        }
+    }
 
     impl RequirementContext for TestContext {
         fn source_kind(&self) -> CommandSourceKind {
             CommandSourceKind::Player
         }
 
-        fn has_permission(&self, _permission: &PermissionExpr) -> bool {
-            false
+        fn has_permission(&self, permission: &PermissionExpr) -> bool {
+            self.permissions.allows(permission)
         }
     }
 
@@ -751,6 +829,9 @@ mod tests {
             suggestion_texts(direct_permission_override_suggestions(
                 "minecraft.command.gamemode.",
                 [first, second],
+                &TestContext::with_permissions([
+                    "steel.permission.manage.minecraft.command.gamemode.*",
+                ]),
             )),
             vec![
                 "minecraft.command.gamemode.creative",
@@ -763,7 +844,7 @@ mod tests {
     fn remove_group_parser_accepts_unknown_group_names() {
         let mut reader = CommandReader::new("legacy");
         let parsed = PermissionAssignedGroupParser::new("targets")
-            .parse(&mut reader, &TestContext)
+            .parse(&mut reader, &TestContext::empty())
             .expect("group parses");
 
         assert!(matches!(parsed, ParsedArgument::String(group) if group == "legacy"));
@@ -773,7 +854,7 @@ mod tests {
     fn remove_group_parser_rejects_invalid_group_names() {
         let mut reader = CommandReader::new("Legacy");
         let error = PermissionAssignedGroupParser::new("targets")
-            .parse(&mut reader, &TestContext)
+            .parse(&mut reader, &TestContext::empty())
             .expect_err("uppercase group should be invalid");
 
         assert!(matches!(
@@ -794,5 +875,29 @@ mod tests {
             )),
             vec!["veteran".to_owned(), "vip".to_owned()]
         );
+    }
+
+    #[test]
+    fn manage_permission_requires_targeted_management_permission() {
+        let context = TestContext::with_permissions([
+            "steel.permission.manage.minecraft.command.gamemode.creative",
+        ]);
+
+        assert!(can_manage_permission(
+            &context,
+            &key("minecraft.command.gamemode.creative")
+        ));
+        assert!(!can_manage_permission(
+            &context,
+            &key("minecraft.command.gamemode.survival")
+        ));
+    }
+
+    #[test]
+    fn manage_group_requires_targeted_group_permission() {
+        let context = TestContext::with_permissions(["steel.permission.group.op"]);
+
+        assert!(can_manage_group(&context, "op"));
+        assert!(!can_manage_group(&context, "admin"));
     }
 }

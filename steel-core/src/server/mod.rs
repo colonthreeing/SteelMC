@@ -42,7 +42,7 @@ use glam::DVec3;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::{
     error::Error,
-    fmt, mem,
+    fmt, io, mem,
     num::NonZero,
     path::Path,
     sync::{Arc, mpsc},
@@ -265,6 +265,12 @@ impl fmt::Display for PlayerPermissionUpdateError {
 }
 
 impl Error for PlayerPermissionUpdateError {}
+
+impl From<io::Error> for PlayerPermissionUpdateError {
+    fn from(value: io::Error) -> Self {
+        Self::Storage(value.to_string())
+    }
+}
 
 struct PendingPlayerJoin {
     player: Arc<Player>,
@@ -817,38 +823,36 @@ impl Server {
         groups: Vec<String>,
         overrides: PermissionSet,
     ) -> Result<(), PlayerPermissionUpdateError> {
-        let global = self
+        let saved = self
             .player_data_storage
-            .load_global(uuid)
-            .await
-            .map_err(|error| PlayerPermissionUpdateError::Storage(error.to_string()))?;
-        let previous_groups = global
-            .as_ref()
-            .map_or_else(Vec::new, |global| global.groups.clone());
-        validate_player_permission_group_update(
-            &self.config.permission_groups,
-            &previous_groups,
-            &groups,
-        )?;
-        let last_active_domain = global.map_or_else(
-            || self.worlds.default_domain().to_owned(),
-            |global| global.last_active_domain,
-        );
+            .update_global(uuid, |global| {
+                let previous_groups = global
+                    .as_ref()
+                    .map_or_else(Vec::new, |global| global.groups.clone());
+                validate_player_permission_group_update(
+                    &self.config.permission_groups,
+                    &previous_groups,
+                    &groups,
+                )?;
+                let last_active_domain = global.map_or_else(
+                    || self.worlds.default_domain().to_owned(),
+                    |global| global.last_active_domain,
+                );
 
-        self.player_data_storage
-            .save_global(
-                uuid,
-                &GlobalPlayerData {
+                Ok::<_, PlayerPermissionUpdateError>(GlobalPlayerData {
                     last_active_domain,
-                    groups: groups.clone(),
-                    permissions: overrides.clone(),
-                },
-            )
-            .await
-            .map_err(|error| PlayerPermissionUpdateError::Storage(error.to_string()))?;
+                    groups,
+                    permissions: overrides,
+                })
+            })
+            .await?;
 
-        self.set_cached_global_permission_state(uuid, groups.clone(), overrides.clone());
-        self.queue_online_global_permission_refresh(uuid, groups, overrides);
+        self.set_cached_global_permission_state(
+            uuid,
+            saved.groups.clone(),
+            saved.permissions.clone(),
+        );
+        self.queue_online_global_permission_refresh(uuid, saved.groups, saved.permissions);
         Ok(())
     }
 
@@ -1847,14 +1851,15 @@ impl Server {
 
         if let Err(e) = self
             .player_data_storage
-            .save_global(
-                player.gameprofile.id,
-                &GlobalPlayerData {
-                    last_active_domain: target_domain,
+            .update_global(player.gameprofile.id, |global| {
+                let mut global = global.unwrap_or(GlobalPlayerData {
+                    last_active_domain: target_domain.clone(),
                     groups: player.permission_groups(),
                     permissions: player.permission_overrides(),
-                },
-            )
+                });
+                global.last_active_domain = target_domain;
+                Ok::<_, io::Error>(global)
+            })
             .await
         {
             log::error!(

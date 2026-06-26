@@ -19,10 +19,16 @@ pub struct CommandNodeBuilder {
     children: Vec<CommandNodeBuilder>,
     executor: Option<CommandExecutor>,
     redirect: Option<CommandRedirect>,
-    derived_subcommand_permission: bool,
+    derived_subcommand_permission: Option<DerivedSubcommandPermissionMode>,
     dynamic_permissions: Vec<UnresolvedDynamicPermission>,
     resolved_dynamic_permissions: Vec<DynamicPermission>,
     catalog_permissions: Vec<PermissionKey>,
+}
+
+#[derive(Clone, Copy)]
+enum DerivedSubcommandPermissionMode {
+    AlternativeToRoot,
+    AdditionalToRoot,
 }
 
 impl CommandNodeBuilder {
@@ -58,10 +64,24 @@ impl CommandNodeBuilder {
     /// This must be used on a non-root literal node. The command registration
     /// resolves it by appending this literal path to the root command permission.
     /// For example, `tick freeze` derives `minecraft.command.tick.freeze`.
-    /// Use [`Self::requires_permission`] when a subcommand needs a custom key.
+    /// The command root permission also grants this node, while this derived
+    /// permission grants only this node path.
     #[must_use]
     pub const fn requires_subcommand_permission(mut self) -> Self {
-        self.derived_subcommand_permission = true;
+        self.derived_subcommand_permission =
+            Some(DerivedSubcommandPermissionMode::AlternativeToRoot);
+        self
+    }
+
+    /// Adds a derived subcommand permission that must be held in addition to
+    /// the command root permission.
+    ///
+    /// Use this for administrative subcommands where the root command grants
+    /// access to the command family but not to every sensitive action.
+    #[must_use]
+    pub const fn requires_additional_subcommand_permission(mut self) -> Self {
+        self.derived_subcommand_permission =
+            Some(DerivedSubcommandPermissionMode::AdditionalToRoot);
         self
     }
 
@@ -140,6 +160,11 @@ impl CommandNodeBuilder {
                 name: self.kind.display_name().to_owned(),
             });
         }
+        if self.derived_subcommand_permission.is_some() {
+            return Err(CommandGraphError::UnresolvedDerivedPermission {
+                name: self.kind.display_name().to_owned(),
+            });
+        }
         Ok(CommandNode {
             kind: self.kind,
             requirement: self.requirement,
@@ -159,15 +184,26 @@ impl CommandNodeBuilder {
         root_permission: &PermissionKey,
         catalog: &mut PermissionCatalog,
     ) -> Result<Self, CommandGraphError> {
-        self.resolve_subcommand_permissions_inner(root_permission, true, Vec::new(), catalog)
+        let mut alternate_root_permissions = Vec::new();
+        let resolved = self.resolve_subcommand_permissions_inner(
+            root_permission,
+            root_permission,
+            true,
+            Vec::new(),
+            catalog,
+            &mut alternate_root_permissions,
+        )?;
+        Ok(resolved.with_root_access_requirement(root_permission, alternate_root_permissions))
     }
 
     fn resolve_subcommand_permissions_inner(
         self,
+        root_permission: &PermissionKey,
         parent_permission: &PermissionKey,
         is_root: bool,
         available_arguments: Vec<AvailableArgument>,
         catalog: &mut PermissionCatalog,
+        alternate_root_permissions: &mut Vec<PermissionKey>,
     ) -> Result<Self, CommandGraphError> {
         let Self {
             kind,
@@ -199,19 +235,26 @@ impl CommandNodeBuilder {
             }
         };
 
-        if derived_subcommand_permission {
+        if let Some(permission_mode) = derived_subcommand_permission {
             if is_root || !matches!(kind, CommandNodeKind::Literal(_)) {
                 return Err(CommandGraphError::DerivedPermissionRequiresLiteral {
                     name: kind.display_name().to_owned(),
                 });
             }
-            requirement = requirement.and(Requirement::Permission(PermissionExpr::key(
-                current_permission.to_owned(),
-            )));
-            catalog.insert(
-                current_permission.to_owned(),
-                PermissionCatalogSource::Command,
-            );
+            let current_permission = current_permission.to_owned();
+            let requirement_permission = match permission_mode {
+                DerivedSubcommandPermissionMode::AlternativeToRoot => {
+                    push_unique_permission(alternate_root_permissions, current_permission.clone());
+                    PermissionExpr::key(root_permission.clone())
+                        | PermissionExpr::key(current_permission.clone())
+                }
+                DerivedSubcommandPermissionMode::AdditionalToRoot => {
+                    PermissionExpr::key(root_permission.clone())
+                        & PermissionExpr::key(current_permission.clone())
+                }
+            };
+            requirement = requirement.and(Requirement::Permission(requirement_permission));
+            catalog.insert(current_permission, PermissionCatalogSource::Command);
         }
 
         let mut resolved_dynamic_permissions = resolved_dynamic_permissions;
@@ -224,12 +267,18 @@ impl CommandNodeBuilder {
                 permission,
                 &available_arguments,
             )?;
-            register_dynamic_permission_catalog_entries(current_permission, permission, catalog)?;
+            for catalog_permission in register_dynamic_permission_catalog_entries(
+                current_permission,
+                permission,
+                catalog,
+            )? {
+                push_unique_permission(alternate_root_permissions, catalog_permission);
+            }
         }
         resolved_dynamic_permissions.extend(
             dynamic_permissions
                 .into_iter()
-                .map(|permission| permission.resolve(current_permission)),
+                .map(|permission| permission.resolve(root_permission, current_permission)),
         );
 
         Ok(Self {
@@ -239,20 +288,34 @@ impl CommandNodeBuilder {
                 .into_iter()
                 .map(|child| {
                     child.resolve_subcommand_permissions_inner(
+                        root_permission,
                         current_permission,
                         false,
                         available_arguments.clone(),
                         catalog,
+                        alternate_root_permissions,
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?,
             executor,
             redirect,
-            derived_subcommand_permission: false,
+            derived_subcommand_permission: None,
             dynamic_permissions: Vec::new(),
             resolved_dynamic_permissions,
             catalog_permissions,
         })
+    }
+
+    fn with_root_access_requirement(
+        self,
+        root_permission: &PermissionKey,
+        alternate_permissions: Vec<PermissionKey>,
+    ) -> Self {
+        let permission = alternate_permissions.into_iter().fold(
+            PermissionExpr::key(root_permission.clone()),
+            |permission, alternative| permission | PermissionExpr::key(alternative),
+        );
+        self.requires(Requirement::Permission(permission))
     }
 }
 
@@ -294,15 +357,22 @@ fn register_dynamic_permission_catalog_entries(
     base_permission: &PermissionKey,
     permission: &UnresolvedDynamicPermission,
     catalog: &mut PermissionCatalog,
-) -> Result<(), CommandGraphError> {
+) -> Result<Vec<PermissionKey>, CommandGraphError> {
+    let mut registered = Vec::new();
     for segment in permission.catalog_segments {
         let segment = PermissionSegment::parse(*segment)?;
-        catalog.insert(
-            base_permission.child(&segment)?,
-            PermissionCatalogSource::Command,
-        );
+        let key = base_permission.child(&segment)?;
+        catalog.insert(key.clone(), PermissionCatalogSource::Command);
+        registered.push(key);
     }
-    Ok(())
+    Ok(registered)
+}
+
+fn push_unique_permission(permissions: &mut Vec<PermissionKey>, permission: PermissionKey) {
+    if permissions.iter().any(|existing| existing == &permission) {
+        return;
+    }
+    permissions.push(permission);
 }
 
 fn collect_requirement_catalog_permissions(
@@ -349,7 +419,7 @@ pub fn literal(name: impl Into<String>) -> CommandNodeBuilder {
         children: Vec::new(),
         executor: None,
         redirect: None,
-        derived_subcommand_permission: false,
+        derived_subcommand_permission: None,
         dynamic_permissions: Vec::new(),
         resolved_dynamic_permissions: Vec::new(),
         catalog_permissions: Vec::new(),
@@ -371,7 +441,7 @@ pub fn argument(
         children: Vec::new(),
         executor: None,
         redirect: None,
-        derived_subcommand_permission: false,
+        derived_subcommand_permission: None,
         dynamic_permissions: Vec::new(),
         resolved_dynamic_permissions: Vec::new(),
         catalog_permissions: Vec::new(),

@@ -1,5 +1,5 @@
 //! This module contains the implementation of the world's entity-related methods.
-use std::sync::Arc;
+use std::{io, sync::Arc};
 
 use steel_protocol::packets::game::{
     CGameEvent, CPlayerInfoUpdate, CRemovePlayerInfo, GameEventType,
@@ -134,14 +134,15 @@ impl World {
         }
         if let Err(e) = server
             .player_data_storage
-            .save_global(
-                uuid,
-                &GlobalPlayerData {
-                    last_active_domain: domain,
+            .update_global(uuid, |global| {
+                let mut global = global.unwrap_or(GlobalPlayerData {
+                    last_active_domain: domain.clone(),
                     groups: player.permission_groups(),
                     permissions: player.permission_overrides(),
-                },
-            )
+                });
+                global.last_active_domain = domain;
+                Ok::<_, io::Error>(global)
+            })
             .await
         {
             log::error!("Failed to save global player data for {uuid}: {e}");

@@ -159,15 +159,19 @@ impl PlayerDataStorage {
     pub async fn save(&self, player: &Player) -> io::Result<()> {
         let domain = player.get_world().domain().to_owned();
         self.save_domain(&domain, player).await?;
-        self.save_global(
-            player.gameprofile.id,
-            &GlobalPlayerData {
-                last_active_domain: domain,
-                groups: player.permission_groups(),
-                permissions: player.permission_overrides(),
-            },
-        )
+        let groups = player.permission_groups();
+        let permissions = player.permission_overrides();
+        self.update_global(player.gameprofile.id, move |global| {
+            let mut global = global.unwrap_or(GlobalPlayerData {
+                last_active_domain: domain.clone(),
+                groups,
+                permissions,
+            });
+            global.last_active_domain = domain;
+            Ok::<_, io::Error>(global)
+        })
         .await
+        .map(|_| ())
     }
 
     /// Saves a player's data for a specific domain.
@@ -237,6 +241,18 @@ impl PlayerDataStorage {
             PlayerDataStorageBackend::File(storage) => {
                 storage.save_global_if_current(uuid, data, is_current).await
             }
+        }
+    }
+
+    /// Atomically loads, updates, and saves server-wide player data while holding
+    /// the destination player's global file lock.
+    pub async fn update_global<F, E>(&self, uuid: Uuid, update: F) -> Result<GlobalPlayerData, E>
+    where
+        F: FnOnce(Option<GlobalPlayerData>) -> Result<GlobalPlayerData, E> + Send,
+        E: From<io::Error>,
+    {
+        match &self.backend {
+            PlayerDataStorageBackend::File(storage) => storage.update_global(uuid, update).await,
         }
     }
 
@@ -399,6 +415,38 @@ impl FilePlayerDataStorage {
             .await
     }
 
+    async fn update_global<F, E>(&self, uuid: Uuid, update: F) -> Result<GlobalPlayerData, E>
+    where
+        F: FnOnce(Option<GlobalPlayerData>) -> Result<GlobalPlayerData, E> + Send,
+        E: From<io::Error>,
+    {
+        let players_dir = self.global_players_dir();
+        fs::create_dir_all(&players_dir).await.map_err(E::from)?;
+        let final_path = Self::player_file(&players_dir, uuid);
+        let lock = self.file_lock(&final_path);
+        let _guard = lock.lock().await;
+
+        let current = if final_path.exists() {
+            let bytes = fs::read(&final_path).await.map_err(E::from)?;
+            Some(
+                decode_global_file(&bytes)
+                    .map_err(E::from)?
+                    .into_global_data()
+                    .map_err(E::from)?,
+            )
+        } else {
+            None
+        };
+
+        let updated = update(current)?;
+        let file = GlobalPlayerDataFile::from_global_data(&updated);
+        let bytes = encode_global_file(&file).map_err(E::from)?;
+        Self::write_atomic_locked(&players_dir, uuid, bytes)
+            .await
+            .map_err(E::from)?;
+        Ok(updated)
+    }
+
     async fn load_known_players(&self) -> io::Result<KnownPlayers> {
         let path = self.known_players_file();
         let lock = self.file_lock(&path);
@@ -480,15 +528,22 @@ impl FilePlayerDataStorage {
         is_current: impl FnOnce() -> bool + Send,
     ) -> io::Result<bool> {
         fs::create_dir_all(players_dir).await?;
-        let temp_path = Self::temp_file(players_dir, uuid);
         let final_path = Self::player_file(players_dir, uuid);
-        let backup_path = Self::backup_file(players_dir, uuid);
         let lock = self.file_lock(&final_path);
         let _guard = lock.lock().await;
 
         if !is_current() {
             return Ok(false);
         }
+
+        Self::write_atomic_locked(players_dir, uuid, bytes).await?;
+        Ok(true)
+    }
+
+    async fn write_atomic_locked(players_dir: &Path, uuid: Uuid, bytes: Vec<u8>) -> io::Result<()> {
+        let temp_path = Self::temp_file(players_dir, uuid);
+        let final_path = Self::player_file(players_dir, uuid);
+        let backup_path = Self::backup_file(players_dir, uuid);
 
         fs::write(&temp_path, bytes).await?;
         if final_path.exists() {
@@ -497,8 +552,7 @@ impl FilePlayerDataStorage {
             }
             fs::rename(&final_path, &backup_path).await?;
         }
-        fs::rename(&temp_path, &final_path).await?;
-        Ok(true)
+        fs::rename(&temp_path, &final_path).await
     }
 
     async fn write_atomic_path(&self, final_path: &Path, bytes: Vec<u8>) -> io::Result<()> {
@@ -1011,6 +1065,50 @@ mod tests {
 
         assert_eq!(decoded.permissions, data.permissions);
         assert_eq!(decoded.groups, data.groups);
+    }
+
+    #[tokio::test]
+    async fn update_global_merges_with_current_file_under_lock() {
+        let root = temp_storage_root("global-update");
+        let storage = PlayerDataStorage::new(root.clone(), StorageSelection::default_player_file())
+            .await
+            .expect("storage should initialize");
+        let uuid = Uuid::from_u128(1);
+        let permissions = PermissionSet::from_entries([PermissionEntry::allow(
+            PermissionKey::parse("minecraft.command.give").expect("permission key parses"),
+        )]);
+
+        storage
+            .save_global(
+                uuid,
+                &GlobalPlayerData {
+                    last_active_domain: "overworld".to_owned(),
+                    groups: vec!["op".to_owned()],
+                    permissions: permissions.clone(),
+                },
+            )
+            .await
+            .expect("global data should save");
+
+        storage
+            .update_global(uuid, |global| {
+                let mut global = global.expect("global data should exist");
+                global.last_active_domain = "nether".to_owned();
+                Ok::<_, io::Error>(global)
+            })
+            .await
+            .expect("global data should update");
+
+        let data = storage
+            .load_global(uuid)
+            .await
+            .expect("global data should load")
+            .expect("global data should exist");
+        assert_eq!(data.last_active_domain, "nether");
+        assert_eq!(data.groups, vec!["op"]);
+        assert_eq!(data.permissions, permissions);
+
+        let _ = fs::remove_dir_all(root).await;
     }
 
     #[tokio::test]

@@ -198,37 +198,39 @@ impl CommandDispatcher {
             .has_root_permission()
             .then(|| permission_base.clone());
         let mut command_catalog = PermissionCatalog::new();
-        if let Some(permission) = &permission {
+        let root = if let Some(permission) = &permission {
             command_catalog.insert(permission.clone(), PermissionCatalogSource::Command);
-        }
-        let root = registration
-            .root
-            .clone()
-            .resolve_subcommand_permissions(&permission_base, &mut command_catalog)?;
-        self.register_root(root, permission.clone())?;
-        for alias in registration.aliases {
-            let mut alias_catalog = PermissionCatalog::new();
-            let root = registration
+            registration
                 .root
                 .clone()
-                .with_literal_name(alias)
-                .ok_or(CommandRegistrationError::RootMustBeLiteral)?
-                .resolve_subcommand_permissions(&permission_base, &mut alias_catalog)?;
-            self.register_root(root, permission.clone())?;
+                .resolve_subcommand_permissions(&permission_base, &mut command_catalog)?
+        } else {
+            registration.root.clone()
+        };
+        self.register_root(root)?;
+        for alias in registration.aliases {
+            let root = if permission.is_some() {
+                let mut alias_catalog = PermissionCatalog::new();
+                registration
+                    .root
+                    .clone()
+                    .with_literal_name(alias)
+                    .ok_or(CommandRegistrationError::RootMustBeLiteral)?
+                    .resolve_subcommand_permissions(&permission_base, &mut alias_catalog)?
+            } else {
+                registration
+                    .root
+                    .clone()
+                    .with_literal_name(alias)
+                    .ok_or(CommandRegistrationError::RootMustBeLiteral)?
+            };
+            self.register_root(root)?;
         }
         self.permission_catalog.extend(&command_catalog);
         Ok(())
     }
 
-    fn register_root(
-        &mut self,
-        root: CommandNodeBuilder,
-        permission: Option<PermissionKey>,
-    ) -> Result<(), CommandRegistrationError> {
-        let root = match permission {
-            Some(permission) => root.requires_permission(permission),
-            None => root,
-        };
+    fn register_root(&mut self, root: CommandNodeBuilder) -> Result<(), CommandRegistrationError> {
         self.graph.register_root(root)?;
         Ok(())
     }
@@ -537,6 +539,13 @@ mod tests {
         assert!(dispatcher.graph.has_root("gamemode", &gamemode_player));
         assert!(!dispatcher.graph.has_root("tp", &gamemode_player));
 
+        let gamemode_creative_player = player_context_with("minecraft.command.gamemode.creative");
+        assert!(
+            dispatcher
+                .graph
+                .has_root("gamemode", &gamemode_creative_player)
+        );
+
         let teleport_player = player_context_with("minecraft.command.teleport");
         assert!(dispatcher.graph.has_root("tp", &teleport_player));
         assert!(dispatcher.graph.has_root("teleport", &teleport_player));
@@ -557,14 +566,15 @@ mod tests {
         let dispatcher = CommandDispatcher::new().expect("built-in commands register");
         let tick_root_player = player_context_with("minecraft.command.tick");
         assert!(dispatcher.graph.has_root("tick", &tick_root_player));
+        assert!(
+            dispatcher
+                .graph
+                .parse("tick freeze", &tick_root_player)
+                .is_ok()
+        );
 
-        dispatcher
-            .graph
-            .parse("tick freeze", &tick_root_player)
-            .expect_err("subcommand permission should be required");
-
-        let tick_freeze_player =
-            player_context_with_all(["minecraft.command.tick", "minecraft.command.tick.freeze"]);
+        let tick_freeze_player = player_context_with("minecraft.command.tick.freeze");
+        assert!(dispatcher.graph.has_root("tick", &tick_freeze_player));
         assert!(
             dispatcher
                 .graph
@@ -597,16 +607,65 @@ mod tests {
             .expect("command registers");
 
         let root_player = player_context_with("minecraft.command.long");
-        let error = dispatcher
-            .graph
-            .parse("short child", &root_player)
-            .expect_err("subcommand should use overridden root permission");
-        assert_eq!(error.kind(), &CommandParseErrorKind::UnknownCommand);
+        assert!(dispatcher.graph.parse("short child", &root_player).is_ok());
 
-        let child_player =
-            player_context_with_all(["minecraft.command.long", "minecraft.command.long.child"]);
+        let child_player = player_context_with("minecraft.command.long.child");
         assert!(dispatcher.graph.parse("short child", &child_player).is_ok());
         assert!(dispatcher.graph.parse("alias child", &child_player).is_ok());
+    }
+
+    #[test]
+    fn additional_subcommand_permissions_require_root_and_child() {
+        let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
+        let mut dispatcher = CommandDispatcher::new_empty();
+
+        let registration = CommandRegistration::new(
+            literal("root")
+                .then(
+                    literal("view")
+                        .requires_subcommand_permission()
+                        .executes(|_, _| Ok(CommandResult::success())),
+                )
+                .then(
+                    literal("admin")
+                        .requires_additional_subcommand_permission()
+                        .executes(|_, _| Ok(CommandResult::success())),
+                ),
+            minecraft,
+        );
+
+        dispatcher
+            .register_command(registration)
+            .expect("command registers");
+
+        let root_player = player_context_with("minecraft.command.root");
+        assert!(dispatcher.graph.has_root("root", &root_player));
+        assert!(dispatcher.graph.parse("root admin", &root_player).is_err());
+
+        let child_player = player_context_with("minecraft.command.root.admin");
+        assert!(!dispatcher.graph.has_root("root", &child_player));
+
+        let view_and_admin_player = player_context_with_all([
+            "minecraft.command.root.view",
+            "minecraft.command.root.admin",
+        ]);
+        assert!(dispatcher.graph.has_root("root", &view_and_admin_player));
+        assert!(
+            dispatcher
+                .graph
+                .parse("root view", &view_and_admin_player)
+                .is_ok()
+        );
+        assert!(
+            dispatcher
+                .graph
+                .parse("root admin", &view_and_admin_player)
+                .is_err()
+        );
+
+        let admin_player =
+            player_context_with_all(["minecraft.command.root", "minecraft.command.root.admin"]);
+        assert!(dispatcher.graph.parse("root admin", &admin_player).is_ok());
     }
 
     #[test]
@@ -660,6 +719,28 @@ mod tests {
 
         let player = player_context_with("minecraft.command.root");
         assert!(dispatcher.graph.has_root("Alias", &player));
+    }
+
+    #[test]
+    fn public_commands_do_not_silently_discard_derived_permission_markers() {
+        let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
+        let mut dispatcher = CommandDispatcher::new_empty();
+        let registration = CommandRegistration::new(
+            literal("root").then(literal("child").requires_subcommand_permission()),
+            minecraft,
+        )
+        .public();
+
+        let Err(error) = dispatcher.register_command(registration) else {
+            panic!("public derived permission marker should fail registration");
+        };
+
+        assert!(matches!(
+            error,
+            CommandRegistrationError::InvalidGraph(
+                CommandGraphError::UnresolvedDerivedPermission { .. }
+            )
+        ));
     }
 
     #[test]

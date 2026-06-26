@@ -230,6 +230,11 @@ pub enum CommandGraphError {
         /// Node name.
         name: String,
     },
+    /// Derived subcommand permissions require command registration metadata.
+    UnresolvedDerivedPermission {
+        /// Node name.
+        name: String,
+    },
     /// A dynamic argument permission referenced an argument that is not available.
     MissingDynamicPermissionArgument {
         /// Node name.
@@ -276,6 +281,12 @@ impl fmt::Display for CommandGraphError {
                 write!(
                     f,
                     "dynamic permission on command node '{name}' was not resolved during registration"
+                )
+            }
+            Self::UnresolvedDerivedPermission { name } => {
+                write!(
+                    f,
+                    "derived permission on command node '{name}' was not resolved during registration"
                 )
             }
             Self::MissingDynamicPermissionArgument { node, argument } => {
@@ -429,11 +440,19 @@ impl UnresolvedDynamicPermission {
         }
     }
 
-    fn resolve(self, base_permission: &PermissionKey) -> DynamicPermission {
+    fn resolve(
+        self,
+        root_permission: &PermissionKey,
+        base_permission: &PermissionKey,
+    ) -> DynamicPermission {
+        let root_permission = root_permission.to_owned();
         let base_permission = base_permission.to_owned();
         let resolver = self.resolver;
         DynamicPermission {
-            resolver: Arc::new(move |arguments| resolver(&base_permission, arguments)),
+            resolver: Arc::new(move |arguments| {
+                Ok(PermissionExpr::key(root_permission.clone())
+                    | resolver(&base_permission, arguments)?)
+            }),
         }
     }
 }
@@ -889,6 +908,20 @@ mod tests {
     }
 
     #[test]
+    fn derived_subcommand_permission_requires_registration_resolution() {
+        let error = graph_registration_error(
+            literal("root").then(literal("child").requires_subcommand_permission()),
+        );
+
+        assert_eq!(
+            error,
+            CommandGraphError::UnresolvedDerivedPermission {
+                name: "child".to_owned()
+            }
+        );
+    }
+
+    #[test]
     fn dynamic_argument_permission_requires_available_argument() {
         let root_permission =
             PermissionKey::parse("minecraft.command.root").expect("permission key parses");
@@ -987,7 +1020,7 @@ mod tests {
     }
 
     #[test]
-    fn gamemode_requires_dynamic_value_permission() {
+    fn gamemode_allows_root_or_dynamic_value_permission() {
         let root_permission =
             PermissionKey::parse("minecraft.command.gamemode").expect("permission key parses");
         let mut catalog = PermissionCatalog::new();
@@ -997,17 +1030,14 @@ mod tests {
         let graph = graph_with_root(root);
 
         let root_only = player_context_with(root_permission.clone());
-        let error = graph
-            .parse("gamemode creative", &root_only)
-            .expect_err("denied dynamic permission should hide branch");
-        assert_eq!(error.kind(), &CommandParseErrorKind::UnknownCommand);
+        assert!(graph.parse("gamemode creative", &root_only).is_ok());
 
-        let creative = player_context_with_all([
-            root_permission,
+        let creative = player_context_with(
             PermissionKey::parse("minecraft.command.gamemode.creative")
                 .expect("permission key parses"),
-        ]);
+        );
         assert!(graph.parse("gamemode creative", &creative).is_ok());
+        assert!(graph.parse("gamemode survival", &creative).is_err());
     }
 
     #[test]
@@ -1031,6 +1061,19 @@ mod tests {
             .expect("survival suggestion");
 
         assert_eq!(suggestion_texts(&result), vec!["survival".to_owned()]);
+
+        let root = player_context_with(root_permission);
+        let result = graph.suggest("gamemode ", &root).expect("root suggestions");
+
+        assert_eq!(
+            suggestion_texts(&result),
+            vec![
+                "survival".to_owned(),
+                "creative".to_owned(),
+                "adventure".to_owned(),
+                "spectator".to_owned()
+            ]
+        );
     }
 
     #[test]
