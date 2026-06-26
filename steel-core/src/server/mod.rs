@@ -21,7 +21,7 @@ use crate::entity::{Entity, EntityBase, RemovalReason, SharedEntity, init_entiti
 
 use crate::chunk_saver::{ChunkStorage, registry::WorldStorageRegistry};
 use crate::level_data::{LevelDataManager, RespawnData, WorldGenerationSettings};
-use crate::permission::PermissionSet;
+use crate::permission::{PermissionGroups, PermissionSet};
 use crate::player::chunk_sender::{ChunkSender, EncodedChunk};
 use crate::player::connection::NetworkConnection;
 use crate::player::known_players::KnownPlayers;
@@ -90,9 +90,28 @@ fn cap_positive_thread_count(
     Some(configured_threads.min(available_threads.max(1)))
 }
 
+fn validate_player_permission_group_update(
+    permission_groups: &PermissionGroups,
+    previous_groups: &[String],
+    groups: &[String],
+) -> Result<(), PlayerPermissionUpdateError> {
+    for group in groups {
+        if !permission_groups.contains_group(group)
+            && !previous_groups.iter().any(|previous| previous == group)
+        {
+            return Err(PlayerPermissionUpdateError::UnknownGroup(group.clone()));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::cap_positive_thread_count;
+    use super::{
+        PlayerPermissionUpdateError, cap_positive_thread_count,
+        validate_player_permission_group_update,
+    };
+    use crate::permission::PermissionGroups;
 
     #[test]
     fn positive_thread_count_is_capped_to_available_threads() {
@@ -104,6 +123,35 @@ mod tests {
     fn zero_thread_count_keeps_pool_default() {
         assert_eq!(cap_positive_thread_count(Some(0), 8), None);
         assert_eq!(cap_positive_thread_count(None, 8), None);
+    }
+
+    #[test]
+    fn permission_group_update_preserves_existing_unknown_groups() {
+        let groups = PermissionGroups::default();
+
+        assert!(
+            validate_player_permission_group_update(
+                &groups,
+                &["legacy".to_owned()],
+                &["legacy".to_owned(), "op".to_owned()],
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_player_permission_group_update(&groups, &["legacy".to_owned()], &[]).is_ok()
+        );
+    }
+
+    #[test]
+    fn permission_group_update_rejects_new_unknown_groups() {
+        let groups = PermissionGroups::default();
+
+        assert_eq!(
+            validate_player_permission_group_update(&groups, &[], &["legacy".to_owned()]),
+            Err(PlayerPermissionUpdateError::UnknownGroup(
+                "legacy".to_owned()
+            ))
+        );
     }
 }
 
@@ -718,14 +766,19 @@ impl Server {
     ///
     /// # Errors
     ///
-    /// Returns an error if any assigned group is not configured.
+    /// Returns an error if the update adds an unconfigured group.
     pub fn update_player_global_permissions(
         self: &Arc<Self>,
         player: &Arc<Player>,
         groups: Vec<String>,
         overrides: PermissionSet,
     ) -> Result<(), PlayerPermissionUpdateError> {
-        self.validate_player_permission_groups(&groups)?;
+        let previous_groups = player.permission_groups();
+        validate_player_permission_group_update(
+            &self.config.permission_groups,
+            &previous_groups,
+            &groups,
+        )?;
 
         let version = self.apply_global_permission_state(player, groups, overrides);
         self.resend_player_permission_context(player);
@@ -738,7 +791,7 @@ impl Server {
     ///
     /// # Errors
     ///
-    /// Returns an error if any assigned group is not configured or the player data
+    /// Returns an error if the update adds an unconfigured group or the player data
     /// cannot be read or written.
     pub async fn update_offline_player_global_permissions(
         self: &Arc<Self>,
@@ -746,17 +799,23 @@ impl Server {
         groups: Vec<String>,
         overrides: PermissionSet,
     ) -> Result<(), PlayerPermissionUpdateError> {
-        self.validate_player_permission_groups(&groups)?;
-
-        let last_active_domain = self
+        let global = self
             .player_data_storage
             .load_global(uuid)
             .await
-            .map_err(|error| PlayerPermissionUpdateError::Storage(error.to_string()))?
-            .map_or_else(
-                || self.worlds.default_domain().to_owned(),
-                |global| global.last_active_domain,
-            );
+            .map_err(|error| PlayerPermissionUpdateError::Storage(error.to_string()))?;
+        let previous_groups = global
+            .as_ref()
+            .map_or_else(Vec::new, |global| global.groups.clone());
+        validate_player_permission_group_update(
+            &self.config.permission_groups,
+            &previous_groups,
+            &groups,
+        )?;
+        let last_active_domain = global.map_or_else(
+            || self.worlds.default_domain().to_owned(),
+            |global| global.last_active_domain,
+        );
 
         self.player_data_storage
             .save_global(
@@ -789,18 +848,6 @@ impl Server {
             server.resend_player_permission_context(&player);
             server.save_player_global_permissions(player, version);
         }));
-    }
-
-    fn validate_player_permission_groups(
-        &self,
-        groups: &[String],
-    ) -> Result<(), PlayerPermissionUpdateError> {
-        for group in groups {
-            if !self.config.permission_groups.contains_group(group) {
-                return Err(PlayerPermissionUpdateError::UnknownGroup(group.clone()));
-            }
-        }
-        Ok(())
     }
 
     fn save_player_global_permissions(self: &Arc<Self>, player: Arc<Player>, version: u64) {

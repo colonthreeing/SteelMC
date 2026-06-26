@@ -17,6 +17,7 @@
       "type": "object",
       "description": "Permission groups keyed by group name",
       "minProperties": 1,
+      "required": ["op"],
       "additionalProperties": {
         "$ref": "#/definitions/group"
       }

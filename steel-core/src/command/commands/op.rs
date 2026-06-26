@@ -18,11 +18,10 @@ use crate::command::reader::CommandReader;
 use crate::command::requirement::CommandInputContext;
 use crate::command::sender::CommandSender;
 use crate::command::{CommandRegistration, CommandRegistrationError};
+use crate::permission::OP_GROUP;
 use crate::server::Server;
 
 use super::permission_targets;
-
-const OP_GROUP: &str = "op";
 
 pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
     CommandRegistration::minecraft(command())

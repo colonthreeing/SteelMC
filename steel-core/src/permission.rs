@@ -9,6 +9,9 @@ use std::{
 
 use serde::Deserialize;
 
+/// Built-in operator group name used by `/op`.
+pub(crate) const OP_GROUP: &str = "op";
+
 /// One dotted permission key.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PermissionKey(String);
@@ -512,7 +515,7 @@ impl Default for PermissionGroupsConfig {
         let mut groups = BTreeMap::new();
         groups.insert("default".to_owned(), PermissionGroupConfig::default());
         groups.insert(
-            "op".to_owned(),
+            OP_GROUP.to_owned(),
             PermissionGroupConfig {
                 allow: vec!["*".to_owned()],
                 deny: Vec::new(),
@@ -556,7 +559,7 @@ impl Default for PermissionGroups {
             },
         );
         groups.insert(
-            "op".to_owned(),
+            OP_GROUP.to_owned(),
             PermissionGroup {
                 permissions: op_permissions,
             },
@@ -581,6 +584,11 @@ impl PermissionGroups {
             if !config.groups.contains_key(group) {
                 return Err(PermissionConfigError::MissingDefaultGroup(group.clone()));
             }
+        }
+        if !config.groups.contains_key(OP_GROUP) {
+            return Err(PermissionConfigError::MissingRequiredGroup(
+                OP_GROUP.to_owned(),
+            ));
         }
 
         let mut groups = BTreeMap::new();
@@ -658,7 +666,7 @@ impl PermissionGroups {
             self.append_group_permissions(group, &mut effective);
         }
         for entry in player_permissions.entries() {
-            effective.push(entry.clone());
+            effective.set(entry.key().clone(), entry.state());
         }
 
         effective
@@ -706,6 +714,8 @@ impl PermissionGroup {
 pub enum PermissionConfigError {
     /// A default group name does not exist in the group map.
     MissingDefaultGroup(String),
+    /// A built-in required group name does not exist in the group map.
+    MissingRequiredGroup(String),
     /// A group contains an invalid permission key.
     InvalidPermissionKey {
         /// Group containing the bad key.
@@ -727,6 +737,9 @@ impl fmt::Display for PermissionConfigError {
         match self {
             Self::MissingDefaultGroup(group) => {
                 write!(f, "default permission group '{group}' is not configured")
+            }
+            Self::MissingRequiredGroup(group) => {
+                write!(f, "required permission group '{group}' is not configured")
             }
             Self::InvalidPermissionKey { group, source } => {
                 write!(
@@ -974,6 +987,18 @@ mod tests {
     }
 
     #[test]
+    fn op_group_is_required_for_builtin_op_command() {
+        let mut config = PermissionGroupsConfig::default();
+        config.groups.remove(super::OP_GROUP);
+
+        assert!(matches!(
+            PermissionGroups::from_config(config),
+            Err(super::PermissionConfigError::MissingRequiredGroup(group))
+                if group == super::OP_GROUP
+        ));
+    }
+
+    #[test]
     fn groups_register_config_permissions_in_catalog() {
         let groups = PermissionGroups::from_config(PermissionGroupsConfig::default())
             .expect("default groups config is valid");
@@ -987,6 +1012,27 @@ mod tests {
                 .entries()
                 .all(|entry| entry.sources().contains(&PermissionCatalogSource::Config))
         );
+    }
+
+    #[test]
+    fn player_permissions_override_exact_group_entries() {
+        let mut config = PermissionGroupsConfig::default();
+        let default_group = config
+            .groups
+            .get_mut("default")
+            .expect("default group exists");
+        default_group.deny.push("steel.admin".to_owned());
+        default_group.allow.push("steel.fly".to_owned());
+        let groups = PermissionGroups::from_config(config).expect("groups config is valid");
+
+        let player_permissions = PermissionSet::from_entries([
+            PermissionEntry::allow(key("steel.admin")),
+            PermissionEntry::deny(key("steel.fly")),
+        ]);
+        let effective = groups.effective_permissions(&[], &player_permissions);
+
+        assert!(effective.allows_key(&key("steel.admin")));
+        assert!(!effective.allows_key(&key("steel.fly")));
     }
 
     #[test]

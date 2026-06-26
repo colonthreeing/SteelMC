@@ -8,15 +8,17 @@ use text_components::TextComponent;
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandArgumentParser, CommandNodeBuilder, CommandParseError, CommandResult, ParsedArgument,
-    ParsedArguments, PermissionTarget, argument, literal,
+    CommandArgumentParser, CommandNodeBuilder, CommandParseError, CommandParseErrorKind,
+    CommandResult, ParsedArgument, ParsedArguments, PermissionTarget, argument, literal,
 };
 use crate::command::parsers::{PermissionGroupParser, PermissionKeyParser, PermissionTargetParser};
-use crate::command::reader::CommandReader;
+use crate::command::reader::{CommandReader, StringMode};
 use crate::command::requirement::CommandInputContext;
 use crate::command::sender::CommandSender;
 use crate::command::{CommandRegistration, CommandRegistrationError};
-use crate::permission::{PermissionEntry, PermissionKey, PermissionSet, PermissionState};
+use crate::permission::{
+    PermissionEntry, PermissionKey, PermissionSegment, PermissionSet, PermissionState,
+};
 use crate::server::Server;
 
 use super::permission_targets;
@@ -61,9 +63,10 @@ pub fn command() -> CommandNodeBuilder {
                 )
                 .then(
                     literal("group").then(
-                        literal("remove")
-                            .requires_subcommand_permission()
-                            .then(argument("group", PermissionGroupParser).executes(remove_group)),
+                        literal("remove").requires_subcommand_permission().then(
+                            argument("group", PermissionAssignedGroupParser::new("targets"))
+                                .executes(remove_group),
+                        ),
                     ),
                 ),
         ),
@@ -116,6 +119,64 @@ impl CommandArgumentParser for PermissionOverrideParser {
             .filter_map(|target| permission_targets::online_state(server, &target))
             .map(|(_, state)| state.overrides);
         direct_permission_override_suggestions(prefix, overrides)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PermissionAssignedGroupParser {
+    targets_argument: &'static str,
+}
+
+impl PermissionAssignedGroupParser {
+    const fn new(targets_argument: &'static str) -> Self {
+        Self { targets_argument }
+    }
+}
+
+impl CommandArgumentParser for PermissionAssignedGroupParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let value = reader.read_string(StringMode::SingleWord)?;
+        PermissionSegment::parse(value.clone()).map_err(|_| {
+            CommandParseError::new(
+                CommandParseErrorKind::InvalidPermissionGroup(value.clone()),
+                cursor,
+            )
+        })?;
+
+        Ok(ParsedArgument::String(value))
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        PermissionGroupParser.usage()
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        PermissionGroupParser.parsed_type()
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        arguments: &ParsedArguments,
+        context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        let Ok(targets) = arguments.get::<Vec<PermissionTarget>>(self.targets_argument) else {
+            return Vec::new();
+        };
+        let Some(server) = context.server() else {
+            return Vec::new();
+        };
+
+        let groups = targets
+            .into_iter()
+            .filter_map(|target| permission_targets::online_state(server, &target))
+            .map(|(_, state)| state.groups);
+        assigned_group_suggestions(prefix, groups)
     }
 }
 
@@ -588,6 +649,25 @@ fn direct_permission_override_suggestions(
     permissions.into_iter().map(SuggestionEntry::new).collect()
 }
 
+fn assigned_group_suggestions(
+    prefix: &str,
+    groups: impl IntoIterator<Item = Vec<String>>,
+) -> Vec<SuggestionEntry> {
+    let mut assigned_groups = BTreeSet::new();
+    for groups in groups {
+        for group in groups {
+            if group.starts_with(prefix) {
+                assigned_groups.insert(group);
+            }
+        }
+    }
+
+    assigned_groups
+        .into_iter()
+        .map(SuggestionEntry::new)
+        .collect()
+}
+
 fn permission_state_text(state: PermissionState) -> &'static str {
     match state {
         PermissionState::Allow => "allow",
@@ -617,8 +697,30 @@ fn command_result(count: usize) -> CommandResult {
 
 #[cfg(test)]
 mod tests {
-    use super::direct_permission_override_suggestions;
+    use super::{
+        PermissionAssignedGroupParser, assigned_group_suggestions,
+        direct_permission_override_suggestions,
+    };
+    use crate::command::graph::{CommandArgumentParser, CommandParseErrorKind, ParsedArgument};
+    use crate::command::reader::CommandReader;
+    use crate::command::requirement::{
+        CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext,
+    };
     use crate::permission::{PermissionEntry, PermissionKey, PermissionSet};
+
+    struct TestContext;
+
+    impl RequirementContext for TestContext {
+        fn source_kind(&self) -> CommandSourceKind {
+            CommandSourceKind::Player
+        }
+
+        fn has_permission(&self, _permission: &PermissionExpr) -> bool {
+            false
+        }
+    }
+
+    impl CommandInputContext for TestContext {}
 
     fn key(value: &str) -> PermissionKey {
         PermissionKey::parse(value).expect("permission key parses")
@@ -653,6 +755,43 @@ mod tests {
                 "minecraft.command.gamemode.creative",
                 "minecraft.command.gamemode.survival",
             ]
+        );
+    }
+
+    #[test]
+    fn remove_group_parser_accepts_unknown_group_names() {
+        let mut reader = CommandReader::new("legacy");
+        let parsed = PermissionAssignedGroupParser::new("targets")
+            .parse(&mut reader, &TestContext)
+            .expect("group parses");
+
+        assert!(matches!(parsed, ParsedArgument::String(group) if group == "legacy"));
+    }
+
+    #[test]
+    fn remove_group_parser_rejects_invalid_group_names() {
+        let mut reader = CommandReader::new("Legacy");
+        let error = PermissionAssignedGroupParser::new("targets")
+            .parse(&mut reader, &TestContext)
+            .expect_err("uppercase group should be invalid");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidPermissionGroup(group) if group == "Legacy"
+        ));
+    }
+
+    #[test]
+    fn remove_group_suggestions_only_include_assigned_groups() {
+        assert_eq!(
+            suggestion_texts(assigned_group_suggestions(
+                "v",
+                [
+                    vec!["vip".to_owned(), "legacy".to_owned()],
+                    vec!["vip".to_owned(), "veteran".to_owned()],
+                ],
+            )),
+            vec!["veteran".to_owned(), "vip".to_owned()]
         );
     }
 }
