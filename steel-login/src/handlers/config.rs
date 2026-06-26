@@ -100,6 +100,7 @@ impl JavaTcpClient {
             .await
             .clone()
             .expect("Game profile is empty");
+        self.server.record_known_player(&gameprofile);
 
         let client_info = self.client_information.lock().await.clone();
 

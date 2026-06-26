@@ -20,15 +20,19 @@ use crate::chunk_saver::PersistentEntity;
 use crate::config::StorageSelection;
 use crate::permission::{PermissionEntry, PermissionKey, PermissionSet, PermissionState};
 use crate::player::Player;
+use crate::player::known_players::{KnownPlayer, KnownPlayers};
 use steel_registry::item_stack::ItemStack;
 use steel_utils::Identifier;
 use steel_utils::locks::{AsyncMutex, SyncMutex};
 
 const PLAYER_MAGIC: [u8; 4] = *b"STLP";
 const GLOBAL_MAGIC: [u8; 4] = *b"STLG";
+const KNOWN_PLAYERS_MAGIC: [u8; 4] = *b"STLK";
 const PLAYER_STORAGE_VERSION: u16 = 6;
 const GLOBAL_STORAGE_VERSION: u16 = 3;
+const KNOWN_PLAYERS_STORAGE_VERSION: u16 = 1;
 const GLOBAL_PLAYER_DATA_VERSION: i32 = 3;
+const KNOWN_PLAYERS_DATA_VERSION: i32 = 1;
 
 /// Server-wide player data.
 #[derive(Debug, Clone)]
@@ -123,6 +127,18 @@ struct PermissionEntryFile {
     allow: bool,
 }
 
+#[derive(SchemaWrite, SchemaRead)]
+struct KnownPlayersFile {
+    data_version: i32,
+    players: Vec<KnownPlayerFile>,
+}
+
+#[derive(SchemaWrite, SchemaRead)]
+struct KnownPlayerFile {
+    uuid: [u8; 16],
+    last_known_name: String,
+}
+
 impl PlayerDataStorage {
     /// Creates player data storage from config.
     pub async fn new(save_root: PathBuf, selection: StorageSelection) -> io::Result<Self> {
@@ -194,6 +210,20 @@ impl PlayerDataStorage {
     pub async fn save_global(&self, uuid: Uuid, data: &GlobalPlayerData) -> io::Result<()> {
         match &self.backend {
             PlayerDataStorageBackend::File(storage) => storage.save_global(uuid, data).await,
+        }
+    }
+
+    /// Loads the known player index.
+    pub async fn load_known_players(&self) -> io::Result<KnownPlayers> {
+        match &self.backend {
+            PlayerDataStorageBackend::File(storage) => storage.load_known_players().await,
+        }
+    }
+
+    /// Saves the known player index.
+    pub async fn save_known_players(&self, players: &KnownPlayers) -> io::Result<()> {
+        match &self.backend {
+            PlayerDataStorageBackend::File(storage) => storage.save_known_players(players).await,
         }
     }
 
@@ -278,8 +308,36 @@ impl FilePlayerDataStorage {
             .await
     }
 
+    async fn load_known_players(&self) -> io::Result<KnownPlayers> {
+        let path = self.known_players_file();
+        let lock = self.file_lock(&path);
+        let _guard = lock.lock().await;
+        if !path.exists() {
+            return Ok(KnownPlayers::new());
+        }
+
+        let bytes = fs::read(&path).await?;
+        let file = decode_known_players_file(&bytes)?;
+        file.into_known_players()
+    }
+
+    async fn save_known_players(&self, players: &KnownPlayers) -> io::Result<()> {
+        let file = KnownPlayersFile::from_known_players(players);
+        let bytes = encode_known_players_file(&file)?;
+        self.write_atomic_path(&self.known_players_file(), bytes)
+            .await
+    }
+
+    fn global_dir(&self) -> PathBuf {
+        self.save_root.join("global")
+    }
+
     fn global_players_dir(&self) -> PathBuf {
-        self.save_root.join("global").join("players")
+        self.global_dir().join("players")
+    }
+
+    fn known_players_file(&self) -> PathBuf {
+        self.global_dir().join("known_players.dat")
     }
 
     fn domain_players_dir(&self, domain: &str) -> PathBuf {
@@ -322,6 +380,30 @@ impl FilePlayerDataStorage {
             fs::rename(&final_path, &backup_path).await?;
         }
         fs::rename(&temp_path, &final_path).await
+    }
+
+    async fn write_atomic_path(&self, final_path: &Path, bytes: Vec<u8>) -> io::Result<()> {
+        let Some(parent) = final_path.parent() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "atomic write path has no parent",
+            ));
+        };
+        fs::create_dir_all(parent).await?;
+
+        let temp_path = final_path.with_extension("dat.tmp");
+        let backup_path = final_path.with_extension("dat_old");
+        let lock = self.file_lock(final_path);
+        let _guard = lock.lock().await;
+
+        fs::write(&temp_path, bytes).await?;
+        if final_path.exists() {
+            if backup_path.exists() {
+                let _ = fs::remove_file(&backup_path).await;
+            }
+            fs::rename(final_path, &backup_path).await?;
+        }
+        fs::rename(&temp_path, final_path).await
     }
 }
 
@@ -377,6 +459,38 @@ impl GlobalPlayerDataFile {
             groups: self.groups,
             permissions,
         })
+    }
+}
+
+impl KnownPlayersFile {
+    fn from_known_players(players: &KnownPlayers) -> Self {
+        Self {
+            data_version: KNOWN_PLAYERS_DATA_VERSION,
+            players: players
+                .entries()
+                .iter()
+                .map(|player| KnownPlayerFile {
+                    uuid: *player.uuid().as_bytes(),
+                    last_known_name: player.last_known_name().to_owned(),
+                })
+                .collect(),
+        }
+    }
+
+    fn into_known_players(self) -> io::Result<KnownPlayers> {
+        if self.data_version != KNOWN_PLAYERS_DATA_VERSION {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "unsupported known player index payload version {}",
+                    self.data_version
+                ),
+            ));
+        }
+
+        Ok(KnownPlayers::from_entries(self.players.into_iter().map(
+            |player| KnownPlayer::new(Uuid::from_bytes(player.uuid), player.last_known_name),
+        )))
     }
 }
 
@@ -545,6 +659,20 @@ fn encode_global_file(file: &GlobalPlayerDataFile) -> io::Result<Vec<u8>> {
 
 fn decode_global_file(bytes: &[u8]) -> io::Result<GlobalPlayerDataFile> {
     let payload = decode_file(GLOBAL_MAGIC, GLOBAL_STORAGE_VERSION, bytes)?;
+    wincode::deserialize(&payload)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+}
+
+fn encode_known_players_file(file: &KnownPlayersFile) -> io::Result<Vec<u8>> {
+    encode_file(
+        KNOWN_PLAYERS_MAGIC,
+        KNOWN_PLAYERS_STORAGE_VERSION,
+        wincode::serialize(file),
+    )
+}
+
+fn decode_known_players_file(bytes: &[u8]) -> io::Result<KnownPlayersFile> {
+    let payload = decode_file(KNOWN_PLAYERS_MAGIC, KNOWN_PLAYERS_STORAGE_VERSION, bytes)?;
     wincode::deserialize(&payload)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
 }
@@ -739,6 +867,28 @@ mod tests {
 
         assert_eq!(decoded.permissions, data.permissions);
         assert_eq!(decoded.groups, data.groups);
+    }
+
+    #[test]
+    fn known_players_file_roundtrip_preserves_entries() {
+        let players = KnownPlayers::from_entries([
+            KnownPlayer::new(Uuid::from_u128(1), "Steve"),
+            KnownPlayer::new(Uuid::from_u128(2), "Alex"),
+        ]);
+
+        let file = KnownPlayersFile::from_known_players(&players);
+        let encoded = encode_known_players_file(&file).expect("known players file should encode");
+        let decoded =
+            decode_known_players_file(&encoded).expect("known players file should decode");
+        let decoded = decoded
+            .into_known_players()
+            .expect("known players file should convert");
+
+        assert_eq!(
+            u16::from_le_bytes([encoded[4], encoded[5]]),
+            KNOWN_PLAYERS_STORAGE_VERSION
+        );
+        assert_eq!(decoded, players);
     }
 
     #[test]

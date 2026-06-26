@@ -16,6 +16,7 @@ mod game_mode_state;
 mod game_profile;
 mod health_sync;
 mod input_state;
+pub mod known_players;
 mod lifecycle_state;
 pub mod message_chain;
 mod message_validator;

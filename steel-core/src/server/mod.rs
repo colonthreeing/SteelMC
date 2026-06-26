@@ -24,9 +24,10 @@ use crate::level_data::{LevelDataManager, RespawnData, WorldGenerationSettings};
 use crate::permission::PermissionSet;
 use crate::player::chunk_sender::{ChunkSender, EncodedChunk};
 use crate::player::connection::NetworkConnection;
+use crate::player::known_players::KnownPlayers;
 use crate::player::player_data::{PersistentPlayerData, PersistentRootVehicle};
 use crate::player::player_data_storage::{GlobalPlayerData, PlayerDataStorage};
-use crate::player::{Player, ResetReason};
+use crate::player::{GameProfile, Player, ResetReason};
 use crate::portal::{TeleportTransition, WorldChangeRequest};
 use crate::server::jobs::{JobPoll, ServerJob, ServerJobContext, ServerJobQueue};
 use crate::server::registry_cache::RegistryCache;
@@ -402,6 +403,8 @@ pub struct Server {
     pub jobs: ServerJobQueue,
     /// Player data storage for saving/loading player state.
     pub player_data_storage: PlayerDataStorage,
+    /// Player profiles known to this server, keyed by UUID and last known name.
+    known_players: SyncRwLock<KnownPlayers>,
     /// Player joins prepared by async I/O and finalized at the game tick safe point.
     pending_player_joins: PlayerJoinQueue,
     /// Queued world changes to process after the tick.
@@ -468,6 +471,10 @@ impl Server {
         )
         .await
         .map_err(|e| format!("failed to create player data storage: {e}"))?;
+        let known_players = player_data_storage
+            .load_known_players()
+            .await
+            .map_err(|e| format!("failed to load known player index: {e}"))?;
         let mut worlds = WorldMap::new(
             resolved_worlds.default_domain.clone(),
             &resolved_worlds.domains,
@@ -545,6 +552,7 @@ impl Server {
             ),
             jobs: ServerJobQueue::new(),
             player_data_storage,
+            known_players: SyncRwLock::new(known_players),
             pending_player_joins: PlayerJoinQueue::new(),
             pending_world_changes: SyncMutex::new(vec![]),
             pending_domain_switches: SyncMutex::new(vec![]),
@@ -724,6 +732,38 @@ impl Server {
         tokio::spawn(async move {
             if let Err(e) = server.player_data_storage.save_global(uuid, &data).await {
                 log::error!("Failed to save global permission data for {name} ({uuid}): {e}");
+            }
+        });
+    }
+
+    /// Returns a snapshot of players known to this server.
+    #[must_use]
+    pub fn known_players(&self) -> KnownPlayers {
+        self.known_players.read().clone()
+    }
+
+    /// Records a player profile in the known-player index and persists it if changed.
+    pub fn record_known_player(self: &Arc<Self>, profile: &GameProfile) {
+        let changed = self
+            .known_players
+            .write()
+            .record(profile.id, profile.name.clone());
+        if changed {
+            self.save_known_players();
+        }
+    }
+
+    fn save_known_players(self: &Arc<Self>) {
+        let server = Arc::clone(self);
+        let players = self.known_players();
+
+        tokio::spawn(async move {
+            if let Err(e) = server
+                .player_data_storage
+                .save_known_players(&players)
+                .await
+            {
+                log::error!("Failed to save known player index: {e}");
             }
         });
     }
