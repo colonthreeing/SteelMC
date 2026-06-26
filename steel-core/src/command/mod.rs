@@ -2,6 +2,7 @@
 pub mod commands;
 pub mod context;
 pub mod error;
+mod executor;
 pub mod graph;
 pub mod parsers;
 pub mod reader;
@@ -15,8 +16,8 @@ use text_components::TextComponent;
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandGraph, CommandGraphError, CommandNodeBuilder, CommandParseError, CommandParseErrorKind,
-    CommandResult,
+    CommandFuture, CommandGraph, CommandGraphError, CommandNodeBuilder, CommandParseError,
+    CommandParseErrorKind, CommandResult,
 };
 use crate::command::requirement::RequirementContext;
 use crate::command::sender::CommandSender;
@@ -25,8 +26,10 @@ use crate::player::Player;
 use crate::server::Server;
 use std::{error::Error, fmt, sync::Arc};
 
+pub(crate) use executor::CommandQueue;
+
 /// Parses and dispatches commands through the command graph.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct CommandDispatcher {
     /// Dynamic command graph.
     graph: CommandGraph,
@@ -214,10 +217,17 @@ impl CommandDispatcher {
     }
 
     /// Executes a command.
-    pub fn handle_command(&self, sender: CommandSender, command: String, server: &Arc<Server>) {
+    pub async fn handle_command(
+        &self,
+        sender: CommandSender,
+        command: String,
+        server: &Arc<Server>,
+    ) {
         let mut context = CommandContext::new(sender.clone(), server.clone());
 
-        let result = self.dispatch_with_context(&command, &mut context);
+        let result = self
+            .dispatch_with_context(command.clone(), &mut context)
+            .await;
 
         if let Err(error) = result {
             sender.send_failure_feedback(error.into_feedback(&command));
@@ -225,15 +235,15 @@ impl CommandDispatcher {
     }
 
     /// Executes a command using an existing command context.
-    pub fn dispatch_with_context(
-        &self,
-        command: &str,
-        context: &mut CommandContext,
-    ) -> Result<CommandResult, CommandError> {
-        self.execute_graph(command, context)
+    pub fn dispatch_with_context<'a>(
+        &'a self,
+        command: String,
+        context: &'a mut CommandContext,
+    ) -> CommandFuture<'a> {
+        Box::pin(async move { self.execute_graph(&command, context).await })
     }
 
-    fn execute_graph(
+    async fn execute_graph(
         &self,
         command: &str,
         context: &mut CommandContext,
@@ -241,9 +251,8 @@ impl CommandDispatcher {
         self.graph
             .parse(command, context)
             .map_err(|error| Self::parse_error_to_command_error(command, error))?
-            .execute_with_dispatcher(context, |command, context| {
-                self.dispatch_with_context(command, context)
-            })
+            .execute_with_dispatcher(context, self)
+            .await
     }
 
     fn parse_error_to_command_error(input: &str, error: CommandParseError) -> CommandError {

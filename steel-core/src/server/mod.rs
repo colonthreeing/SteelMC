@@ -15,7 +15,7 @@ use crate::chunk::{
     chunk_access::ChunkStatus,
     chunk_request::{ChunkRequestHandle, ChunkRequestState, ChunkTicketKind},
 };
-use crate::command::{CommandDispatcher, commands::gamemode};
+use crate::command::{CommandDispatcher, CommandQueue, commands::gamemode, sender::CommandSender};
 use crate::config::{ResolvedWorldConfig, RuntimeConfig, WorldsConfig};
 use crate::entity::{Entity, EntityBase, RemovalReason, SharedEntity, init_entities};
 
@@ -399,6 +399,8 @@ pub struct Server {
     pub tick_rate_manager: SyncRwLock<TickRateManager>,
     /// Parses and dispatches commands.
     pub command_dispatcher: SyncRwLock<CommandDispatcher>,
+    /// Serializes async command execution outside packet handling.
+    command_queue: CommandQueue,
     /// Jobs resumed from a known point in the server game tick.
     pub jobs: ServerJobQueue,
     /// Player data storage for saving/loading player state.
@@ -550,6 +552,7 @@ impl Server {
                 CommandDispatcher::new()
                     .map_err(|e| format!("failed to register commands: {e}"))?,
             ),
+            command_queue: CommandQueue::new(),
             jobs: ServerJobQueue::new(),
             player_data_storage,
             known_players: SyncRwLock::new(known_players),
@@ -557,6 +560,13 @@ impl Server {
             pending_world_changes: SyncMutex::new(vec![]),
             pending_domain_switches: SyncMutex::new(vec![]),
         })
+    }
+
+    /// Queues a command for serialized async execution.
+    pub fn submit_command(self: &Arc<Self>, sender: CommandSender, command: String) {
+        if self.command_queue.submit(sender.clone(), command).is_err() {
+            sender.send_failure("Command queue is unavailable");
+        }
     }
 
     /// Queues initial player join work.
@@ -1180,6 +1190,9 @@ impl Server {
 
     /// Runs the three independent tick loops concurrently.
     pub async fn run(self: Arc<Self>, cancel_token: CancellationToken) {
+        self.command_queue
+            .start(Arc::clone(&self), cancel_token.clone());
+
         let game_handle = {
             let s = self.clone();
             let t = cancel_token.clone();

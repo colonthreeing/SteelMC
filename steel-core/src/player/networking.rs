@@ -377,11 +377,7 @@ impl JavaConnection {
             }
             play::S_CHAT_COMMAND => {
                 let command = SChatCommand::read_packet(data)?.command;
-                server.command_dispatcher.read().handle_command(
-                    CommandSender::Player(Arc::clone(&player)),
-                    command,
-                    &server,
-                );
+                server.submit_command(CommandSender::Player(Arc::clone(&player)), command);
                 player.detect_command_rate_spam();
             }
             play::S_COMMAND_SUGGESTION => {

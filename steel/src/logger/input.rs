@@ -375,10 +375,7 @@ fn send_state(mut lock: RwLockWriteGuard<'_, LogState>) {
     drop(lock);
     steel_utils::console!("{}", message);
     if let Some(server) = SERVER.get() {
-        server
-            .command_dispatcher
-            .read()
-            .handle_command(CommandSender::Console, message, server);
+        server.submit_command(CommandSender::Console, message);
     }
 }
 

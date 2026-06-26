@@ -30,6 +30,7 @@ pub(super) struct CommandRedirect {
     pub(super) executor: CommandExecutor,
 }
 
+#[derive(Clone)]
 pub(super) struct CommandNode {
     pub(super) kind: CommandNodeKind,
     pub(super) requirement: Requirement,

@@ -1,10 +1,11 @@
 //! Dynamic command graph, parsers, and structured parse results.
 
-use std::{error::Error, fmt, sync::Arc};
+use std::{error::Error, fmt, future::Future, pin::Pin, sync::Arc};
 
 use steel_protocol::packets::game::{CommandNode as ProtocolCommandNode, SuggestionEntry};
 
 use crate::command::{
+    CommandDispatcher,
     context::CommandContext,
     error::CommandError,
     reader::CommandReader,
@@ -354,10 +355,12 @@ pub struct SuggestionResult {
     pub length: i32,
 }
 
+/// Future returned by a command executor.
+pub type CommandFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<CommandResult, CommandError>> + Send + 'a>>;
+
 type CommandExecutor = Arc<
-    dyn Fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>
-        + Send
-        + Sync,
+    dyn for<'a> Fn(&'a mut CommandContext, &'a ParsedArguments) -> CommandFuture<'a> + Send + Sync,
 >;
 type UnresolvedDynamicPermissionResolver = Arc<
     dyn Fn(&PermissionKey, &ParsedArguments) -> Result<PermissionExpr, DynamicPermissionError>
@@ -491,35 +494,53 @@ impl ParseResults {
     /// # Errors
     ///
     /// Returns a command execution error from the matched executor.
-    pub fn execute(&self, context: &mut CommandContext) -> Result<CommandResult, CommandError> {
-        self.execute_with_dispatcher(context, |command, _| {
-            Err(CommandError::failure(format!(
-                "Command redirect target '{command}' is unavailable"
-            )))
-        })
+    pub async fn execute(
+        &self,
+        context: &mut CommandContext,
+    ) -> Result<CommandResult, CommandError> {
+        self.check_dynamic_permissions(context)?;
+        match &self.action {
+            ParsedCommandAction::Execute(executor) => executor(context, &self.arguments).await,
+            ParsedCommandAction::Redirect(redirect) => {
+                (redirect.executor)(context, &self.arguments).await?;
+                let command = match redirect.target {
+                    CommandRedirectTarget::Current => {
+                        format!("{} {}", redirect.current_root, redirect.command)
+                    }
+                    CommandRedirectTarget::All => redirect.command.clone(),
+                };
+                Err(CommandError::failure(format!(
+                    "Command redirect target '{command}' is unavailable"
+                )))
+            }
+        }
     }
 
-    /// Executes this parsed command, using `dispatch` for redirected command tails.
+    /// Executes this parsed command, using `dispatcher` for redirected command tails.
     ///
     /// # Errors
     ///
     /// Returns an error from either this command's executor or the redirected command.
-    pub fn execute_with_dispatcher(
+    pub(crate) async fn execute_with_dispatcher(
         &self,
         context: &mut CommandContext,
-        mut dispatch: impl FnMut(&str, &mut CommandContext) -> Result<CommandResult, CommandError>,
+        dispatcher: &CommandDispatcher,
     ) -> Result<CommandResult, CommandError> {
         self.check_dynamic_permissions(context)?;
         match &self.action {
-            ParsedCommandAction::Execute(executor) => executor(context, &self.arguments),
+            ParsedCommandAction::Execute(executor) => executor(context, &self.arguments).await,
             ParsedCommandAction::Redirect(redirect) => {
-                (redirect.executor)(context, &self.arguments)?;
+                (redirect.executor)(context, &self.arguments).await?;
                 match redirect.target {
                     CommandRedirectTarget::Current => {
                         let command = format!("{} {}", redirect.current_root, redirect.command);
-                        dispatch(&command, context)
+                        dispatcher.dispatch_with_context(command, context).await
                     }
-                    CommandRedirectTarget::All => dispatch(&redirect.command, context),
+                    CommandRedirectTarget::All => {
+                        dispatcher
+                            .dispatch_with_context(redirect.command.clone(), context)
+                            .await
+                    }
                 }
             }
         }
@@ -540,7 +561,7 @@ impl ParseResults {
 }
 
 /// Dynamic command graph.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct CommandGraph {
     roots: Vec<CommandNode>,
 }
