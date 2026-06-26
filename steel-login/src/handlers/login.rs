@@ -19,8 +19,6 @@ use crate::{
 impl JavaTcpClient {
     /// Handles the hello packet during the login state.
     ///
-    /// # Panics
-    /// This function will panic if the player name converted to a UUID fails.
     pub(crate) async fn handle_hello(&self, packet: SHello) -> ConnectionAction {
         if !is_valid_player_name(&packet.name) {
             self.kick("Invalid player name".into()).await;
@@ -30,7 +28,7 @@ impl JavaTcpClient {
         let id = if self.server.config.online_mode {
             packet.profile_id
         } else {
-            offline_uuid(&packet.name).expect("Failed to generate offline UUID")
+            offline_uuid(&packet.name)
         };
 
         {
