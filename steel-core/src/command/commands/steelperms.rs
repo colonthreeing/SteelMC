@@ -206,7 +206,7 @@ fn user_info(
         );
     }
 
-    Ok(command_result(reported + scheduled))
+    Ok(command_result(reported))
 }
 
 fn add_group(
@@ -250,7 +250,7 @@ fn add_group(
         );
     }
 
-    Ok(command_result(changed + scheduled))
+    Ok(command_result(changed))
 }
 
 fn remove_group(
@@ -295,7 +295,7 @@ fn remove_group(
         );
     }
 
-    Ok(command_result(changed + scheduled))
+    Ok(command_result(changed))
 }
 
 fn allow_permission(
@@ -348,7 +348,7 @@ fn set_permission(
         );
     }
 
-    Ok(command_result(changed + scheduled))
+    Ok(command_result(changed))
 }
 
 fn unset_permission(
@@ -388,7 +388,7 @@ fn unset_permission(
         );
     }
 
-    Ok(command_result(changed + scheduled))
+    Ok(command_result(changed))
 }
 
 fn spawn_user_info(server: Arc<Server>, sender: CommandSender, targets: Vec<PermissionTarget>) {

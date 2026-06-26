@@ -79,7 +79,7 @@ fn op_targets(
     }
 
     Ok(CommandResult {
-        success_count: i32::try_from(changed_count + scheduled).map_or(i32::MAX, |count| count),
+        success_count: i32::try_from(changed_count).map_or(i32::MAX, |count| count),
     })
 }
 
