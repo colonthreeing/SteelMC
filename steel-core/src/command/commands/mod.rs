@@ -19,6 +19,7 @@ pub mod locate;
 pub mod seed;
 pub mod setworldspawn;
 pub mod steel;
+pub mod steelperms;
 pub mod stop;
 pub mod summon;
 pub mod tellraw;
@@ -57,6 +58,7 @@ const BUILT_IN_COMMANDS: &[RegistrationFactory] = &[
     weather::registration,
     difficulty::registration,
     steel::registration,
+    steelperms::registration,
     xp::registration,
 ];
 

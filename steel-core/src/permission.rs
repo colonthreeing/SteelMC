@@ -346,6 +346,21 @@ impl PermissionSet {
         self.push(PermissionEntry::deny(key));
     }
 
+    /// Sets one exact permission entry, replacing any previous exact entry.
+    pub fn set(&mut self, key: PermissionKey, state: PermissionState) {
+        self.entries.retain(|entry| entry.key != key);
+        self.entries.push(PermissionEntry::new(key, state));
+    }
+
+    /// Removes one exact permission entry.
+    ///
+    /// Returns true when an entry was removed.
+    pub fn unset(&mut self, key: &PermissionKey) -> bool {
+        let old_len = self.entries.len();
+        self.entries.retain(|entry| entry.key() != key);
+        self.entries.len() != old_len
+    }
+
     /// Resolves one key. Unset permissions return `None`.
     #[must_use]
     pub fn resolve_key(&self, key: &PermissionKey) -> Option<PermissionState> {
@@ -720,6 +735,39 @@ mod tests {
             permissions.resolve_key(&key("minecraft.command.give")),
             Some(PermissionState::Deny)
         );
+    }
+
+    #[test]
+    fn set_replaces_exact_permission_entry() {
+        let mut permissions = PermissionSet::from_entries([
+            PermissionEntry::deny(key("minecraft.command.*")),
+            PermissionEntry::allow(key("minecraft.command.give")),
+        ]);
+
+        permissions.set(key("minecraft.command.give"), PermissionState::Deny);
+
+        assert_eq!(
+            permissions.resolve_key(&key("minecraft.command.give")),
+            Some(PermissionState::Deny)
+        );
+        assert_eq!(permissions.entries().len(), 2);
+    }
+
+    #[test]
+    fn unset_removes_exact_permission_entry() {
+        let mut permissions = PermissionSet::from_entries([
+            PermissionEntry::deny(key("minecraft.command.*")),
+            PermissionEntry::allow(key("minecraft.command.give")),
+        ]);
+
+        assert!(permissions.unset(&key("minecraft.command.give")));
+        assert!(!permissions.unset(&key("minecraft.command.give")));
+
+        assert_eq!(
+            permissions.resolve_key(&key("minecraft.command.give")),
+            Some(PermissionState::Deny)
+        );
+        assert_eq!(permissions.entries().len(), 1);
     }
 
     #[test]

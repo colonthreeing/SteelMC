@@ -29,6 +29,7 @@ use crate::{
         requirement::CommandInputContext,
     },
     entity::{ENTITIES, Entity, LivingEntity},
+    permission::PermissionKey,
 };
 
 /// Game mode argument parser.
@@ -197,6 +198,94 @@ impl CommandArgumentParser for PlayerParser {
 
         suggestions.retain(|suggestion| suggestion.text.starts_with(prefix));
         suggestions
+    }
+}
+
+/// Permission key argument parser.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PermissionKeyParser;
+
+impl CommandArgumentParser for PermissionKeyParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let value = reader.read_string(StringMode::SingleWord)?;
+        let permission = PermissionKey::parse(value.clone()).map_err(|_| {
+            CommandParseError::new(CommandParseErrorKind::InvalidPermissionKey(value), cursor)
+        })?;
+
+        Ok(ParsedArgument::PermissionKey(permission))
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        (
+            ArgumentType::String {
+                behavior: steel_protocol::packets::game::ArgumentStringTypeBehavior::SingleWord,
+            },
+            None,
+        )
+    }
+}
+
+/// Permission group name argument parser.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PermissionGroupParser;
+
+impl CommandArgumentParser for PermissionGroupParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let value = reader.read_string(StringMode::SingleWord)?;
+        let Some(server) = context.server() else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::MissingCommandContext("server"),
+                cursor,
+            ));
+        };
+        if !server.config.permission_groups.contains_group(&value) {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidPermissionGroup(value),
+                cursor,
+            ));
+        }
+
+        Ok(ParsedArgument::String(value))
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        (
+            ArgumentType::String {
+                behavior: steel_protocol::packets::game::ArgumentStringTypeBehavior::SingleWord,
+            },
+            None,
+        )
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        _arguments: &ParsedArguments,
+        context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        let Some(server) = context.server() else {
+            return Vec::new();
+        };
+
+        server
+            .config
+            .permission_groups
+            .groups()
+            .keys()
+            .filter(|group| group.starts_with(prefix))
+            .cloned()
+            .map(SuggestionEntry::new)
+            .collect()
     }
 }
 
@@ -1172,8 +1261,8 @@ mod tests {
             },
             parsers::{
                 BlockPosParser, ComponentParser, DomainParser, EnchantmentParser, EntityParser,
-                EntitySummonParser, GameModeParser, ItemParser, PlayerParser, RotationParser,
-                StructureParser, TimeParser, Vec3Parser, WorldParser,
+                EntitySummonParser, GameModeParser, ItemParser, PermissionKeyParser, PlayerParser,
+                RotationParser, StructureParser, TimeParser, Vec3Parser, WorldParser,
             },
             reader::CommandReader,
             requirement::{
@@ -1249,6 +1338,26 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(texts, vec!["survival", "spectator"]);
+    }
+
+    #[test]
+    fn permission_key_parser_validates_permission_keys() {
+        let mut reader = CommandReader::new("steel.command.steelperms.*");
+        let value = PermissionKeyParser
+            .parse(&mut reader, &TestContext)
+            .expect("permission key parses");
+        assert!(
+            matches!(value, ParsedArgument::PermissionKey(permission) if permission.as_str() == "steel.command.steelperms.*")
+        );
+
+        let mut reader = CommandReader::new("steel.*.steelperms");
+        let error = PermissionKeyParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("mid wildcard should be rejected");
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidPermissionKey(value) if value == "steel.*.steelperms"
+        ));
     }
 
     #[test]

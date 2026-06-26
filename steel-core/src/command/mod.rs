@@ -361,6 +361,12 @@ impl CommandDispatcher {
             CommandParseErrorKind::InvalidTime(value) => {
                 TextComponent::plain(format!("Invalid time '{value}'"))
             }
+            CommandParseErrorKind::InvalidPermissionKey(value) => {
+                TextComponent::plain(format!("Invalid permission '{value}'"))
+            }
+            CommandParseErrorKind::InvalidPermissionGroup(value) => {
+                TextComponent::plain(format!("Invalid permission group '{value}'"))
+            }
             CommandParseErrorKind::MissingCommandContext(name) => {
                 TextComponent::plain(format!("Missing command context '{name}'"))
             }
@@ -488,6 +494,8 @@ mod tests {
         assert!(!dispatcher.graph.has_root("gamemode", &player));
         assert!(!dispatcher.graph.has_root("tp", &player));
         assert!(!dispatcher.graph.has_root("teleport", &player));
+        assert!(!dispatcher.graph.has_root("steelperms", &player));
+        assert!(!dispatcher.graph.has_root("sp", &player));
 
         let give_player = player_context_with("minecraft.command.give");
         assert!(dispatcher.graph.has_root("give", &give_player));
@@ -503,6 +511,10 @@ mod tests {
         let experience_player = player_context_with("minecraft.command.experience");
         assert!(dispatcher.graph.has_root("xp", &experience_player));
         assert!(dispatcher.graph.has_root("experience", &experience_player));
+
+        let steelperms_player = player_context_with("steel.command.steelperms");
+        assert!(dispatcher.graph.has_root("steelperms", &steelperms_player));
+        assert!(dispatcher.graph.has_root("sp", &steelperms_player));
     }
 
     #[test]

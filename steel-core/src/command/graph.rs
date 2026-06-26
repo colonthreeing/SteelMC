@@ -146,6 +146,10 @@ pub enum CommandParseErrorKind {
     InvalidComponent(String),
     /// A time argument was invalid.
     InvalidTime(String),
+    /// A permission key argument was invalid.
+    InvalidPermissionKey(String),
+    /// A permission group argument was invalid.
+    InvalidPermissionGroup(String),
     /// A parser required live command context that was not available.
     MissingCommandContext(&'static str),
 }
@@ -176,6 +180,8 @@ impl CommandParseErrorKind {
             | Self::InvalidRotation(_)
             | Self::InvalidComponent(_)
             | Self::InvalidTime(_)
+            | Self::InvalidPermissionKey(_)
+            | Self::InvalidPermissionGroup(_)
             | Self::MissingCommandContext(_)
             | Self::UnclosedQuote
             | Self::InvalidEscape(_) => 6,

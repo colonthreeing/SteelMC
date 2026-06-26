@@ -10,7 +10,7 @@ use text_components::TextComponent;
 
 use crate::command::context::EntityAnchor;
 use crate::entity::LivingEntity;
-use crate::permission::{PermissionKeyError, PermissionSegment};
+use crate::permission::{PermissionKey, PermissionKeyError, PermissionSegment};
 use crate::player::Player;
 use crate::world::World;
 
@@ -27,6 +27,8 @@ pub enum ParsedArgument {
     F32(f32),
     /// String-like argument.
     String(String),
+    /// Permission key argument.
+    PermissionKey(PermissionKey),
     /// Game mode argument.
     GameMode(GameType),
     /// Player target argument.
@@ -107,6 +109,7 @@ impl fmt::Debug for ParsedArgument {
             Self::I32(value) => f.debug_tuple("I32").field(value).finish(),
             Self::F32(value) => f.debug_tuple("F32").field(value).finish(),
             Self::String(value) => f.debug_tuple("String").field(value).finish(),
+            Self::PermissionKey(value) => f.debug_tuple("PermissionKey").field(value).finish(),
             Self::GameMode(value) => f.debug_tuple("GameMode").field(value).finish(),
             Self::Players(value) => f
                 .debug_struct("Players")
@@ -182,6 +185,7 @@ impl ParsedArgument {
             Self::I32(_) => "i32",
             Self::F32(_) => "f32",
             Self::String(_) => "string",
+            Self::PermissionKey(_) => "permission_key",
             Self::GameMode(_) => "gamemode",
             Self::Players(_) => "players",
             Self::Entities(_) => "entities",
@@ -267,6 +271,17 @@ impl FromParsedArgument for String {
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
         let ParsedArgument::String(value) = value else {
+            return None;
+        };
+        Some(value.clone())
+    }
+}
+
+impl FromParsedArgument for PermissionKey {
+    const TYPE_NAME: &'static str = "permission_key";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::PermissionKey(value) = value else {
             return None;
         };
         Some(value.clone())

@@ -37,7 +37,8 @@ use crate::worldgen::registry::GeneratorOutput;
 use glam::DVec3;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::{
-    mem,
+    error::Error,
+    fmt, mem,
     num::NonZero,
     path::Path,
     sync::{Arc, mpsc},
@@ -189,6 +190,23 @@ struct DomainSwitchRequest {
     target_world: Option<Arc<World>>,
     restore_saved_location: bool,
 }
+
+/// Error returned when updating a player's global permission state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PlayerPermissionUpdateError {
+    /// The requested assigned group is not configured in `groups.toml`.
+    UnknownGroup(String),
+}
+
+impl fmt::Display for PlayerPermissionUpdateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownGroup(group) => write!(f, "unknown permission group '{group}'"),
+        }
+    }
+}
+
+impl Error for PlayerPermissionUpdateError {}
 
 struct PendingPlayerJoin {
     player: Arc<Player>,
@@ -666,6 +684,48 @@ impl Server {
             .permission_groups
             .effective_permissions(&groups, &overrides);
         player.set_permission_state(groups, overrides, permissions);
+    }
+
+    /// Updates a player's global permission state, refreshes client-visible permissions,
+    /// and saves the global playerdata snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any assigned group is not configured.
+    pub fn update_player_global_permissions(
+        self: &Arc<Self>,
+        player: &Player,
+        groups: Vec<String>,
+        overrides: PermissionSet,
+    ) -> Result<(), PlayerPermissionUpdateError> {
+        for group in &groups {
+            if !self.config.permission_groups.contains_group(group) {
+                return Err(PlayerPermissionUpdateError::UnknownGroup(group.clone()));
+            }
+        }
+
+        self.apply_global_permission_state(player, groups, overrides);
+        self.resend_player_permission_context(player);
+        self.save_player_global_permissions(player);
+
+        Ok(())
+    }
+
+    fn save_player_global_permissions(self: &Arc<Self>, player: &Player) {
+        let server = Arc::clone(self);
+        let uuid = player.gameprofile.id;
+        let name = player.gameprofile.name.clone();
+        let data = GlobalPlayerData {
+            last_active_domain: player.get_world().domain().to_owned(),
+            groups: player.permission_groups(),
+            permissions: player.permission_overrides(),
+        };
+
+        tokio::spawn(async move {
+            if let Err(e) = server.player_data_storage.save_global(uuid, &data).await {
+                log::error!("Failed to save global permission data for {name} ({uuid}): {e}");
+            }
+        });
     }
 
     async fn load_domain_player_state(
