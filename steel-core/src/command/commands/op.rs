@@ -1,7 +1,5 @@
 //! Handler for the "op" command.
-//! Mirrors `net.minecraft.server.commands.OpCommand` for online player targets.
-
-use std::sync::Arc;
+//! Mirrors `net.minecraft.server.commands.OpCommand`, backed by Steel permission groups.
 
 use steel_protocol::packets::game::{ArgumentType, SuggestionEntry, SuggestionType};
 use steel_utils::translations;
@@ -10,14 +8,15 @@ use text_components::TextComponent;
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandArgumentParser, CommandNodeBuilder, CommandParseError, CommandResult, ParsedArgument,
-    ParsedArguments, argument, literal,
+    CommandArgumentParser, CommandFuture, CommandNodeBuilder, CommandParseError, CommandResult,
+    ParsedArgument, ParsedArguments, PermissionTarget, argument, literal,
 };
-use crate::command::parsers::PlayerParser;
+use crate::command::parsers::PermissionTargetParser;
 use crate::command::reader::CommandReader;
 use crate::command::requirement::CommandInputContext;
 use crate::command::{CommandRegistration, CommandRegistrationError};
-use crate::player::Player;
+
+use super::permission_targets;
 
 const OP_GROUP: &str = "op";
 
@@ -28,49 +27,48 @@ pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationE
 /// Creates the `/op` command handler.
 #[must_use]
 pub fn command() -> CommandNodeBuilder {
-    literal("op").then(argument("targets", OpTargetsParser).executes(op_targets))
+    literal("op").then(argument("targets", OpTargetsParser).executes_async(op_targets))
 }
 
-fn op_targets(
-    context: &mut CommandContext,
-    arguments: &ParsedArguments,
-) -> Result<CommandResult, CommandError> {
-    let targets = arguments
-        .get::<Vec<Arc<Player>>>("targets")
-        .map_err(super::invalid_parsed_argument)?;
-    if targets.is_empty() {
-        return Err(CommandError::failure("No player was found"));
-    }
-
-    let mut changed_count = 0;
-    for target in &targets {
-        let mut groups = target.permission_groups();
-        if groups.iter().any(|group| group == OP_GROUP) {
-            continue;
+fn op_targets<'a>(
+    context: &'a mut CommandContext,
+    arguments: &'a ParsedArguments,
+) -> CommandFuture<'a> {
+    Box::pin(async move {
+        let targets = arguments
+            .get::<Vec<PermissionTarget>>("targets")
+            .map_err(super::invalid_parsed_argument)?;
+        if targets.is_empty() {
+            return Err(CommandError::failure("No player was found"));
         }
 
-        groups.push(OP_GROUP.to_owned());
-        context
-            .server
-            .update_player_global_permissions(target, groups, target.permission_overrides())
-            .map_err(|error| CommandError::failure(error.to_string()))?;
-        changed_count += 1;
+        let mut changed_count = 0;
+        for target in &targets {
+            let mut state = permission_targets::load_state(context, target).await?;
+            if state.groups.iter().any(|group| group == OP_GROUP) {
+                continue;
+            }
 
-        context.sender.send_message(
-            &translations::COMMANDS_OP_SUCCESS
-                .message([TextComponent::plain(target.gameprofile.name.clone())])
-                .into(),
-        );
-    }
+            state.groups.push(OP_GROUP.to_owned());
+            permission_targets::save_state(context, target, state).await?;
+            changed_count += 1;
 
-    if changed_count == 0 {
-        return Err(CommandError::failure(
-            translations::COMMANDS_OP_FAILED.msg(),
-        ));
-    }
+            context.sender.send_message(
+                &translations::COMMANDS_OP_SUCCESS
+                    .message([TextComponent::plain(target.name().to_owned())])
+                    .into(),
+            );
+        }
 
-    Ok(CommandResult {
-        success_count: i32::try_from(changed_count).map_or(i32::MAX, |count| count),
+        if changed_count == 0 {
+            return Err(CommandError::failure(
+                translations::COMMANDS_OP_FAILED.msg(),
+            ));
+        }
+
+        Ok(CommandResult {
+            success_count: i32::try_from(changed_count).map_or(i32::MAX, |count| count),
+        })
     })
 }
 
@@ -83,11 +81,11 @@ impl CommandArgumentParser for OpTargetsParser {
         reader: &mut CommandReader<'_>,
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
-        PlayerParser::multiple().parse(reader, context)
+        PermissionTargetParser.parse(reader, context)
     }
 
     fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        PlayerParser::multiple().usage()
+        PermissionTargetParser.usage()
     }
 
     fn suggest(
@@ -100,18 +98,37 @@ impl CommandArgumentParser for OpTargetsParser {
             return Vec::new();
         };
 
-        server
-            .get_players()
-            .iter()
-            .filter(|player| {
-                !player
-                    .permission_groups()
-                    .iter()
-                    .any(|group| group == OP_GROUP)
-            })
-            .map(|player| player.gameprofile.name.clone())
-            .filter(|name| name.starts_with(prefix))
-            .map(SuggestionEntry::new)
-            .collect()
+        let mut suggestions = Vec::new();
+        let mut hidden_online_names = Vec::new();
+        for player in server.get_players() {
+            if player
+                .permission_groups()
+                .iter()
+                .any(|group| group == OP_GROUP)
+            {
+                hidden_online_names.push(player.gameprofile.name.clone());
+                continue;
+            }
+            suggestions.push(SuggestionEntry::new(player.gameprofile.name.clone()));
+        }
+        for known in server.known_players().entries() {
+            if hidden_online_names
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(known.last_known_name()))
+            {
+                continue;
+            }
+            if suggestions.iter().any(|suggestion| {
+                suggestion
+                    .text
+                    .eq_ignore_ascii_case(known.last_known_name())
+            }) {
+                continue;
+            }
+            suggestions.push(SuggestionEntry::new(known.last_known_name().to_owned()));
+        }
+
+        suggestions.retain(|suggestion| suggestion.text.starts_with(prefix));
+        suggestions
     }
 }

@@ -21,7 +21,7 @@ mod traversal;
 
 pub use arguments::{
     CommandPermissionArgument, FromParsedArgument, ParsedArgument, ParsedArgumentError,
-    ParsedArguments, StructureArgumentValue,
+    ParsedArguments, PermissionTarget, StructureArgumentValue,
 };
 pub use builder::{CommandNodeBuilder, argument, literal};
 use node::{CommandNode, CommandNodeKind, merge_or_push_node};

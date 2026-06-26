@@ -7,6 +7,7 @@ use steel_registry::{
 };
 use steel_utils::{BlockPos, Identifier, types::GameType};
 use text_components::TextComponent;
+use uuid::Uuid;
 
 use crate::command::context::EntityAnchor;
 use crate::entity::LivingEntity;
@@ -33,6 +34,8 @@ pub enum ParsedArgument {
     GameMode(GameType),
     /// Player target argument.
     Players(Vec<Arc<Player>>),
+    /// Permission-management player target argument.
+    PermissionTargets(Vec<PermissionTarget>),
     /// Living entity target argument.
     Entities(Vec<Arc<dyn LivingEntity + Send + Sync>>),
     /// Entity type argument.
@@ -67,6 +70,64 @@ pub enum StructureArgumentValue {
         /// Structures in the tag.
         structures: Vec<StructureRef>,
     },
+}
+
+/// Player target for permission-management commands.
+#[derive(Clone)]
+pub struct PermissionTarget {
+    uuid: Uuid,
+    name: String,
+    online_player: Option<Arc<Player>>,
+}
+
+impl PermissionTarget {
+    /// Creates a target from an online player.
+    #[must_use]
+    pub fn online(player: Arc<Player>) -> Self {
+        Self {
+            uuid: player.gameprofile.id,
+            name: player.gameprofile.name.clone(),
+            online_player: Some(player),
+        }
+    }
+
+    /// Creates a target from a known offline profile.
+    #[must_use]
+    pub fn offline(uuid: Uuid, name: impl Into<String>) -> Self {
+        Self {
+            uuid,
+            name: name.into(),
+            online_player: None,
+        }
+    }
+
+    /// Returns the target UUID.
+    #[must_use]
+    pub const fn uuid(&self) -> Uuid {
+        self.uuid
+    }
+
+    /// Returns the target display name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the online player when this target is connected.
+    #[must_use]
+    pub fn online_player(&self) -> Option<&Arc<Player>> {
+        self.online_player.as_ref()
+    }
+}
+
+impl fmt::Debug for PermissionTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PermissionTarget")
+            .field("uuid", &self.uuid)
+            .field("name", &self.name)
+            .field("online", &self.online_player.is_some())
+            .finish()
+    }
 }
 
 impl StructureArgumentValue {
@@ -113,6 +174,10 @@ impl fmt::Debug for ParsedArgument {
             Self::GameMode(value) => f.debug_tuple("GameMode").field(value).finish(),
             Self::Players(value) => f
                 .debug_struct("Players")
+                .field("count", &value.len())
+                .finish(),
+            Self::PermissionTargets(value) => f
+                .debug_struct("PermissionTargets")
                 .field("count", &value.len())
                 .finish(),
             Self::Entities(value) => f
@@ -188,6 +253,7 @@ impl ParsedArgument {
             Self::PermissionKey(_) => "permission_key",
             Self::GameMode(_) => "gamemode",
             Self::Players(_) => "players",
+            Self::PermissionTargets(_) => "permission_targets",
             Self::Entities(_) => "entities",
             Self::EntityType(_) => "entity_type",
             Self::Item(_) => "item",
@@ -310,6 +376,17 @@ impl FromParsedArgument for Vec<Arc<Player>> {
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
         let ParsedArgument::Players(value) = value else {
+            return None;
+        };
+        Some(value.clone())
+    }
+}
+
+impl FromParsedArgument for Vec<PermissionTarget> {
+    const TYPE_NAME: &'static str = "permission_targets";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::PermissionTargets(value) = value else {
             return None;
         };
         Some(value.clone())

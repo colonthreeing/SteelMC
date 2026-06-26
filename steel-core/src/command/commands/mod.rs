@@ -17,6 +17,7 @@ pub mod kill;
 pub mod list;
 pub mod locate;
 pub mod op;
+mod permission_targets;
 pub mod seed;
 pub mod setworldspawn;
 pub mod steel;

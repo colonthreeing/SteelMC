@@ -23,7 +23,7 @@ use crate::{
         context::EntityAnchor,
         graph::{
             CommandArgumentParser, CommandParseError, CommandParseErrorKind, ParsedArgument,
-            ParsedArguments, StructureArgumentValue,
+            ParsedArguments, PermissionTarget, StructureArgumentValue,
         },
         reader::{CommandReader, StringMode},
         requirement::CommandInputContext,
@@ -199,6 +199,128 @@ impl CommandArgumentParser for PlayerParser {
         suggestions.retain(|suggestion| suggestion.text.starts_with(prefix));
         suggestions
     }
+}
+
+/// Player target parser for permission-management commands.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PermissionTargetParser;
+
+impl CommandArgumentParser for PermissionTargetParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let value = reader.read_string(StringMode::SingleWord)?;
+        let Some(server) = context.server() else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::MissingCommandContext("server"),
+                cursor,
+            ));
+        };
+
+        let players = server.get_players();
+        let targets = match value.as_str() {
+            "@a" => players
+                .into_iter()
+                .map(PermissionTarget::online)
+                .collect::<Vec<_>>(),
+            "@p" => {
+                let Some(position) = context.position() else {
+                    return Err(CommandParseError::new(
+                        CommandParseErrorKind::MissingCommandContext("position"),
+                        cursor,
+                    ));
+                };
+
+                let Some(nearest) = players.into_iter().min_by(|left, right| {
+                    let left_distance = left.position().distance_squared(position);
+                    let right_distance = right.position().distance_squared(position);
+                    left_distance.total_cmp(&right_distance)
+                }) else {
+                    return Ok(ParsedArgument::PermissionTargets(Vec::new()));
+                };
+                vec![PermissionTarget::online(nearest)]
+            }
+            "@r" => players
+                .into_iter()
+                .choose(&mut rand::rng())
+                .map_or_else(Vec::new, |player| vec![PermissionTarget::online(player)]),
+            "@s" => context.player().map_or_else(Vec::new, |player| {
+                vec![PermissionTarget::online(Arc::clone(player))]
+            }),
+            name => {
+                let uuid = Uuid::parse_str(name).ok();
+                if let Some(player) = players.into_iter().find(|player| {
+                    player.gameprofile.name.eq_ignore_ascii_case(name)
+                        || uuid.is_some_and(|uuid| player.uuid() == uuid)
+                }) {
+                    vec![PermissionTarget::online(player)]
+                } else {
+                    let known_players = server.known_players();
+                    let known = uuid
+                        .and_then(|uuid| known_players.by_uuid(uuid))
+                        .or_else(|| known_players.by_name(name));
+                    let Some(known) = known else {
+                        return Err(CommandParseError::new(
+                            CommandParseErrorKind::InvalidPlayer(value),
+                            cursor,
+                        ));
+                    };
+                    vec![PermissionTarget::offline(
+                        known.uuid(),
+                        known.last_known_name().to_owned(),
+                    )]
+                }
+            }
+        };
+
+        Ok(ParsedArgument::PermissionTargets(targets))
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        (
+            ArgumentType::Entity { flags: 2 },
+            Some(SuggestionType::AskServer),
+        )
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        _arguments: &ParsedArguments,
+        context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        let mut suggestions = vec![
+            SuggestionEntry::with_tooltip("@a", &ARGUMENT_ENTITY_SELECTOR_ALL_PLAYERS),
+            SuggestionEntry::with_tooltip("@p", &ARGUMENT_ENTITY_SELECTOR_NEAREST_PLAYER),
+            SuggestionEntry::with_tooltip("@r", &ARGUMENT_ENTITY_SELECTOR_RANDOM_PLAYER),
+            SuggestionEntry::with_tooltip("@s", &ARGUMENT_ENTITY_SELECTOR_SELF),
+        ];
+
+        if let Some(server) = context.server() {
+            for player in server.get_players() {
+                push_unique_suggestion(&mut suggestions, player.gameprofile.name.clone());
+            }
+            for known in server.known_players().entries() {
+                push_unique_suggestion(&mut suggestions, known.last_known_name().to_owned());
+            }
+        }
+
+        suggestions.retain(|suggestion| suggestion.text.starts_with(prefix));
+        suggestions
+    }
+}
+
+fn push_unique_suggestion(suggestions: &mut Vec<SuggestionEntry>, text: String) {
+    if suggestions
+        .iter()
+        .any(|suggestion| suggestion.text.eq_ignore_ascii_case(&text))
+    {
+        return;
+    }
+    suggestions.push(SuggestionEntry::new(text));
 }
 
 /// Permission key argument parser.

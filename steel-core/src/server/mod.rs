@@ -197,12 +197,15 @@ struct DomainSwitchRequest {
 pub enum PlayerPermissionUpdateError {
     /// The requested assigned group is not configured in `groups.toml`.
     UnknownGroup(String),
+    /// Player permission data could not be read or written.
+    Storage(String),
 }
 
 impl fmt::Display for PlayerPermissionUpdateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownGroup(group) => write!(f, "unknown permission group '{group}'"),
+            Self::Storage(error) => write!(f, "failed to update player permissions: {error}"),
         }
     }
 }
@@ -716,16 +719,61 @@ impl Server {
         groups: Vec<String>,
         overrides: PermissionSet,
     ) -> Result<(), PlayerPermissionUpdateError> {
-        for group in &groups {
-            if !self.config.permission_groups.contains_group(group) {
-                return Err(PlayerPermissionUpdateError::UnknownGroup(group.clone()));
-            }
-        }
+        self.validate_player_permission_groups(&groups)?;
 
         self.apply_global_permission_state(player, groups, overrides);
         self.resend_player_permission_context(player);
         self.save_player_global_permissions(player);
 
+        Ok(())
+    }
+
+    /// Updates an offline player's global permission state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any assigned group is not configured or the player data
+    /// cannot be read or written.
+    pub async fn update_offline_player_global_permissions(
+        self: &Arc<Self>,
+        uuid: Uuid,
+        groups: Vec<String>,
+        overrides: PermissionSet,
+    ) -> Result<(), PlayerPermissionUpdateError> {
+        self.validate_player_permission_groups(&groups)?;
+
+        let last_active_domain = self
+            .player_data_storage
+            .load_global(uuid)
+            .await
+            .map_err(|error| PlayerPermissionUpdateError::Storage(error.to_string()))?
+            .map_or_else(
+                || self.worlds.default_domain().to_owned(),
+                |global| global.last_active_domain,
+            );
+
+        self.player_data_storage
+            .save_global(
+                uuid,
+                &GlobalPlayerData {
+                    last_active_domain,
+                    groups,
+                    permissions: overrides,
+                },
+            )
+            .await
+            .map_err(|error| PlayerPermissionUpdateError::Storage(error.to_string()))
+    }
+
+    fn validate_player_permission_groups(
+        &self,
+        groups: &[String],
+    ) -> Result<(), PlayerPermissionUpdateError> {
+        for group in groups {
+            if !self.config.permission_groups.contains_group(group) {
+                return Err(PlayerPermissionUpdateError::UnknownGroup(group.clone()));
+            }
+        }
         Ok(())
     }
 

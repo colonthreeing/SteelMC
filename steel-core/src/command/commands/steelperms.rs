@@ -1,18 +1,18 @@
 //! Steel permission management commands.
 
-use std::sync::Arc;
-
 use text_components::TextComponent;
 
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandNodeBuilder, CommandResult, ParsedArguments, argument, literal,
+    CommandFuture, CommandNodeBuilder, CommandResult, ParsedArguments, PermissionTarget, argument,
+    literal,
 };
-use crate::command::parsers::{PermissionGroupParser, PermissionKeyParser, PlayerParser};
+use crate::command::parsers::{PermissionGroupParser, PermissionKeyParser, PermissionTargetParser};
 use crate::command::{CommandRegistration, CommandRegistrationError};
 use crate::permission::{PermissionEntry, PermissionKey, PermissionState};
-use crate::player::Player;
+
+use super::permission_targets;
 
 pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
     CommandRegistration::steel(command())?.alias("sp")
@@ -23,192 +23,185 @@ pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationE
 pub fn command() -> CommandNodeBuilder {
     literal("steelperms").then(
         literal("user").then(
-            argument("targets", PlayerParser::multiple())
+            argument("targets", PermissionTargetParser)
                 .then(
                     literal("info")
                         .requires_subcommand_permission()
-                        .executes(user_info),
+                        .executes_async(user_info),
                 )
-                .then(
-                    literal("allow").requires_subcommand_permission().then(
-                        argument("permission", PermissionKeyParser).executes(allow_permission),
-                    ),
-                )
-                .then(
-                    literal("deny").requires_subcommand_permission().then(
-                        argument("permission", PermissionKeyParser).executes(deny_permission),
-                    ),
-                )
-                .then(
-                    literal("unset").requires_subcommand_permission().then(
-                        argument("permission", PermissionKeyParser).executes(unset_permission),
-                    ),
-                )
+                .then(literal("allow").requires_subcommand_permission().then(
+                    argument("permission", PermissionKeyParser).executes_async(allow_permission),
+                ))
+                .then(literal("deny").requires_subcommand_permission().then(
+                    argument("permission", PermissionKeyParser).executes_async(deny_permission),
+                ))
+                .then(literal("unset").requires_subcommand_permission().then(
+                    argument("permission", PermissionKeyParser).executes_async(unset_permission),
+                ))
                 .then(
                     literal("group").then(
-                        literal("add")
-                            .requires_subcommand_permission()
-                            .then(argument("group", PermissionGroupParser).executes(add_group)),
+                        literal("add").requires_subcommand_permission().then(
+                            argument("group", PermissionGroupParser).executes_async(add_group),
+                        ),
                     ),
                 )
-                .then(
-                    literal("group").then(
-                        literal("remove")
-                            .requires_subcommand_permission()
-                            .then(argument("group", PermissionGroupParser).executes(remove_group)),
+                .then(literal("group").then(
+                    literal("remove").requires_subcommand_permission().then(
+                        argument("group", PermissionGroupParser).executes_async(remove_group),
                     ),
-                ),
+                )),
         ),
     )
 }
 
-fn user_info(
-    context: &mut CommandContext,
-    arguments: &ParsedArguments,
-) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
-    for target in &targets {
-        let groups = group_list_text(&target.permission_groups());
-        let overrides = permission_entries_text(target.permission_overrides().entries());
+fn user_info<'a>(
+    context: &'a mut CommandContext,
+    arguments: &'a ParsedArguments,
+) -> CommandFuture<'a> {
+    Box::pin(async move {
+        let targets = targets(arguments)?;
+        for target in &targets {
+            let state = permission_targets::load_state(context, target).await?;
+            let groups = group_list_text(&state.groups);
+            let overrides = permission_entries_text(state.overrides.entries());
+
+            context.sender.send_message(&TextComponent::plain(format!(
+                "{}: groups [{}], direct permissions [{}]",
+                target.name(),
+                groups,
+                overrides
+            )));
+        }
+
+        Ok(command_result(targets.len()))
+    })
+}
+
+fn add_group<'a>(
+    context: &'a mut CommandContext,
+    arguments: &'a ParsedArguments,
+) -> CommandFuture<'a> {
+    Box::pin(async move {
+        let targets = targets(arguments)?;
+        let group = group(arguments)?;
+        let mut changed = 0;
+
+        for target in &targets {
+            let mut state = permission_targets::load_state(context, target).await?;
+            if state.groups.iter().any(|assigned| assigned == &group) {
+                continue;
+            }
+            state.groups.push(group.clone());
+            permission_targets::save_state(context, target, state).await?;
+            changed += 1;
+        }
 
         context.sender.send_message(&TextComponent::plain(format!(
-            "{}: groups [{}], direct permissions [{}]",
-            target.gameprofile.name, groups, overrides
+            "Added group '{group}' to {}",
+            target_count_text(changed)
         )));
-    }
-
-    Ok(command_result(targets.len()))
+        Ok(command_result(changed))
+    })
 }
 
-fn add_group(
-    context: &mut CommandContext,
-    arguments: &ParsedArguments,
-) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
-    let group = group(arguments)?;
-    let mut changed = 0;
+fn remove_group<'a>(
+    context: &'a mut CommandContext,
+    arguments: &'a ParsedArguments,
+) -> CommandFuture<'a> {
+    Box::pin(async move {
+        let targets = targets(arguments)?;
+        let group = group(arguments)?;
+        let mut changed = 0;
 
-    for target in &targets {
-        let mut groups = target.permission_groups();
-        if groups.iter().any(|assigned| assigned == &group) {
-            continue;
+        for target in &targets {
+            let mut state = permission_targets::load_state(context, target).await?;
+            let old_len = state.groups.len();
+            state.groups.retain(|assigned| assigned != &group);
+            if state.groups.len() == old_len {
+                continue;
+            }
+            permission_targets::save_state(context, target, state).await?;
+            changed += 1;
         }
-        groups.push(group.clone());
-        context
-            .server
-            .update_player_global_permissions(target, groups, target.permission_overrides())
-            .map_err(|error| CommandError::failure(error.to_string()))?;
-        changed += 1;
-    }
 
-    context.sender.send_message(&TextComponent::plain(format!(
-        "Added group '{group}' to {}",
-        target_count_text(changed)
-    )));
-    Ok(command_result(changed))
+        context.sender.send_message(&TextComponent::plain(format!(
+            "Removed group '{group}' from {}",
+            target_count_text(changed)
+        )));
+        Ok(command_result(changed))
+    })
 }
 
-fn remove_group(
-    context: &mut CommandContext,
-    arguments: &ParsedArguments,
-) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
-    let group = group(arguments)?;
-    let mut changed = 0;
-
-    for target in &targets {
-        let mut groups = target.permission_groups();
-        let old_len = groups.len();
-        groups.retain(|assigned| assigned != &group);
-        if groups.len() == old_len {
-            continue;
-        }
-        context
-            .server
-            .update_player_global_permissions(target, groups, target.permission_overrides())
-            .map_err(|error| CommandError::failure(error.to_string()))?;
-        changed += 1;
-    }
-
-    context.sender.send_message(&TextComponent::plain(format!(
-        "Removed group '{group}' from {}",
-        target_count_text(changed)
-    )));
-    Ok(command_result(changed))
-}
-
-fn allow_permission(
-    context: &mut CommandContext,
-    arguments: &ParsedArguments,
-) -> Result<CommandResult, CommandError> {
+fn allow_permission<'a>(
+    context: &'a mut CommandContext,
+    arguments: &'a ParsedArguments,
+) -> CommandFuture<'a> {
     set_permission(context, arguments, PermissionState::Allow)
 }
 
-fn deny_permission(
-    context: &mut CommandContext,
-    arguments: &ParsedArguments,
-) -> Result<CommandResult, CommandError> {
+fn deny_permission<'a>(
+    context: &'a mut CommandContext,
+    arguments: &'a ParsedArguments,
+) -> CommandFuture<'a> {
     set_permission(context, arguments, PermissionState::Deny)
 }
 
-fn set_permission(
-    context: &mut CommandContext,
-    arguments: &ParsedArguments,
+fn set_permission<'a>(
+    context: &'a mut CommandContext,
+    arguments: &'a ParsedArguments,
     state: PermissionState,
-) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
-    let permission = permission(arguments)?;
+) -> CommandFuture<'a> {
+    Box::pin(async move {
+        let targets = targets(arguments)?;
+        let permission = permission(arguments)?;
 
-    for target in &targets {
-        let mut overrides = target.permission_overrides();
-        overrides.set(permission.clone(), state);
-        context
-            .server
-            .update_player_global_permissions(target, target.permission_groups(), overrides)
-            .map_err(|error| CommandError::failure(error.to_string()))?;
-    }
-
-    context.sender.send_message(&TextComponent::plain(format!(
-        "{} permission '{}' for {}",
-        permission_action_text(state),
-        permission.as_str(),
-        target_count_text(targets.len())
-    )));
-    Ok(command_result(targets.len()))
-}
-
-fn unset_permission(
-    context: &mut CommandContext,
-    arguments: &ParsedArguments,
-) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
-    let permission = permission(arguments)?;
-    let mut changed = 0;
-
-    for target in &targets {
-        let mut overrides = target.permission_overrides();
-        if !overrides.unset(&permission) {
-            continue;
+        for target in &targets {
+            let mut target_state = permission_targets::load_state(context, target).await?;
+            target_state.overrides.set(permission.clone(), state);
+            permission_targets::save_state(context, target, target_state).await?;
         }
 
-        context
-            .server
-            .update_player_global_permissions(target, target.permission_groups(), overrides)
-            .map_err(|error| CommandError::failure(error.to_string()))?;
-        changed += 1;
-    }
-
-    context.sender.send_message(&TextComponent::plain(format!(
-        "Unset direct permission '{}' for {}",
-        permission.as_str(),
-        target_count_text(changed)
-    )));
-    Ok(command_result(changed))
+        context.sender.send_message(&TextComponent::plain(format!(
+            "{} permission '{}' for {}",
+            permission_action_text(state),
+            permission.as_str(),
+            target_count_text(targets.len())
+        )));
+        Ok(command_result(targets.len()))
+    })
 }
 
-fn targets(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
+fn unset_permission<'a>(
+    context: &'a mut CommandContext,
+    arguments: &'a ParsedArguments,
+) -> CommandFuture<'a> {
+    Box::pin(async move {
+        let targets = targets(arguments)?;
+        let permission = permission(arguments)?;
+        let mut changed = 0;
+
+        for target in &targets {
+            let mut target_state = permission_targets::load_state(context, target).await?;
+            if !target_state.overrides.unset(&permission) {
+                continue;
+            }
+
+            permission_targets::save_state(context, target, target_state).await?;
+            changed += 1;
+        }
+
+        context.sender.send_message(&TextComponent::plain(format!(
+            "Unset direct permission '{}' for {}",
+            permission.as_str(),
+            target_count_text(changed)
+        )));
+        Ok(command_result(changed))
+    })
+}
+
+fn targets(arguments: &ParsedArguments) -> Result<Vec<PermissionTarget>, CommandError> {
     let targets = arguments
-        .get::<Vec<Arc<Player>>>("targets")
+        .get::<Vec<PermissionTarget>>("targets")
         .map_err(super::invalid_parsed_argument)?;
     if targets.is_empty() {
         return Err(CommandError::failure("No players matched"));
