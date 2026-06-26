@@ -16,6 +16,7 @@ pub mod give;
 pub mod kill;
 pub mod list;
 pub mod locate;
+pub mod op;
 pub mod seed;
 pub mod setworldspawn;
 pub mod steel;
@@ -47,6 +48,7 @@ const BUILT_IN_COMMANDS: &[RegistrationFactory] = &[
     list::registration,
     locate::registration,
     give::registration,
+    op::registration,
     seed::registration,
     setworldspawn::registration,
     stop::registration,

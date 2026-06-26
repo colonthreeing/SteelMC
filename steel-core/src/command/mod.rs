@@ -492,6 +492,7 @@ mod tests {
         assert!(dispatcher.graph.has_root("list", &player));
         assert!(!dispatcher.graph.has_root("give", &player));
         assert!(!dispatcher.graph.has_root("gamemode", &player));
+        assert!(!dispatcher.graph.has_root("op", &player));
         assert!(!dispatcher.graph.has_root("tp", &player));
         assert!(!dispatcher.graph.has_root("teleport", &player));
         assert!(!dispatcher.graph.has_root("steelperms", &player));
@@ -499,6 +500,9 @@ mod tests {
 
         let give_player = player_context_with("minecraft.command.give");
         assert!(dispatcher.graph.has_root("give", &give_player));
+
+        let op_player = player_context_with("minecraft.command.op");
+        assert!(dispatcher.graph.has_root("op", &op_player));
 
         let gamemode_player = player_context_with("minecraft.command.gamemode");
         assert!(dispatcher.graph.has_root("gamemode", &gamemode_player));
