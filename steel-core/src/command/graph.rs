@@ -407,6 +407,7 @@ type DynamicPermissionResolver =
 struct UnresolvedDynamicPermission {
     argument_name: String,
     expected_type: &'static str,
+    catalog_segments: &'static [&'static str],
     resolver: UnresolvedDynamicPermissionResolver,
 }
 
@@ -419,6 +420,7 @@ impl UnresolvedDynamicPermission {
         Self {
             argument_name: argument_name.clone(),
             expected_type: T::TYPE_NAME,
+            catalog_segments: T::catalog_permission_segments(),
             resolver: Arc::new(move |base_permission, arguments| {
                 let value = arguments.get::<T>(&argument_name)?;
                 let segment = value.permission_segment()?;
@@ -752,7 +754,9 @@ mod tests {
             RequirementContext,
         },
     };
-    use crate::permission::{PermissionEntry, PermissionSet};
+    use crate::permission::{
+        PermissionCatalog, PermissionCatalogSource, PermissionEntry, PermissionSet,
+    };
     use steel_protocol::packets::game::CommandNode as ProtocolCommandNode;
     use steel_utils::{serial::WriteTo, types::GameType};
 
@@ -856,7 +860,8 @@ mod tests {
             PermissionKey::parse("minecraft.command.root").expect("permission key parses");
         let root =
             literal("root").then(argument("target", BoolParser).requires_subcommand_permission());
-        let Err(error) = root.resolve_subcommand_permissions(&root_permission) else {
+        let mut catalog = PermissionCatalog::new();
+        let Err(error) = root.resolve_subcommand_permissions(&root_permission, &mut catalog) else {
             panic!("argument node permission marker should be rejected");
         };
 
@@ -889,12 +894,13 @@ mod tests {
     fn dynamic_argument_permission_requires_available_argument() {
         let root_permission =
             PermissionKey::parse("minecraft.command.root").expect("permission key parses");
+        let mut catalog = PermissionCatalog::new();
         let Err(error) = literal("root")
             .then(
                 argument("gamemode", GameModeParser)
                     .requires_argument_permission::<GameType>("mode"),
             )
-            .resolve_subcommand_permissions(&root_permission)
+            .resolve_subcommand_permissions(&root_permission, &mut catalog)
         else {
             panic!("missing dynamic permission argument should reject registration");
         };
@@ -912,11 +918,12 @@ mod tests {
     fn dynamic_argument_permission_validates_argument_type() {
         let root_permission =
             PermissionKey::parse("minecraft.command.root").expect("permission key parses");
+        let mut catalog = PermissionCatalog::new();
         let Err(error) = literal("root")
             .then(
                 argument("enabled", BoolParser).requires_argument_permission::<GameType>("enabled"),
             )
-            .resolve_subcommand_permissions(&root_permission)
+            .resolve_subcommand_permissions(&root_permission, &mut catalog)
         else {
             panic!("wrong dynamic permission argument type should reject registration");
         };
@@ -933,11 +940,61 @@ mod tests {
     }
 
     #[test]
+    fn permission_resolution_registers_catalog_entries() {
+        let root_permission =
+            PermissionKey::parse("minecraft.command.gamemode").expect("permission key parses");
+        let mut catalog = PermissionCatalog::new();
+        commands::gamemode::command()
+            .resolve_subcommand_permissions(&root_permission, &mut catalog)
+            .expect("gamemode permissions resolve");
+
+        let suggestions = catalog.suggestions("minecraft.command.gamemode");
+        assert_eq!(
+            suggestions,
+            vec![
+                "minecraft.command.gamemode.adventure".to_owned(),
+                "minecraft.command.gamemode.creative".to_owned(),
+                "minecraft.command.gamemode.spectator".to_owned(),
+                "minecraft.command.gamemode.survival".to_owned(),
+            ]
+        );
+        assert!(
+            catalog
+                .entries()
+                .all(|entry| entry.sources().contains(&PermissionCatalogSource::Command))
+        );
+    }
+
+    #[test]
+    fn explicit_permission_requirements_register_catalog_entries() {
+        let root_permission =
+            PermissionKey::parse("minecraft.command.root").expect("permission key parses");
+        let admin = PermissionKey::parse("steel.admin").expect("permission key parses");
+        let audit = PermissionKey::parse("steel.audit").expect("permission key parses");
+        let mut catalog = PermissionCatalog::new();
+
+        literal("root")
+            .then(
+                literal("admin").requires_permission_expr(
+                    PermissionExpr::key(admin) | PermissionExpr::key(audit),
+                ),
+            )
+            .resolve_subcommand_permissions(&root_permission, &mut catalog)
+            .expect("permissions resolve");
+
+        assert_eq!(
+            catalog.suggestions("steel."),
+            vec!["steel.admin".to_owned(), "steel.audit".to_owned()]
+        );
+    }
+
+    #[test]
     fn gamemode_requires_dynamic_value_permission() {
         let root_permission =
             PermissionKey::parse("minecraft.command.gamemode").expect("permission key parses");
+        let mut catalog = PermissionCatalog::new();
         let root = commands::gamemode::command()
-            .resolve_subcommand_permissions(&root_permission)
+            .resolve_subcommand_permissions(&root_permission, &mut catalog)
             .expect("gamemode permissions resolve");
         let graph = graph_with_root(root);
 
@@ -959,8 +1016,9 @@ mod tests {
     fn dynamic_argument_permission_filters_value_suggestions() {
         let root_permission =
             PermissionKey::parse("minecraft.command.gamemode").expect("permission key parses");
+        let mut catalog = PermissionCatalog::new();
         let root = commands::gamemode::command()
-            .resolve_subcommand_permissions(&root_permission)
+            .resolve_subcommand_permissions(&root_permission, &mut catalog)
             .expect("gamemode permissions resolve");
         let graph = graph_with_root(root);
 
@@ -981,8 +1039,9 @@ mod tests {
     fn denied_dynamic_argument_hides_deeper_suggestions() {
         let root_permission =
             PermissionKey::parse("minecraft.command.gamemode").expect("permission key parses");
+        let mut catalog = PermissionCatalog::new();
         let root = commands::gamemode::command()
-            .resolve_subcommand_permissions(&root_permission)
+            .resolve_subcommand_permissions(&root_permission, &mut catalog)
             .expect("gamemode permissions resolve");
         let graph = graph_with_root(root);
 

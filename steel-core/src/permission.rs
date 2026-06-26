@@ -1,7 +1,7 @@
 //! Permission keys, expressions, and effective permission evaluation.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt,
     ops::{BitAnd, BitOr},
@@ -10,7 +10,7 @@ use std::{
 use serde::Deserialize;
 
 /// One dotted permission key.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PermissionKey(String);
 
 impl PermissionKey {
@@ -114,7 +114,7 @@ impl PermissionKey {
 }
 
 /// One non-wildcard segment in a permission key.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PermissionSegment(String);
 
 impl PermissionSegment {
@@ -149,6 +149,98 @@ fn validate_permission_segment(segment: &str) -> Result<(), PermissionKeyError> 
         Ok(())
     } else {
         Err(PermissionKeyError::InvalidSegment)
+    }
+}
+
+/// Source that registered a permission key for discovery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PermissionCatalogSource {
+    /// Permission owned by a registered command.
+    Command,
+    /// Permission already present in resolved group configuration.
+    Config,
+}
+
+/// One discoverable permission key and the sources that registered it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PermissionCatalogEntry {
+    key: PermissionKey,
+    sources: BTreeSet<PermissionCatalogSource>,
+}
+
+impl PermissionCatalogEntry {
+    fn new(key: PermissionKey, source: PermissionCatalogSource) -> Self {
+        let mut sources = BTreeSet::new();
+        sources.insert(source);
+        Self { key, sources }
+    }
+
+    /// Returns the permission key.
+    #[must_use]
+    pub const fn key(&self) -> &PermissionKey {
+        &self.key
+    }
+
+    /// Returns the sources that registered this key.
+    #[must_use]
+    pub const fn sources(&self) -> &BTreeSet<PermissionCatalogSource> {
+        &self.sources
+    }
+}
+
+/// Registry of permission keys available for discovery and autocomplete.
+///
+/// The catalog is not an enforcement boundary. Permission checks still accept
+/// any syntactically valid key so plugins and config can introduce nodes before
+/// Steel has metadata for them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PermissionCatalog {
+    entries: BTreeMap<PermissionKey, PermissionCatalogEntry>,
+}
+
+impl PermissionCatalog {
+    /// Creates an empty permission catalog.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+        }
+    }
+
+    /// Registers one permission key for discovery.
+    pub fn insert(&mut self, key: PermissionKey, source: PermissionCatalogSource) {
+        self.entries
+            .entry(key.clone())
+            .and_modify(|entry| {
+                entry.sources.insert(source);
+            })
+            .or_insert_with(|| PermissionCatalogEntry::new(key, source));
+    }
+
+    /// Merges another catalog into this one.
+    pub fn extend(&mut self, other: &Self) {
+        for entry in other.entries.values() {
+            for source in &entry.sources {
+                self.insert(entry.key.clone(), *source);
+            }
+        }
+    }
+
+    /// Returns all catalog entries sorted by permission key.
+    pub fn entries(&self) -> impl Iterator<Item = &PermissionCatalogEntry> {
+        self.entries.values()
+    }
+
+    /// Returns suggestion text for keys matching `prefix`.
+    #[must_use]
+    pub fn suggestions(&self, prefix: &str) -> Vec<String> {
+        self.entries
+            .keys()
+            .filter_map(|key| {
+                let key = key.as_str();
+                key.starts_with(prefix).then(|| key.to_owned())
+            })
+            .collect()
     }
 }
 
@@ -538,6 +630,15 @@ impl PermissionGroups {
         self.groups.contains_key(group)
     }
 
+    /// Adds configured group permission keys to a discovery catalog.
+    pub fn register_catalog_entries(&self, catalog: &mut PermissionCatalog) {
+        for group in self.groups.values() {
+            for entry in group.permissions.entries() {
+                catalog.insert(entry.key.clone(), PermissionCatalogSource::Config);
+            }
+        }
+    }
+
     /// Builds an effective permission set from default groups, assigned groups,
     /// and player-level overrides.
     ///
@@ -645,8 +746,9 @@ impl Error for PermissionConfigError {}
 #[cfg(test)]
 mod tests {
     use super::{
-        PermissionEntry, PermissionExpr, PermissionGroups, PermissionGroupsConfig, PermissionKey,
-        PermissionKeyError, PermissionSegment, PermissionSet, PermissionState,
+        PermissionCatalog, PermissionCatalogSource, PermissionEntry, PermissionExpr,
+        PermissionGroups, PermissionGroupsConfig, PermissionKey, PermissionKeyError,
+        PermissionSegment, PermissionSet, PermissionState,
     };
 
     fn key(value: &str) -> PermissionKey {
@@ -813,6 +915,34 @@ mod tests {
     }
 
     #[test]
+    fn permission_catalog_merges_sources_and_suggests_sorted_keys() {
+        let mut catalog = PermissionCatalog::new();
+        catalog.insert(
+            key("steel.command.steelperms"),
+            PermissionCatalogSource::Command,
+        );
+        catalog.insert(
+            key("steel.command.steelperms"),
+            PermissionCatalogSource::Config,
+        );
+        catalog.insert(
+            key("minecraft.command.gamemode"),
+            PermissionCatalogSource::Command,
+        );
+
+        assert_eq!(
+            catalog.suggestions("steel.command"),
+            vec!["steel.command.steelperms"]
+        );
+        let entry = catalog
+            .entries()
+            .find(|entry| entry.key().as_str() == "steel.command.steelperms")
+            .expect("catalog entry exists");
+        assert!(entry.sources().contains(&PermissionCatalogSource::Command));
+        assert!(entry.sources().contains(&PermissionCatalogSource::Config));
+    }
+
+    #[test]
     fn default_group_config_contains_editable_op_group() {
         let groups = PermissionGroups::from_config(PermissionGroupsConfig::default())
             .expect("default groups config is valid");
@@ -841,6 +971,22 @@ mod tests {
             Err(super::PermissionConfigError::InvalidGroupName { group, .. })
                 if group == "Admin Group"
         ));
+    }
+
+    #[test]
+    fn groups_register_config_permissions_in_catalog() {
+        let groups = PermissionGroups::from_config(PermissionGroupsConfig::default())
+            .expect("default groups config is valid");
+        let mut catalog = PermissionCatalog::new();
+
+        groups.register_catalog_entries(&mut catalog);
+
+        assert_eq!(catalog.suggestions("*"), vec!["*"]);
+        assert!(
+            catalog
+                .entries()
+                .all(|entry| entry.sources().contains(&PermissionCatalogSource::Config))
+        );
     }
 
     #[test]

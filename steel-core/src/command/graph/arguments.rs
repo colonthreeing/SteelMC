@@ -276,6 +276,14 @@ pub trait CommandPermissionArgument: FromParsedArgument {
     /// Returns an error if the argument value cannot form a valid permission
     /// segment.
     fn permission_segment(&self) -> Result<PermissionSegment, PermissionKeyError>;
+
+    /// Returns finite permission segments this argument can publish to the permission catalog.
+    ///
+    /// Dynamic arguments can return an empty slice when their value set is
+    /// discovered from runtime state instead of a closed enum.
+    fn catalog_permission_segments() -> &'static [&'static str] {
+        &[]
+    }
 }
 
 impl FromParsedArgument for bool {
@@ -358,6 +366,10 @@ impl FromParsedArgument for GameType {
 impl CommandPermissionArgument for GameType {
     fn permission_segment(&self) -> Result<PermissionSegment, PermissionKeyError> {
         PermissionSegment::parse(self.name())
+    }
+
+    fn catalog_permission_segments() -> &'static [&'static str] {
+        &["survival", "creative", "adventure", "spectator"]
     }
 }
 

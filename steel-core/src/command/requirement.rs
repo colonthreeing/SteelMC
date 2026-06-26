@@ -14,7 +14,7 @@ use crate::{
     world::World,
 };
 
-pub use crate::permission::{PermissionExpr, PermissionKey, PermissionKeyError};
+pub use crate::permission::{PermissionCatalog, PermissionExpr, PermissionKey, PermissionKeyError};
 
 /// The kind of source attempting to use a command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,6 +66,11 @@ pub trait CommandInputContext: RequirementContext {
     /// Returns the entity anchor for local coordinates.
     fn anchor(&self) -> EntityAnchor {
         EntityAnchor::Feet
+    }
+
+    /// Returns the permission catalog available for command suggestions.
+    fn permission_catalog(&self) -> Option<&PermissionCatalog> {
+        None
     }
 }
 
@@ -177,6 +182,10 @@ impl CommandInputContext for CommandContext {
 
     fn anchor(&self) -> EntityAnchor {
         self.anchor
+    }
+
+    fn permission_catalog(&self) -> Option<&PermissionCatalog> {
+        self.permission_catalog()
     }
 }
 

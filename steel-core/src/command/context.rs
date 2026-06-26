@@ -5,6 +5,7 @@ use glam::DVec3;
 
 use crate::command::sender::CommandSender;
 use crate::entity::Entity;
+use crate::permission::PermissionCatalog;
 use crate::player::Player;
 use crate::server::Server;
 use crate::world::World;
@@ -26,6 +27,7 @@ pub struct CommandContext {
     pub rotation: Option<(f32, f32)>,
     /// The anchor of the command.
     pub anchor: EntityAnchor,
+    permission_catalog: Option<PermissionCatalog>,
 }
 
 /// The position anchor to use for an entity.
@@ -70,6 +72,18 @@ impl CommandContext {
             position,
             rotation: Some(rotation),
             anchor: EntityAnchor::default(),
+            permission_catalog: None,
         }
+    }
+
+    /// Adds a permission catalog available to command suggestion providers.
+    #[must_use]
+    pub fn with_permission_catalog(mut self, catalog: PermissionCatalog) -> Self {
+        self.permission_catalog = Some(catalog);
+        self
+    }
+
+    pub(crate) fn permission_catalog(&self) -> Option<&PermissionCatalog> {
+        self.permission_catalog.as_ref()
     }
 }

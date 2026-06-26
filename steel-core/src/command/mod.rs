@@ -21,7 +21,10 @@ use crate::command::graph::{
 };
 use crate::command::requirement::RequirementContext;
 use crate::command::sender::CommandSender;
-use crate::permission::{PermissionKey, PermissionKeyError, PermissionSegment};
+use crate::permission::{
+    PermissionCatalog, PermissionCatalogSource, PermissionKey, PermissionKeyError,
+    PermissionSegment,
+};
 use crate::player::Player;
 use crate::server::Server;
 use std::{error::Error, fmt, sync::Arc};
@@ -33,6 +36,7 @@ pub(crate) use executor::CommandQueue;
 pub struct CommandDispatcher {
     /// Dynamic command graph.
     graph: CommandGraph,
+    permission_catalog: PermissionCatalog,
 }
 
 pub(crate) struct CommandRegistration {
@@ -181,6 +185,7 @@ impl CommandDispatcher {
     pub const fn new_empty() -> Self {
         CommandDispatcher {
             graph: CommandGraph::new(),
+            permission_catalog: PermissionCatalog::new(),
         }
     }
 
@@ -192,20 +197,26 @@ impl CommandDispatcher {
         let permission = registration
             .has_root_permission()
             .then(|| permission_base.clone());
+        let mut command_catalog = PermissionCatalog::new();
+        if let Some(permission) = &permission {
+            command_catalog.insert(permission.clone(), PermissionCatalogSource::Command);
+        }
         let root = registration
             .root
             .clone()
-            .resolve_subcommand_permissions(&permission_base)?;
+            .resolve_subcommand_permissions(&permission_base, &mut command_catalog)?;
         self.register_root(root, permission.clone())?;
         for alias in registration.aliases {
+            let mut alias_catalog = PermissionCatalog::new();
             let root = registration
                 .root
                 .clone()
                 .with_literal_name(alias)
                 .ok_or(CommandRegistrationError::RootMustBeLiteral)?
-                .resolve_subcommand_permissions(&permission_base)?;
+                .resolve_subcommand_permissions(&permission_base, &mut alias_catalog)?;
             self.register_root(root, permission.clone())?;
         }
+        self.permission_catalog.extend(&command_catalog);
         Ok(())
     }
 
@@ -416,7 +427,12 @@ impl CommandDispatcher {
         command: &str,
         server: Arc<Server>,
     ) -> (Vec<SuggestionEntry>, i32, i32) {
-        let context = CommandContext::new(sender, server);
+        let mut catalog = self.permission_catalog.clone();
+        server
+            .config
+            .permission_groups
+            .register_catalog_entries(&mut catalog);
+        let context = CommandContext::new(sender, server).with_permission_catalog(catalog);
 
         self.graph
             .suggest(command, &context)
@@ -434,7 +450,9 @@ mod tests {
         graph::{CommandGraphError, CommandParseErrorKind, CommandResult, literal},
         requirement::{CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext},
     };
-    use crate::permission::{PermissionEntry, PermissionKey, PermissionSegment, PermissionSet};
+    use crate::permission::{
+        PermissionCatalogSource, PermissionEntry, PermissionKey, PermissionSegment, PermissionSet,
+    };
     use steel_registry::test_support::init_test_registry;
     use steel_utils::translations;
     use text_components::{TextComponent, content::Content};
@@ -585,6 +603,40 @@ mod tests {
             player_context_with_all(["minecraft.command.long", "minecraft.command.long.child"]);
         assert!(dispatcher.graph.parse("short child", &child_player).is_ok());
         assert!(dispatcher.graph.parse("alias child", &child_player).is_ok());
+    }
+
+    #[test]
+    fn dispatcher_catalog_tracks_command_permissions() {
+        init_test_registry();
+
+        let dispatcher = CommandDispatcher::new().expect("built-in commands register");
+        let suggestions = dispatcher
+            .permission_catalog
+            .suggestions("minecraft.command.gamemode");
+
+        assert_eq!(
+            suggestions,
+            vec![
+                "minecraft.command.gamemode".to_owned(),
+                "minecraft.command.gamemode.adventure".to_owned(),
+                "minecraft.command.gamemode.creative".to_owned(),
+                "minecraft.command.gamemode.spectator".to_owned(),
+                "minecraft.command.gamemode.survival".to_owned(),
+            ]
+        );
+        assert!(
+            dispatcher
+                .permission_catalog
+                .entries()
+                .all(|entry| entry.sources().contains(&PermissionCatalogSource::Command))
+        );
+        assert!(
+            !dispatcher
+                .permission_catalog
+                .suggestions("steel.command.sp")
+                .iter()
+                .any(|key| key == "steel.command.sp")
+        );
     }
 
     #[test]

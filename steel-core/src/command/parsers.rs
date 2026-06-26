@@ -359,12 +359,29 @@ impl CommandArgumentParser for PermissionKeyParser {
             ArgumentType::String {
                 behavior: steel_protocol::packets::game::ArgumentStringTypeBehavior::SingleWord,
             },
-            None,
+            Some(SuggestionType::AskServer),
         )
     }
 
     fn parsed_type(&self) -> &'static str {
         "permission_key"
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        _arguments: &ParsedArguments,
+        context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        let Some(catalog) = context.permission_catalog() else {
+            return Vec::new();
+        };
+
+        catalog
+            .suggestions(prefix)
+            .into_iter()
+            .map(SuggestionEntry::new)
+            .collect()
     }
 }
 
@@ -401,7 +418,7 @@ impl CommandArgumentParser for PermissionGroupParser {
             ArgumentType::String {
                 behavior: steel_protocol::packets::game::ArgumentStringTypeBehavior::SingleWord,
             },
-            None,
+            Some(SuggestionType::AskServer),
         )
     }
 
@@ -1440,6 +1457,7 @@ impl CommandArgumentParser for TimeParser {
 #[cfg(test)]
 mod tests {
     use glam::DVec3;
+    use steel_protocol::packets::game::SuggestionType;
     use steel_registry::{
         test_support::init_test_registry, vanilla_enchantments, vanilla_entities, vanilla_items,
     };
@@ -1460,6 +1478,7 @@ mod tests {
             },
         },
         entity::init_test_entities,
+        permission::{PermissionCatalog, PermissionCatalogSource, PermissionKey},
     };
     use steel_utils::types::GameType;
 
@@ -1476,6 +1495,26 @@ mod tests {
     }
 
     impl CommandInputContext for TestContext {}
+
+    struct CatalogContext {
+        catalog: PermissionCatalog,
+    }
+
+    impl RequirementContext for CatalogContext {
+        fn source_kind(&self) -> CommandSourceKind {
+            CommandSourceKind::Player
+        }
+
+        fn has_permission(&self, _permission: &PermissionExpr) -> bool {
+            false
+        }
+    }
+
+    impl CommandInputContext for CatalogContext {
+        fn permission_catalog(&self) -> Option<&PermissionCatalog> {
+            Some(&self.catalog)
+        }
+    }
 
     struct PositionedContext;
 
@@ -1548,6 +1587,43 @@ mod tests {
             error.kind(),
             CommandParseErrorKind::InvalidPermissionKey(value) if value == "steel.*.steelperms"
         ));
+    }
+
+    #[test]
+    fn permission_management_parsers_request_server_suggestions() {
+        assert!(matches!(
+            PermissionKeyParser.usage().1,
+            Some(SuggestionType::AskServer)
+        ));
+        assert!(matches!(
+            super::PermissionGroupParser.usage().1,
+            Some(SuggestionType::AskServer)
+        ));
+    }
+
+    #[test]
+    fn permission_key_parser_suggests_catalog_entries() {
+        let mut catalog = PermissionCatalog::new();
+        catalog.insert(
+            PermissionKey::parse("steel.command.steelperms.user.allow")
+                .expect("permission key parses"),
+            PermissionCatalogSource::Command,
+        );
+        catalog.insert(
+            PermissionKey::parse("minecraft.command.gamemode.creative")
+                .expect("permission key parses"),
+            PermissionCatalogSource::Command,
+        );
+        let context = CatalogContext { catalog };
+
+        let suggestions =
+            PermissionKeyParser.suggest("steel.command", &ParsedArguments::default(), &context);
+        let texts = suggestions
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+
+        assert_eq!(texts, vec!["steel.command.steelperms.user.allow"]);
     }
 
     #[test]

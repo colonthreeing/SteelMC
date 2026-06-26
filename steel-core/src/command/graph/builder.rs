@@ -7,7 +7,9 @@ use super::{
     UnresolvedDynamicPermission,
 };
 use crate::command::{context::CommandContext, error::CommandError, requirement::Requirement};
-use crate::permission::{PermissionExpr, PermissionKey, PermissionSegment};
+use crate::permission::{
+    PermissionCatalog, PermissionCatalogSource, PermissionExpr, PermissionKey, PermissionSegment,
+};
 
 /// Builds a command graph node.
 #[derive(Clone)]
@@ -20,6 +22,7 @@ pub struct CommandNodeBuilder {
     derived_subcommand_permission: bool,
     dynamic_permissions: Vec<UnresolvedDynamicPermission>,
     resolved_dynamic_permissions: Vec<DynamicPermission>,
+    catalog_permissions: Vec<PermissionKey>,
 }
 
 impl CommandNodeBuilder {
@@ -33,6 +36,7 @@ impl CommandNodeBuilder {
     /// Adds a requirement to this node.
     #[must_use]
     pub fn requires(mut self, requirement: Requirement) -> Self {
+        collect_requirement_catalog_permissions(&requirement, &mut self.catalog_permissions);
         self.requirement = self.requirement.and(requirement);
         self
     }
@@ -153,8 +157,9 @@ impl CommandNodeBuilder {
     pub(crate) fn resolve_subcommand_permissions(
         self,
         root_permission: &PermissionKey,
+        catalog: &mut PermissionCatalog,
     ) -> Result<Self, CommandGraphError> {
-        self.resolve_subcommand_permissions_inner(root_permission, true, Vec::new())
+        self.resolve_subcommand_permissions_inner(root_permission, true, Vec::new(), catalog)
     }
 
     fn resolve_subcommand_permissions_inner(
@@ -162,6 +167,7 @@ impl CommandNodeBuilder {
         parent_permission: &PermissionKey,
         is_root: bool,
         available_arguments: Vec<AvailableArgument>,
+        catalog: &mut PermissionCatalog,
     ) -> Result<Self, CommandGraphError> {
         let Self {
             kind,
@@ -172,6 +178,7 @@ impl CommandNodeBuilder {
             derived_subcommand_permission,
             dynamic_permissions,
             resolved_dynamic_permissions,
+            catalog_permissions,
         } = self;
 
         let child_permission;
@@ -201,15 +208,23 @@ impl CommandNodeBuilder {
             requirement = requirement.and(Requirement::Permission(PermissionExpr::key(
                 current_permission.to_owned(),
             )));
+            catalog.insert(
+                current_permission.to_owned(),
+                PermissionCatalogSource::Command,
+            );
         }
 
         let mut resolved_dynamic_permissions = resolved_dynamic_permissions;
+        for permission in &catalog_permissions {
+            catalog.insert(permission.clone(), PermissionCatalogSource::Command);
+        }
         for permission in &dynamic_permissions {
             validate_dynamic_permission_argument(
                 kind.display_name(),
                 permission,
                 &available_arguments,
             )?;
+            register_dynamic_permission_catalog_entries(current_permission, permission, catalog)?;
         }
         resolved_dynamic_permissions.extend(
             dynamic_permissions
@@ -227,6 +242,7 @@ impl CommandNodeBuilder {
                         current_permission,
                         false,
                         available_arguments.clone(),
+                        catalog,
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?,
@@ -235,6 +251,7 @@ impl CommandNodeBuilder {
             derived_subcommand_permission: false,
             dynamic_permissions: Vec::new(),
             resolved_dynamic_permissions,
+            catalog_permissions,
         })
     }
 }
@@ -273,6 +290,56 @@ fn validate_dynamic_permission_argument(
     Ok(())
 }
 
+fn register_dynamic_permission_catalog_entries(
+    base_permission: &PermissionKey,
+    permission: &UnresolvedDynamicPermission,
+    catalog: &mut PermissionCatalog,
+) -> Result<(), CommandGraphError> {
+    for segment in permission.catalog_segments {
+        let segment = PermissionSegment::parse(*segment)?;
+        catalog.insert(
+            base_permission.child(&segment)?,
+            PermissionCatalogSource::Command,
+        );
+    }
+    Ok(())
+}
+
+fn collect_requirement_catalog_permissions(
+    requirement: &Requirement,
+    catalog_permissions: &mut Vec<PermissionKey>,
+) {
+    match requirement {
+        Requirement::Permission(permission) => {
+            collect_permission_expr_keys(permission, catalog_permissions);
+        }
+        Requirement::All(requirements) | Requirement::Any(requirements) => {
+            for requirement in requirements {
+                collect_requirement_catalog_permissions(requirement, catalog_permissions);
+            }
+        }
+        Requirement::Always | Requirement::Player | Requirement::Console => {}
+    }
+}
+
+fn collect_permission_expr_keys(
+    permission: &PermissionExpr,
+    catalog_permissions: &mut Vec<PermissionKey>,
+) {
+    match permission {
+        PermissionExpr::Key(key) => {
+            if !catalog_permissions.iter().any(|existing| existing == key) {
+                catalog_permissions.push(key.clone());
+            }
+        }
+        PermissionExpr::All(children) | PermissionExpr::Any(children) => {
+            for child in children {
+                collect_permission_expr_keys(child, catalog_permissions);
+            }
+        }
+    }
+}
+
 /// Creates a literal node builder.
 #[must_use]
 pub fn literal(name: impl Into<String>) -> CommandNodeBuilder {
@@ -285,6 +352,7 @@ pub fn literal(name: impl Into<String>) -> CommandNodeBuilder {
         derived_subcommand_permission: false,
         dynamic_permissions: Vec::new(),
         resolved_dynamic_permissions: Vec::new(),
+        catalog_permissions: Vec::new(),
     }
 }
 
@@ -306,5 +374,6 @@ pub fn argument(
         derived_subcommand_permission: false,
         dynamic_permissions: Vec::new(),
         resolved_dynamic_permissions: Vec::new(),
+        catalog_permissions: Vec::new(),
     }
 }
