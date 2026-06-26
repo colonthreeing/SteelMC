@@ -143,10 +143,9 @@ impl PermissionSegment {
 }
 
 fn validate_permission_segment(segment: &str) -> Result<(), PermissionKeyError> {
-    if segment
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
-    {
+    if segment.bytes().all(|byte| {
+        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'-'
+    }) {
         Ok(())
     } else {
         Err(PermissionKeyError::InvalidSegment)
@@ -182,7 +181,7 @@ impl fmt::Display for PermissionKeyError {
             Self::InvalidSegment => {
                 write!(
                     f,
-                    "permission segment must contain only letters, numbers, '_' or '-'"
+                    "permission segment must contain only lowercase letters, numbers, '_' or '-'"
                 )
             }
         }
@@ -486,6 +485,7 @@ impl PermissionGroups {
     /// Returns an error when a default group is missing or a permission key is invalid.
     pub fn from_config(config: PermissionGroupsConfig) -> Result<Self, PermissionConfigError> {
         for group in &config.default_groups {
+            validate_group_name(group)?;
             if !config.groups.contains_key(group) {
                 return Err(PermissionConfigError::MissingDefaultGroup(group.clone()));
             }
@@ -493,6 +493,7 @@ impl PermissionGroups {
 
         let mut groups = BTreeMap::new();
         for (name, group) in config.groups {
+            validate_group_name(&name)?;
             let mut permissions = PermissionSet::new();
             for permission in group.allow {
                 permissions.allow(PermissionKey::parse(permission).map_err(|source| {
@@ -573,6 +574,18 @@ impl PermissionGroups {
     }
 }
 
+fn validate_group_name(group: &str) -> Result<(), PermissionConfigError> {
+    PermissionSegment::parse(group).map_or_else(
+        |source| {
+            Err(PermissionConfigError::InvalidGroupName {
+                group: group.to_owned(),
+                source,
+            })
+        },
+        |_| Ok(()),
+    )
+}
+
 /// One resolved permission group.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PermissionGroup {
@@ -599,6 +612,13 @@ pub enum PermissionConfigError {
         /// Parse error.
         source: PermissionKeyError,
     },
+    /// A group name is not command-usable.
+    InvalidGroupName {
+        /// Invalid group name.
+        group: String,
+        /// Parse error.
+        source: PermissionKeyError,
+    },
 }
 
 impl fmt::Display for PermissionConfigError {
@@ -612,6 +632,9 @@ impl fmt::Display for PermissionConfigError {
                     f,
                     "permission group '{group}' contains invalid key: {source}"
                 )
+            }
+            Self::InvalidGroupName { group, source } => {
+                write!(f, "permission group name '{group}' is invalid: {source}")
             }
         }
     }
@@ -646,6 +669,10 @@ mod tests {
     fn permission_keys_reject_invalid_segments() {
         assert_eq!(
             PermissionKey::parse("minecraft.command.give item").err(),
+            Some(PermissionKeyError::InvalidSegment)
+        );
+        assert_eq!(
+            PermissionKey::parse("Minecraft.command.give").err(),
             Some(PermissionKeyError::InvalidSegment)
         );
         assert_eq!(
@@ -799,6 +826,21 @@ mod tests {
                 .get("op")
                 .is_some_and(|group| group.permissions().allows_key(&key("steel.admin")))
         );
+    }
+
+    #[test]
+    fn group_names_must_be_command_usable_segments() {
+        let mut config = PermissionGroupsConfig::default();
+        config.groups.insert(
+            "Admin Group".to_owned(),
+            super::PermissionGroupConfig::default(),
+        );
+
+        assert!(matches!(
+            PermissionGroups::from_config(config),
+            Err(super::PermissionConfigError::InvalidGroupName { group, .. })
+                if group == "Admin Group"
+        ));
     }
 
     #[test]

@@ -27,12 +27,12 @@
   "definitions": {
     "group_name": {
       "type": "string",
-      "pattern": "^[A-Za-z0-9_.-]+$"
+      "pattern": "^[a-z0-9_-]+$"
     },
     "permission_key": {
       "type": "string",
       "description": "Dotted permission key. Only a full trailing segment may be a wildcard.",
-      "pattern": "^(\\*|[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*(\\.\\*)?)$"
+      "pattern": "^(\\*|[a-z0-9_-]+(\\.[a-z0-9_-]+)*(\\.\\*)?)$"
     },
     "group": {
       "type": "object",

@@ -213,6 +213,21 @@ impl PlayerDataStorage {
         }
     }
 
+    /// Saves server-wide player data if `is_current` still returns true while
+    /// holding the destination file lock.
+    pub async fn save_global_if_current(
+        &self,
+        uuid: Uuid,
+        data: &GlobalPlayerData,
+        is_current: impl FnOnce() -> bool + Send,
+    ) -> io::Result<bool> {
+        match &self.backend {
+            PlayerDataStorageBackend::File(storage) => {
+                storage.save_global_if_current(uuid, data, is_current).await
+            }
+        }
+    }
+
     /// Loads the known player index.
     pub async fn load_known_players(&self) -> io::Result<KnownPlayers> {
         match &self.backend {
@@ -224,6 +239,22 @@ impl PlayerDataStorage {
     pub async fn save_known_players(&self, players: &KnownPlayers) -> io::Result<()> {
         match &self.backend {
             PlayerDataStorageBackend::File(storage) => storage.save_known_players(players).await,
+        }
+    }
+
+    /// Saves the known player index if `is_current` still returns true while
+    /// holding the destination file lock.
+    pub async fn save_known_players_if_current(
+        &self,
+        players: &KnownPlayers,
+        is_current: impl FnOnce() -> bool + Send,
+    ) -> io::Result<bool> {
+        match &self.backend {
+            PlayerDataStorageBackend::File(storage) => {
+                storage
+                    .save_known_players_if_current(players, is_current)
+                    .await
+            }
         }
     }
 
@@ -308,6 +339,18 @@ impl FilePlayerDataStorage {
             .await
     }
 
+    async fn save_global_if_current(
+        &self,
+        uuid: Uuid,
+        data: &GlobalPlayerData,
+        is_current: impl FnOnce() -> bool + Send,
+    ) -> io::Result<bool> {
+        let file = GlobalPlayerDataFile::from_global_data(data);
+        let bytes = encode_global_file(&file)?;
+        self.write_atomic_if_current(&self.global_players_dir(), uuid, bytes, is_current)
+            .await
+    }
+
     async fn load_known_players(&self) -> io::Result<KnownPlayers> {
         let path = self.known_players_file();
         let lock = self.file_lock(&path);
@@ -325,6 +368,17 @@ impl FilePlayerDataStorage {
         let file = KnownPlayersFile::from_known_players(players);
         let bytes = encode_known_players_file(&file)?;
         self.write_atomic_path(&self.known_players_file(), bytes)
+            .await
+    }
+
+    async fn save_known_players_if_current(
+        &self,
+        players: &KnownPlayers,
+        is_current: impl FnOnce() -> bool + Send,
+    ) -> io::Result<bool> {
+        let file = KnownPlayersFile::from_known_players(players);
+        let bytes = encode_known_players_file(&file)?;
+        self.write_atomic_path_if_current(&self.known_players_file(), bytes, is_current)
             .await
     }
 
@@ -365,12 +419,28 @@ impl FilePlayerDataStorage {
     }
 
     async fn write_atomic(&self, players_dir: &Path, uuid: Uuid, bytes: Vec<u8>) -> io::Result<()> {
+        self.write_atomic_if_current(players_dir, uuid, bytes, || true)
+            .await
+            .map(|_| ())
+    }
+
+    async fn write_atomic_if_current(
+        &self,
+        players_dir: &Path,
+        uuid: Uuid,
+        bytes: Vec<u8>,
+        is_current: impl FnOnce() -> bool + Send,
+    ) -> io::Result<bool> {
         fs::create_dir_all(players_dir).await?;
         let temp_path = Self::temp_file(players_dir, uuid);
         let final_path = Self::player_file(players_dir, uuid);
         let backup_path = Self::backup_file(players_dir, uuid);
         let lock = self.file_lock(&final_path);
         let _guard = lock.lock().await;
+
+        if !is_current() {
+            return Ok(false);
+        }
 
         fs::write(&temp_path, bytes).await?;
         if final_path.exists() {
@@ -379,10 +449,22 @@ impl FilePlayerDataStorage {
             }
             fs::rename(&final_path, &backup_path).await?;
         }
-        fs::rename(&temp_path, &final_path).await
+        fs::rename(&temp_path, &final_path).await?;
+        Ok(true)
     }
 
     async fn write_atomic_path(&self, final_path: &Path, bytes: Vec<u8>) -> io::Result<()> {
+        self.write_atomic_path_if_current(final_path, bytes, || true)
+            .await
+            .map(|_| ())
+    }
+
+    async fn write_atomic_path_if_current(
+        &self,
+        final_path: &Path,
+        bytes: Vec<u8>,
+        is_current: impl FnOnce() -> bool + Send,
+    ) -> io::Result<bool> {
         let Some(parent) = final_path.parent() else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -396,6 +478,10 @@ impl FilePlayerDataStorage {
         let lock = self.file_lock(final_path);
         let _guard = lock.lock().await;
 
+        if !is_current() {
+            return Ok(false);
+        }
+
         fs::write(&temp_path, bytes).await?;
         if final_path.exists() {
             if backup_path.exists() {
@@ -403,7 +489,8 @@ impl FilePlayerDataStorage {
             }
             fs::rename(final_path, &backup_path).await?;
         }
-        fs::rename(&temp_path, final_path).await
+        fs::rename(&temp_path, final_path).await?;
+        Ok(true)
     }
 }
 
@@ -721,8 +808,17 @@ fn decode_file(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use crate::entity::DEFAULT_MAX_AIR_SUPPLY;
+
+    fn temp_storage_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "steelmc-player-data-storage-{name}-{}",
+            Uuid::new_v4()
+        ))
+    }
 
     fn sample_player_file(data_version: i32) -> PlayerDataFile {
         PlayerDataFile {
@@ -889,6 +985,79 @@ mod tests {
             KNOWN_PLAYERS_STORAGE_VERSION
         );
         assert_eq!(decoded, players);
+    }
+
+    #[tokio::test]
+    async fn stale_global_save_is_skipped() {
+        let root = temp_storage_root("global");
+        let storage = PlayerDataStorage::new(root.clone(), StorageSelection::default_player_file())
+            .await
+            .expect("storage should initialize");
+        let uuid = Uuid::new_v4();
+        let current = GlobalPlayerData {
+            last_active_domain: "minecraft".to_owned(),
+            groups: vec!["default".to_owned()],
+            permissions: PermissionSet::default(),
+        };
+        let stale = GlobalPlayerData {
+            last_active_domain: "lobby".to_owned(),
+            groups: vec!["op".to_owned()],
+            permissions: PermissionSet::default(),
+        };
+
+        assert!(
+            storage
+                .save_global_if_current(uuid, &current, || true)
+                .await
+                .expect("current save should succeed")
+        );
+        assert!(
+            !storage
+                .save_global_if_current(uuid, &stale, || false)
+                .await
+                .expect("stale save should be skipped")
+        );
+
+        let loaded = storage
+            .load_global(uuid)
+            .await
+            .expect("global data should load")
+            .expect("global data should exist");
+        assert_eq!(loaded.last_active_domain, current.last_active_domain);
+        assert_eq!(loaded.groups, current.groups);
+
+        let _ = fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn stale_known_players_save_is_skipped() {
+        let root = temp_storage_root("known");
+        let storage = PlayerDataStorage::new(root.clone(), StorageSelection::default_player_file())
+            .await
+            .expect("storage should initialize");
+        let current = KnownPlayers::from_entries([KnownPlayer::new(Uuid::from_u128(1), "Steve")]);
+        let stale = KnownPlayers::from_entries([KnownPlayer::new(Uuid::from_u128(2), "Alex")]);
+
+        assert!(
+            storage
+                .save_known_players_if_current(&current, || true)
+                .await
+                .expect("current known-player save should succeed")
+        );
+        assert!(
+            !storage
+                .save_known_players_if_current(&stale, || false)
+                .await
+                .expect("stale known-player save should be skipped")
+        );
+
+        let loaded = storage
+            .load_known_players()
+            .await
+            .expect("known players should load");
+        assert_eq!(loaded, current);
+
+        let _ = fs::remove_dir_all(root).await;
     }
 
     #[test]

@@ -77,17 +77,15 @@ pub enum StructureArgumentValue {
 pub struct PermissionTarget {
     uuid: Uuid,
     name: String,
-    online_player: Option<Arc<Player>>,
 }
 
 impl PermissionTarget {
     /// Creates a target from an online player.
     #[must_use]
-    pub fn online(player: Arc<Player>) -> Self {
+    pub fn online(player: &Player) -> Self {
         Self {
             uuid: player.gameprofile.id,
             name: player.gameprofile.name.clone(),
-            online_player: Some(player),
         }
     }
 
@@ -97,7 +95,6 @@ impl PermissionTarget {
         Self {
             uuid,
             name: name.into(),
-            online_player: None,
         }
     }
 
@@ -112,12 +109,6 @@ impl PermissionTarget {
     pub fn name(&self) -> &str {
         &self.name
     }
-
-    /// Returns the online player when this target is connected.
-    #[must_use]
-    pub fn online_player(&self) -> Option<&Arc<Player>> {
-        self.online_player.as_ref()
-    }
 }
 
 impl fmt::Debug for PermissionTarget {
@@ -125,7 +116,6 @@ impl fmt::Debug for PermissionTarget {
         f.debug_struct("PermissionTarget")
             .field("uuid", &self.uuid)
             .field("name", &self.name)
-            .field("online", &self.online_player.is_some())
             .finish()
     }
 }

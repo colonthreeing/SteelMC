@@ -17,7 +17,7 @@ use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
     CommandFuture, CommandGraph, CommandGraphError, CommandNodeBuilder, CommandParseError,
-    CommandParseErrorKind, CommandResult,
+    CommandParseErrorKind, CommandResult, validate_command_node_name,
 };
 use crate::command::requirement::RequirementContext;
 use crate::command::sender::CommandSender;
@@ -39,7 +39,7 @@ pub(crate) struct CommandRegistration {
     root: CommandNodeBuilder,
     namespace: PermissionSegment,
     permission: CommandPermissionMode,
-    aliases: Vec<PermissionSegment>,
+    aliases: Vec<String>,
 }
 
 impl CommandRegistration {
@@ -76,7 +76,13 @@ impl CommandRegistration {
     }
 
     pub(crate) fn alias(mut self, alias: &str) -> Result<Self, CommandRegistrationError> {
-        self.aliases.push(PermissionSegment::parse(alias)?);
+        validate_command_node_name(alias).map_err(|source| {
+            CommandGraphError::InvalidLiteralName {
+                name: alias.to_owned(),
+                source,
+            }
+        })?;
+        self.aliases.push(alias.to_owned());
         Ok(self)
     }
 
@@ -195,7 +201,7 @@ impl CommandDispatcher {
             let root = registration
                 .root
                 .clone()
-                .with_literal_name(alias.as_str())
+                .with_literal_name(alias)
                 .ok_or(CommandRegistrationError::RootMustBeLiteral)?
                 .resolve_subcommand_permissions(&permission_base)?;
             self.register_root(root, permission.clone())?;
@@ -430,10 +436,10 @@ impl CommandDispatcher {
 
 #[cfg(test)]
 mod tests {
-    use super::{CommandDispatcher, CommandRegistration};
+    use super::{CommandDispatcher, CommandRegistration, CommandRegistrationError};
     use crate::command::{
         error::CommandError,
-        graph::{CommandParseErrorKind, CommandResult, literal},
+        graph::{CommandGraphError, CommandParseErrorKind, CommandResult, literal},
         requirement::{CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext},
     };
     use crate::permission::{PermissionEntry, PermissionKey, PermissionSegment, PermissionSet};
@@ -587,6 +593,39 @@ mod tests {
             player_context_with_all(["minecraft.command.long", "minecraft.command.long.child"]);
         assert!(dispatcher.graph.parse("short child", &child_player).is_ok());
         assert!(dispatcher.graph.parse("alias child", &child_player).is_ok());
+    }
+
+    #[test]
+    fn aliases_validate_as_command_literals_not_permission_segments() {
+        let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
+        let mut dispatcher = CommandDispatcher::new_empty();
+        let registration = CommandRegistration::new(
+            literal("root").executes(|_, _| Ok(CommandResult::success())),
+            minecraft,
+        )
+        .alias("Alias")
+        .expect("alias is a valid command literal");
+
+        dispatcher
+            .register_command(registration)
+            .expect("command registers");
+
+        let player = player_context_with("minecraft.command.root");
+        assert!(dispatcher.graph.has_root("Alias", &player));
+    }
+
+    #[test]
+    fn aliases_reject_invalid_command_literals() {
+        let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
+        let Err(error) = CommandRegistration::new(literal("root"), minecraft).alias("bad alias")
+        else {
+            panic!("alias with whitespace should fail");
+        };
+
+        assert!(matches!(
+            error,
+            CommandRegistrationError::InvalidGraph(CommandGraphError::InvalidLiteralName { .. })
+        ));
     }
 
     #[test]

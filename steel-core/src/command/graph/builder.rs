@@ -192,13 +192,14 @@ impl CommandNodeBuilder {
         self,
         root_permission: &PermissionKey,
     ) -> Result<Self, CommandGraphError> {
-        self.resolve_subcommand_permissions_inner(root_permission, true)
+        self.resolve_subcommand_permissions_inner(root_permission, true, Vec::new())
     }
 
     fn resolve_subcommand_permissions_inner(
         self,
         parent_permission: &PermissionKey,
         is_root: bool,
+        available_arguments: Vec<AvailableArgument>,
     ) -> Result<Self, CommandGraphError> {
         let Self {
             kind,
@@ -212,6 +213,7 @@ impl CommandNodeBuilder {
         } = self;
 
         let child_permission;
+        let mut available_arguments = available_arguments;
         let current_permission = match &kind {
             CommandNodeKind::Literal(_) if is_root => parent_permission,
             CommandNodeKind::Literal(name) => {
@@ -219,7 +221,13 @@ impl CommandNodeBuilder {
                 child_permission = parent_permission.child(&segment)?;
                 &child_permission
             }
-            CommandNodeKind::Argument { .. } => parent_permission,
+            CommandNodeKind::Argument { name, parser } => {
+                available_arguments.push(AvailableArgument {
+                    name: name.clone(),
+                    parsed_type: parser.parsed_type(),
+                });
+                parent_permission
+            }
         };
 
         if derived_subcommand_permission {
@@ -234,6 +242,13 @@ impl CommandNodeBuilder {
         }
 
         let mut resolved_dynamic_permissions = resolved_dynamic_permissions;
+        for permission in &dynamic_permissions {
+            validate_dynamic_permission_argument(
+                kind.display_name(),
+                permission,
+                &available_arguments,
+            )?;
+        }
         resolved_dynamic_permissions.extend(
             dynamic_permissions
                 .into_iter()
@@ -245,7 +260,13 @@ impl CommandNodeBuilder {
             requirement,
             children: children
                 .into_iter()
-                .map(|child| child.resolve_subcommand_permissions_inner(current_permission, false))
+                .map(|child| {
+                    child.resolve_subcommand_permissions_inner(
+                        current_permission,
+                        false,
+                        available_arguments.clone(),
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()?,
             executor,
             redirect,
@@ -254,6 +275,40 @@ impl CommandNodeBuilder {
             resolved_dynamic_permissions,
         })
     }
+}
+
+#[derive(Clone)]
+struct AvailableArgument {
+    name: String,
+    parsed_type: &'static str,
+}
+
+fn validate_dynamic_permission_argument(
+    node_name: &str,
+    permission: &UnresolvedDynamicPermission,
+    available_arguments: &[AvailableArgument],
+) -> Result<(), CommandGraphError> {
+    let Some(argument) = available_arguments
+        .iter()
+        .rev()
+        .find(|argument| argument.name == permission.argument_name)
+    else {
+        return Err(CommandGraphError::MissingDynamicPermissionArgument {
+            node: node_name.to_owned(),
+            argument: permission.argument_name.clone(),
+        });
+    };
+
+    if argument.parsed_type != permission.expected_type {
+        return Err(CommandGraphError::WrongDynamicPermissionArgumentType {
+            node: node_name.to_owned(),
+            argument: permission.argument_name.clone(),
+            expected: permission.expected_type,
+            actual: argument.parsed_type,
+        });
+    }
+
+    Ok(())
 }
 
 /// Creates a literal node builder.

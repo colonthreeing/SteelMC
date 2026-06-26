@@ -65,6 +65,10 @@ impl CommandArgumentParser for GameModeParser {
         (ArgumentType::Gamemode, None)
     }
 
+    fn parsed_type(&self) -> &'static str {
+        "gamemode"
+    }
+
     fn suggest(
         &self,
         prefix: &str,
@@ -174,6 +178,10 @@ impl CommandArgumentParser for PlayerParser {
         )
     }
 
+    fn parsed_type(&self) -> &'static str {
+        "players"
+    }
+
     fn suggest(
         &self,
         prefix: &str,
@@ -224,7 +232,7 @@ impl CommandArgumentParser for PermissionTargetParser {
         let targets = match value.as_str() {
             "@a" => players
                 .into_iter()
-                .map(PermissionTarget::online)
+                .map(|player| PermissionTarget::online(&player))
                 .collect::<Vec<_>>(),
             "@p" => {
                 let Some(position) = context.position() else {
@@ -241,22 +249,22 @@ impl CommandArgumentParser for PermissionTargetParser {
                 }) else {
                     return Ok(ParsedArgument::PermissionTargets(Vec::new()));
                 };
-                vec![PermissionTarget::online(nearest)]
+                vec![PermissionTarget::online(&nearest)]
             }
             "@r" => players
                 .into_iter()
                 .choose(&mut rand::rng())
+                .map_or_else(Vec::new, |player| vec![PermissionTarget::online(&player)]),
+            "@s" => context
+                .player()
                 .map_or_else(Vec::new, |player| vec![PermissionTarget::online(player)]),
-            "@s" => context.player().map_or_else(Vec::new, |player| {
-                vec![PermissionTarget::online(Arc::clone(player))]
-            }),
             name => {
                 let uuid = Uuid::parse_str(name).ok();
                 if let Some(player) = players.into_iter().find(|player| {
                     player.gameprofile.name.eq_ignore_ascii_case(name)
                         || uuid.is_some_and(|uuid| player.uuid() == uuid)
                 }) {
-                    vec![PermissionTarget::online(player)]
+                    vec![PermissionTarget::online(&player)]
                 } else {
                     let known_players = server.known_players();
                     let known = uuid
@@ -284,6 +292,10 @@ impl CommandArgumentParser for PermissionTargetParser {
             ArgumentType::Entity { flags: 2 },
             Some(SuggestionType::AskServer),
         )
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "permission_targets"
     }
 
     fn suggest(
@@ -350,6 +362,10 @@ impl CommandArgumentParser for PermissionKeyParser {
             None,
         )
     }
+
+    fn parsed_type(&self) -> &'static str {
+        "permission_key"
+    }
 }
 
 /// Permission group name argument parser.
@@ -387,6 +403,10 @@ impl CommandArgumentParser for PermissionGroupParser {
             },
             None,
         )
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "string"
     }
 
     fn suggest(
@@ -509,6 +529,10 @@ impl CommandArgumentParser for EntityParser {
         )
     }
 
+    fn parsed_type(&self) -> &'static str {
+        "entities"
+    }
+
     fn suggest(
         &self,
         prefix: &str,
@@ -567,6 +591,10 @@ impl CommandArgumentParser for EntitySummonParser {
             },
             Some(SuggestionType::SummonableEntities),
         )
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "entity_type"
     }
 
     fn suggest(
@@ -645,6 +673,10 @@ impl CommandArgumentParser for ItemParser {
         (ArgumentType::ItemStack, Some(SuggestionType::AskServer))
     }
 
+    fn parsed_type(&self) -> &'static str {
+        "item"
+    }
+
     fn suggest(
         &self,
         prefix: &str,
@@ -698,6 +730,10 @@ impl CommandArgumentParser for EnchantmentParser {
             },
             Some(SuggestionType::AskServer),
         )
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "enchantment"
     }
 
     fn suggest(
@@ -786,6 +822,10 @@ impl CommandArgumentParser for StructureParser {
             },
             Some(SuggestionType::AskServer),
         )
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "structure"
     }
 
     fn suggest(
@@ -879,6 +919,10 @@ impl CommandArgumentParser for DomainParser {
         )
     }
 
+    fn parsed_type(&self) -> &'static str {
+        "string"
+    }
+
     fn suggest(
         &self,
         prefix: &str,
@@ -945,6 +989,10 @@ impl CommandArgumentParser for WorldParser {
 
     fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
         (ArgumentType::Dimension, Some(SuggestionType::AskServer))
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "world"
     }
 
     fn suggest(
@@ -1038,6 +1086,10 @@ impl CommandArgumentParser for Vec3Parser {
     fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
         (ArgumentType::Vec3, None)
     }
+
+    fn parsed_type(&self) -> &'static str {
+        "vec3"
+    }
 }
 
 /// Block position argument parser.
@@ -1102,6 +1154,10 @@ impl CommandArgumentParser for BlockPosParser {
     fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
         (ArgumentType::BlockPos, None)
     }
+
+    fn parsed_type(&self) -> &'static str {
+        "block_pos"
+    }
 }
 
 /// Rotation argument parser.
@@ -1139,6 +1195,10 @@ impl CommandArgumentParser for RotationParser {
 
     fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
         (ArgumentType::Rotation, None)
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "rotation"
     }
 }
 
@@ -1299,6 +1359,10 @@ impl CommandArgumentParser for ComponentParser {
     fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
         (ArgumentType::Component, None)
     }
+
+    fn parsed_type(&self) -> &'static str {
+        "component"
+    }
 }
 
 /// Time argument parser.
@@ -1349,6 +1413,10 @@ impl CommandArgumentParser for TimeParser {
 
     fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
         (ArgumentType::Time { min: 0 }, None)
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "i32"
     }
 
     fn suggest(

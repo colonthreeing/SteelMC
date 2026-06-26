@@ -1,16 +1,16 @@
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 
 use steel_utils::locks::SyncMutex;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tokio_util::sync::CancellationToken;
 
 use crate::command::sender::CommandSender;
 use crate::player::connection::NetworkConnection;
 use crate::server::Server;
 
+const DEFAULT_COMMAND_QUEUE_CAPACITY: usize = 1024;
+
 pub(crate) struct CommandQueue {
-    sender: UnboundedSender<QueuedCommand>,
-    receiver: SyncMutex<Option<UnboundedReceiver<QueuedCommand>>>,
+    queued: SyncMutex<VecDeque<QueuedCommand>>,
+    capacity: usize,
 }
 
 struct QueuedCommand {
@@ -19,14 +19,13 @@ struct QueuedCommand {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct CommandQueueClosed;
+pub(crate) struct CommandQueueFull;
 
 impl CommandQueue {
     pub(crate) fn new() -> Self {
-        let (sender, receiver) = mpsc::unbounded_channel();
         Self {
-            sender,
-            receiver: SyncMutex::new(Some(receiver)),
+            queued: SyncMutex::new(VecDeque::new()),
+            capacity: DEFAULT_COMMAND_QUEUE_CAPACITY,
         }
     }
 
@@ -34,41 +33,40 @@ impl CommandQueue {
         &self,
         sender: CommandSender,
         command: String,
-    ) -> Result<(), CommandQueueClosed> {
-        self.sender
-            .send(QueuedCommand { sender, command })
-            .map_err(|_| CommandQueueClosed)
+    ) -> Result<(), CommandQueueFull> {
+        let mut queued = self.queued.lock();
+        if queued.len() >= self.capacity {
+            return Err(CommandQueueFull);
+        }
+
+        queued.push_back(QueuedCommand { sender, command });
+        Ok(())
     }
 
-    pub(crate) fn start(&self, server: Arc<Server>, cancel_token: CancellationToken) {
-        let Some(receiver) = self.receiver.lock().take() else {
-            return;
-        };
-        tokio::spawn(run_commands(server, cancel_token, receiver));
+    pub(crate) async fn tick(&self, server: &Arc<Server>, max_commands: usize) -> usize {
+        let mut handled = 0;
+        for _ in 0..max_commands {
+            let Some(command) = self.pop_front() else {
+                break;
+            };
+            execute_command(server, command).await;
+            handled += 1;
+        }
+        handled
+    }
+
+    pub(crate) fn clear(&self) {
+        self.queued.lock().clear();
+    }
+
+    fn pop_front(&self) -> Option<QueuedCommand> {
+        self.queued.lock().pop_front()
     }
 }
 
 impl Default for CommandQueue {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-async fn run_commands(
-    server: Arc<Server>,
-    cancel_token: CancellationToken,
-    mut receiver: UnboundedReceiver<QueuedCommand>,
-) {
-    loop {
-        tokio::select! {
-            () = cancel_token.cancelled() => break,
-            maybe_command = receiver.recv() => {
-                let Some(command) = maybe_command else {
-                    break;
-                };
-                execute_command(&server, command).await;
-            }
-        }
     }
 }
 

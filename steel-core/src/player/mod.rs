@@ -297,6 +297,7 @@ struct PlayerPermissionState {
     groups: Vec<String>,
     overrides: PermissionSet,
     effective: PermissionSet,
+    version: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -1069,12 +1070,16 @@ impl Player {
         groups: Vec<String>,
         overrides: PermissionSet,
         effective: PermissionSet,
-    ) {
-        *self.permissions.lock() = PlayerPermissionState {
+    ) -> u64 {
+        let mut permissions = self.permissions.lock();
+        let version = permissions.version.wrapping_add(1);
+        *permissions = PlayerPermissionState {
             groups,
             overrides,
             effective,
+            version,
         };
+        version
     }
 
     /// Returns a snapshot of the player's effective permission set.
@@ -1093,6 +1098,12 @@ impl Player {
     #[must_use]
     pub fn permission_overrides(&self) -> PermissionSet {
         self.permissions.lock().overrides.clone()
+    }
+
+    /// Returns the current permission-state version.
+    #[must_use]
+    pub fn permission_state_version(&self) -> u64 {
+        self.permissions.lock().version
     }
 
     /// Returns whether this player satisfies `permission`.

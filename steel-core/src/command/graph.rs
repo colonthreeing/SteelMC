@@ -230,6 +230,24 @@ pub enum CommandGraphError {
         /// Node name.
         name: String,
     },
+    /// A dynamic argument permission referenced an argument that is not available.
+    MissingDynamicPermissionArgument {
+        /// Node name.
+        node: String,
+        /// Missing argument name.
+        argument: String,
+    },
+    /// A dynamic argument permission referenced an argument with the wrong parsed type.
+    WrongDynamicPermissionArgumentType {
+        /// Node name.
+        node: String,
+        /// Argument name.
+        argument: String,
+        /// Type expected by the permission marker.
+        expected: &'static str,
+        /// Type produced by the parser.
+        actual: &'static str,
+    },
 }
 
 impl fmt::Display for CommandGraphError {
@@ -258,6 +276,23 @@ impl fmt::Display for CommandGraphError {
                 write!(
                     f,
                     "dynamic permission on command node '{name}' was not resolved during registration"
+                )
+            }
+            Self::MissingDynamicPermissionArgument { node, argument } => {
+                write!(
+                    f,
+                    "dynamic permission on command node '{node}' references unavailable argument '{argument}'"
+                )
+            }
+            Self::WrongDynamicPermissionArgumentType {
+                node,
+                argument,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "dynamic permission on command node '{node}' references argument '{argument}' as {expected}, but parser stores {actual}"
                 )
             }
         }
@@ -292,7 +327,7 @@ impl fmt::Display for CommandNodeNameError {
 
 impl Error for CommandNodeNameError {}
 
-fn validate_command_node_name(name: &str) -> Result<(), CommandNodeNameError> {
+pub(crate) fn validate_command_node_name(name: &str) -> Result<(), CommandNodeNameError> {
     if name.is_empty() {
         return Err(CommandNodeNameError::Empty);
     }
@@ -372,6 +407,8 @@ type DynamicPermissionResolver =
 
 #[derive(Clone)]
 struct UnresolvedDynamicPermission {
+    argument_name: String,
+    expected_type: &'static str,
     resolver: UnresolvedDynamicPermissionResolver,
 }
 
@@ -380,9 +417,12 @@ impl UnresolvedDynamicPermission {
     where
         T: CommandPermissionArgument + 'static,
     {
+        let argument_name = name;
         Self {
+            argument_name: argument_name.clone(),
+            expected_type: T::TYPE_NAME,
             resolver: Arc::new(move |base_permission, arguments| {
-                let value = arguments.get::<T>(&name)?;
+                let value = arguments.get::<T>(&argument_name)?;
                 let segment = value.permission_segment()?;
                 Ok(PermissionExpr::key(base_permission.child(&segment)?))
             }),
@@ -704,8 +744,8 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
 
+    use crate::command::commands;
     use crate::command::parsers::GameModeParser;
-    use crate::command::{commands, error::CommandError};
     use crate::command::{
         graph::{
             AnchorParser, BoolParser, CommandGraph, CommandGraphError, CommandNodeBuilder,
@@ -853,6 +893,53 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_argument_permission_requires_available_argument() {
+        let root_permission =
+            PermissionKey::parse("minecraft.command.root").expect("permission key parses");
+        let Err(error) = literal("root")
+            .then(
+                argument("gamemode", GameModeParser)
+                    .requires_argument_permission::<GameType>("mode"),
+            )
+            .resolve_subcommand_permissions(&root_permission)
+        else {
+            panic!("missing dynamic permission argument should reject registration");
+        };
+
+        assert_eq!(
+            error,
+            CommandGraphError::MissingDynamicPermissionArgument {
+                node: "gamemode".to_owned(),
+                argument: "mode".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn dynamic_argument_permission_validates_argument_type() {
+        let root_permission =
+            PermissionKey::parse("minecraft.command.root").expect("permission key parses");
+        let Err(error) = literal("root")
+            .then(
+                argument("enabled", BoolParser).requires_argument_permission::<GameType>("enabled"),
+            )
+            .resolve_subcommand_permissions(&root_permission)
+        else {
+            panic!("wrong dynamic permission argument type should reject registration");
+        };
+
+        assert_eq!(
+            error,
+            CommandGraphError::WrongDynamicPermissionArgumentType {
+                node: "enabled".to_owned(),
+                argument: "enabled".to_owned(),
+                expected: "gamemode",
+                actual: "bool"
+            }
+        );
+    }
+
+    #[test]
     fn gamemode_requires_dynamic_value_permission() {
         let root_permission =
             PermissionKey::parse("minecraft.command.gamemode").expect("permission key parses");
@@ -860,22 +947,19 @@ mod tests {
             .resolve_subcommand_permissions(&root_permission)
             .expect("gamemode permissions resolve");
         let graph = graph_with_root(root);
-        let result = graph
-            .parse("gamemode creative", &player_context())
-            .expect("gamemode parses");
 
         let root_only = player_context_with(root_permission.clone());
-        assert!(matches!(
-            result.check_dynamic_permissions(&root_only),
-            Err(CommandError::PermissionDenied)
-        ));
+        let error = graph
+            .parse("gamemode creative", &root_only)
+            .expect_err("denied dynamic permission should hide branch");
+        assert_eq!(error.kind(), &CommandParseErrorKind::UnknownCommand);
 
         let creative = player_context_with_all([
             root_permission,
             PermissionKey::parse("minecraft.command.gamemode.creative")
                 .expect("permission key parses"),
         ]);
-        assert!(result.check_dynamic_permissions(&creative).is_ok());
+        assert!(graph.parse("gamemode creative", &creative).is_ok());
     }
 
     #[test]

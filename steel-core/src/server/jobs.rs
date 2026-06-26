@@ -197,6 +197,32 @@ where
     }
 }
 
+/// A one-shot server job that runs a closure from the server job tick.
+pub struct FnServerJob<F> {
+    action: Option<F>,
+}
+
+impl<F> FnServerJob<F> {
+    /// Creates a one-shot server job.
+    pub const fn new(action: F) -> Self {
+        Self {
+            action: Some(action),
+        }
+    }
+}
+
+impl<F> ServerJob for FnServerJob<F>
+where
+    F: FnOnce() + Send + 'static,
+{
+    fn poll(&mut self, _context: &mut ServerJobContext) -> JobPoll {
+        if let Some(action) = self.action.take() {
+            action();
+        }
+        JobPoll::Finished
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{

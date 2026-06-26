@@ -25,6 +25,9 @@ pub trait CommandArgumentParser: Send + Sync {
     /// Returns protocol parser metadata for this argument.
     fn usage(&self) -> (ArgumentType, Option<SuggestionType>);
 
+    /// Returns the parsed argument type stored by this parser.
+    fn parsed_type(&self) -> &'static str;
+
     /// Returns suggestions for the current argument token.
     fn suggest(
         &self,
@@ -61,6 +64,10 @@ impl CommandArgumentParser for BoolParser {
 
     fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
         (ArgumentType::Bool, None)
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "bool"
     }
 
     fn suggest(
@@ -102,6 +109,10 @@ impl CommandArgumentParser for AnchorParser {
 
     fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
         (ArgumentType::EntityAnchor, None)
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "anchor"
     }
 
     fn suggest(
@@ -184,6 +195,10 @@ impl CommandArgumentParser for IntegerParser {
             None,
         )
     }
+
+    fn parsed_type(&self) -> &'static str {
+        "i32"
+    }
 }
 
 /// 32-bit floating-point command argument parser.
@@ -252,6 +267,10 @@ impl CommandArgumentParser for FloatParser {
             None,
         )
     }
+
+    fn parsed_type(&self) -> &'static str {
+        "f32"
+    }
 }
 
 /// String command argument parser.
@@ -285,5 +304,9 @@ impl CommandArgumentParser for StringParser {
         };
 
         (ArgumentType::String { behavior }, None)
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "string"
     }
 }

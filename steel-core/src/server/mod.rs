@@ -29,7 +29,7 @@ use crate::player::player_data::{PersistentPlayerData, PersistentRootVehicle};
 use crate::player::player_data_storage::{GlobalPlayerData, PlayerDataStorage};
 use crate::player::{GameProfile, Player, ResetReason};
 use crate::portal::{TeleportTransition, WorldChangeRequest};
-use crate::server::jobs::{JobPoll, ServerJob, ServerJobContext, ServerJobQueue};
+use crate::server::jobs::{FnServerJob, JobPoll, ServerJob, ServerJobContext, ServerJobQueue};
 use crate::server::registry_cache::RegistryCache;
 use crate::server::worlds::WorldMap;
 use crate::world::{World, WorldConfig, WorldGameTickTimings};
@@ -70,6 +70,9 @@ const CHUNK_SENDING_TPS: u64 = 20;
 
 /// Tick rate for the chunk scheduling loop.
 const CHUNK_SCHEDULING_TPS: u64 = 20;
+
+/// Maximum queued commands to execute from one server game tick.
+const COMMANDS_PER_TICK_LIMIT: usize = 128;
 
 fn configured_chunk_generation_threads(configured_threads: Option<usize>) -> Option<usize> {
     cap_positive_thread_count(configured_threads, available_worker_threads())
@@ -410,6 +413,8 @@ pub struct Server {
     pub player_data_storage: PlayerDataStorage,
     /// Player profiles known to this server, keyed by UUID and last known name.
     known_players: SyncRwLock<KnownPlayers>,
+    /// Monotonic version for suppressing stale known-player snapshot saves.
+    known_players_version: SyncMutex<u64>,
     /// Player joins prepared by async I/O and finalized at the game tick safe point.
     pending_player_joins: PlayerJoinQueue,
     /// Queued world changes to process after the tick.
@@ -559,6 +564,7 @@ impl Server {
             jobs: ServerJobQueue::new(),
             player_data_storage,
             known_players: SyncRwLock::new(known_players),
+            known_players_version: SyncMutex::new(0),
             pending_player_joins: PlayerJoinQueue::new(),
             pending_world_changes: SyncMutex::new(vec![]),
             pending_domain_switches: SyncMutex::new(vec![]),
@@ -568,7 +574,7 @@ impl Server {
     /// Queues a command for serialized async execution.
     pub fn submit_command(self: &Arc<Self>, sender: CommandSender, command: String) {
         if self.command_queue.submit(sender.clone(), command).is_err() {
-            sender.send_failure("Command queue is unavailable");
+            sender.send_failure("Command queue is full");
         }
     }
 
@@ -690,7 +696,7 @@ impl Server {
         player: &Player,
         groups: Vec<String>,
         overrides: PermissionSet,
-    ) {
+    ) -> u64 {
         for group in &groups {
             if !self.config.permission_groups.contains_group(group) {
                 log::warn!(
@@ -704,7 +710,7 @@ impl Server {
             .config
             .permission_groups
             .effective_permissions(&groups, &overrides);
-        player.set_permission_state(groups, overrides, permissions);
+        player.set_permission_state(groups, overrides, permissions)
     }
 
     /// Updates a player's global permission state, refreshes client-visible permissions,
@@ -715,15 +721,15 @@ impl Server {
     /// Returns an error if any assigned group is not configured.
     pub fn update_player_global_permissions(
         self: &Arc<Self>,
-        player: &Player,
+        player: &Arc<Player>,
         groups: Vec<String>,
         overrides: PermissionSet,
     ) -> Result<(), PlayerPermissionUpdateError> {
         self.validate_player_permission_groups(&groups)?;
 
-        self.apply_global_permission_state(player, groups, overrides);
+        let version = self.apply_global_permission_state(player, groups, overrides);
         self.resend_player_permission_context(player);
-        self.save_player_global_permissions(player);
+        self.save_player_global_permissions(Arc::clone(player), version);
 
         Ok(())
     }
@@ -757,12 +763,32 @@ impl Server {
                 uuid,
                 &GlobalPlayerData {
                     last_active_domain,
-                    groups,
-                    permissions: overrides,
+                    groups: groups.clone(),
+                    permissions: overrides.clone(),
                 },
             )
             .await
-            .map_err(|error| PlayerPermissionUpdateError::Storage(error.to_string()))
+            .map_err(|error| PlayerPermissionUpdateError::Storage(error.to_string()))?;
+
+        self.queue_online_global_permission_refresh(uuid, groups, overrides);
+        Ok(())
+    }
+
+    fn queue_online_global_permission_refresh(
+        self: &Arc<Self>,
+        uuid: Uuid,
+        groups: Vec<String>,
+        overrides: PermissionSet,
+    ) {
+        let server = Arc::clone(self);
+        self.jobs.spawn(FnServerJob::new(move || {
+            let Some(player) = server.get_player_by_uuid(&uuid) else {
+                return;
+            };
+            let version = server.apply_global_permission_state(&player, groups, overrides);
+            server.resend_player_permission_context(&player);
+            server.save_player_global_permissions(player, version);
+        }));
     }
 
     fn validate_player_permission_groups(
@@ -777,7 +803,7 @@ impl Server {
         Ok(())
     }
 
-    fn save_player_global_permissions(self: &Arc<Self>, player: &Player) {
+    fn save_player_global_permissions(self: &Arc<Self>, player: Arc<Player>, version: u64) {
         let server = Arc::clone(self);
         let uuid = player.gameprofile.id;
         let name = player.gameprofile.name.clone();
@@ -788,8 +814,18 @@ impl Server {
         };
 
         tokio::spawn(async move {
-            if let Err(e) = server.player_data_storage.save_global(uuid, &data).await {
-                log::error!("Failed to save global permission data for {name} ({uuid}): {e}");
+            match server
+                .player_data_storage
+                .save_global_if_current(uuid, &data, || {
+                    player.permission_state_version() == version
+                })
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {}
+                Err(e) => {
+                    log::error!("Failed to save global permission data for {name} ({uuid}): {e}");
+                }
             }
         });
     }
@@ -807,21 +843,30 @@ impl Server {
             .write()
             .record(profile.id, profile.name.clone());
         if changed {
-            self.save_known_players();
+            let version = {
+                let mut version = self.known_players_version.lock();
+                *version = version.wrapping_add(1);
+                *version
+            };
+            self.save_known_players(version);
         }
     }
 
-    fn save_known_players(self: &Arc<Self>) {
+    fn save_known_players(self: &Arc<Self>, version: u64) {
         let server = Arc::clone(self);
         let players = self.known_players();
 
         tokio::spawn(async move {
-            if let Err(e) = server
+            match server
                 .player_data_storage
-                .save_known_players(&players)
+                .save_known_players_if_current(&players, || {
+                    *server.known_players_version.lock() == version
+                })
                 .await
             {
-                log::error!("Failed to save known player index: {e}");
+                Ok(true) => {}
+                Ok(false) => {}
+                Err(e) => log::error!("Failed to save known player index: {e}"),
             }
         });
     }
@@ -1078,6 +1123,14 @@ impl Server {
         players
     }
 
+    /// Gets an online player by UUID.
+    #[must_use]
+    pub fn get_player_by_uuid(&self, uuid: &Uuid) -> Option<Arc<Player>> {
+        self.worlds
+            .values()
+            .find_map(|world| world.players.get_by_uuid(uuid))
+    }
+
     /// Returns the total number of players currently online across all worlds.
     #[must_use]
     pub fn player_count(&self) -> usize {
@@ -1238,9 +1291,6 @@ impl Server {
 
     /// Runs the three independent tick loops concurrently.
     pub async fn run(self: Arc<Self>, cancel_token: CancellationToken) {
-        self.command_queue
-            .start(Arc::clone(&self), cancel_token.clone());
-
         let game_handle = {
             let s = self.clone();
             let t = cancel_token.clone();
@@ -1311,6 +1361,7 @@ impl Server {
                 (tick_manager.tick_count, runs_normally)
             };
 
+            self.tick_commands().await;
             self.tick_worlds_game(tick_count, runs_normally).await;
             self.tick_jobs(tick_count, runs_normally);
             self.process_player_joins();
@@ -1340,6 +1391,14 @@ impl Server {
         }
 
         self.jobs.cancel_all();
+        self.command_queue.clear();
+    }
+
+    async fn tick_commands(self: &Arc<Self>) {
+        let handled = self.command_queue.tick(self, COMMANDS_PER_TICK_LIMIT).await;
+        if handled == COMMANDS_PER_TICK_LIMIT {
+            tracing::debug!(handled, "Command tick reached per-tick processing limit");
+        }
     }
 
     /// Chunk sending tick loop — encodes and sends chunks to players independently.

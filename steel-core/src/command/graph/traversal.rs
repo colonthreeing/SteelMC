@@ -30,7 +30,6 @@ pub(super) fn parse_children(
             continue;
         }
 
-        usable_child_seen = true;
         let mut child_reader = reader.clone();
         let mut child_arguments = arguments.clone();
         let mut child_path = path.clone();
@@ -40,6 +39,12 @@ pub(super) fn parse_children(
             Ok(()) => {
                 child_path.push(child.display_name().to_owned());
                 child_dynamic_permissions.extend(child.dynamic_permissions.iter().cloned());
+                if !dynamic_permissions_allow(&child_dynamic_permissions, &child_arguments, context)
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                usable_child_seen = true;
                 match parse_after_node(
                     input,
                     child,
