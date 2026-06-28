@@ -24,8 +24,8 @@ use crate::permission::{
     PermissionGroupsConfig, PermissionKey, PermissionKeyError, PermissionResolution,
     PermissionResolutionSource, PermissionRuleConfig, PermissionRuleContext,
     PermissionRuleContextConfig, PermissionRuleStateConfig, PermissionSegment, PermissionSet,
-    PermissionState, PermissionValue, PermissionValueEntry, PermissionValueRuleConfig,
-    PermissionValueSet, parse_permission_value_key,
+    PermissionState, PermissionValue, PermissionValueEntry, PermissionValueResolution,
+    PermissionValueRuleConfig, PermissionValueSet, parse_permission_value_key,
 };
 use crate::server::Server;
 use crate::world::World;
@@ -200,6 +200,11 @@ fn group_metadata_argument(
 fn user_metadata_arguments() -> CommandNodeBuilder {
     literal("metadata")
         .then(metadata_set_arguments(set_metadata))
+        .then(
+            literal("check").requires_subcommand_permission().then(
+                argument("metadata_key", PermissionMetadataKeyParser).executes(check_metadata),
+            ),
+        )
         .then(
             literal("unset")
                 .requires_additional_subcommand_permission()
@@ -1215,6 +1220,53 @@ fn unset_metadata(
     Ok(command_result(changed))
 }
 
+fn check_metadata(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let targets = targets(arguments)?;
+    let key = metadata_key(arguments)?;
+    let rule_context = permission_rule_context(arguments)?;
+    let check_context = permission_context(arguments)?;
+    require_metadata_management(context, &key)?;
+    let mut reported = 0;
+    let mut offline_targets = Vec::new();
+
+    for target in targets {
+        if let Some((_, state)) = permission_targets::online_state(&context.server, &target) {
+            let effective = context
+                .server
+                .permission_groups
+                .effective_values(&state.groups, &state.value_overrides);
+            let resolution = effective.resolve_in_detailed(&key, &check_context);
+            send_metadata_check(
+                &context.sender,
+                &target,
+                &key,
+                &rule_context,
+                resolution.as_ref(),
+            );
+            reported += 1;
+        } else {
+            offline_targets.push(target);
+        }
+    }
+
+    let scheduled = offline_targets.len();
+    if scheduled != 0 {
+        spawn_check_metadata(
+            Arc::clone(&context.server),
+            context.sender.clone(),
+            offline_targets,
+            key,
+            rule_context,
+            check_context,
+        );
+    }
+
+    Ok(command_result(reported))
+}
+
 fn spawn_user_info(server: Arc<Server>, sender: CommandSender, targets: Vec<PermissionTarget>) {
     tokio::spawn(async move {
         for target in targets {
@@ -1248,6 +1300,35 @@ fn spawn_check_permission(
                 &sender,
                 loaded.target(),
                 &permission,
+                &rule_context,
+                resolution.as_ref(),
+            );
+        }
+    });
+}
+
+fn spawn_check_metadata(
+    server: Arc<Server>,
+    sender: CommandSender,
+    targets: Vec<PermissionTarget>,
+    key: Identifier,
+    rule_context: PermissionRuleContext,
+    check_context: PermissionContext,
+) {
+    tokio::spawn(async move {
+        for target in targets {
+            let Ok(loaded) = load_or_report(&server, &sender, target).await else {
+                continue;
+            };
+            let state = loaded.state();
+            let effective = server
+                .permission_groups
+                .effective_values(&state.groups, &state.value_overrides);
+            let resolution = effective.resolve_in_detailed(&key, &check_context);
+            send_metadata_check(
+                &sender,
+                loaded.target(),
+                &key,
                 &rule_context,
                 resolution.as_ref(),
             );
@@ -2088,6 +2169,23 @@ fn send_permission_check(
     )));
 }
 
+fn send_metadata_check(
+    sender: &CommandSender,
+    target: &PermissionTarget,
+    key: &Identifier,
+    rule_context: &PermissionRuleContext,
+    resolution: Option<&PermissionValueResolution>,
+) {
+    let value = resolution
+        .map(|resolution| permission_value_text(resolution.value()))
+        .unwrap_or_else(|| "unset".to_owned());
+    let detail = resolution.map_or_else(|| "unset".to_owned(), metadata_resolution_text);
+    sender.send_message(&TextComponent::plain(format!(
+        "{}: metadata '{key}' in {rule_context} is {value} ({detail})",
+        target.name()
+    )));
+}
+
 fn send_set_permission_summary(
     sender: &CommandSender,
     state: PermissionState,
@@ -2747,6 +2845,18 @@ fn permission_resolution_source_text(source: &PermissionResolutionSource) -> Str
     }
 }
 
+fn metadata_resolution_text(resolution: &PermissionValueResolution) -> String {
+    format!(
+        "set by {}, rule {} = {}{}, context specificity {}, insertion {}",
+        permission_resolution_source_text(resolution.source()),
+        resolution.key(),
+        permission_value_text(resolution.value()),
+        permission_rule_context_suffix(resolution.context()),
+        resolution.context_specificity(),
+        resolution.insertion_index()
+    )
+}
+
 fn target_count_text(count: usize) -> String {
     match count {
         1 => "1 player".to_owned(),
@@ -2768,10 +2878,11 @@ mod tests {
         can_manage_metadata, can_manage_permission, delete_group_config,
         direct_metadata_override_suggestions, direct_permission_override_suggestions,
         group_config_metadata_value, group_config_permission_states, group_metadata_suggestions,
-        group_permission_suggestions, metadata_management_key, permission_check_result_text,
-        permission_resolution_source_text, permission_rule_context_suffix,
-        remove_default_group_config, set_group_config_metadata, set_group_config_permission,
-        set_group_config_priority, unset_group_config_metadata, unset_group_config_permission,
+        group_permission_suggestions, metadata_management_key, metadata_resolution_text,
+        permission_check_result_text, permission_resolution_source_text,
+        permission_rule_context_suffix, remove_default_group_config, set_group_config_metadata,
+        set_group_config_permission, set_group_config_priority, unset_group_config_metadata,
+        unset_group_config_permission,
     };
     use crate::command::graph::{CommandArgumentParser, CommandParseErrorKind, ParsedArgument};
     use crate::command::reader::CommandReader;
@@ -2779,8 +2890,8 @@ mod tests {
         CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext,
     };
     use crate::permission::{
-        PermissionEntry, PermissionGroupConfig, PermissionGroupsConfig, PermissionKey,
-        PermissionResolutionSource, PermissionRuleConfig, PermissionRuleContext,
+        PermissionContext, PermissionEntry, PermissionGroupConfig, PermissionGroupsConfig,
+        PermissionKey, PermissionResolutionSource, PermissionRuleConfig, PermissionRuleContext,
         PermissionRuleContextConfig, PermissionRuleStateConfig, PermissionSet, PermissionState,
         PermissionValue, PermissionValueEntry, PermissionValueRuleConfig, PermissionValueSet,
         parse_permission_value_key,
@@ -2924,6 +3035,24 @@ mod tests {
                 priority: 50,
             }),
             "group 'admin' priority 50"
+        );
+    }
+
+    #[test]
+    fn metadata_resolution_text_describes_winning_value_rule() {
+        let homes = metadata_key("plugin:homes");
+        let values = PermissionValueSet::from_entries([PermissionValueEntry::new_with_context(
+            homes.clone(),
+            PermissionRuleContext::domain("lobby"),
+            PermissionValue::Integer(10),
+        )]);
+        let resolution = values
+            .resolve_in_detailed(&homes, &PermissionContext::for_domain("lobby"))
+            .expect("metadata value resolves");
+
+        assert_eq!(
+            metadata_resolution_text(&resolution),
+            "set by direct permission, rule plugin:homes = 10 (domain lobby), context specificity 1, insertion 0"
         );
     }
 
