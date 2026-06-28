@@ -135,11 +135,27 @@ fn group_command() -> CommandNodeBuilder {
 }
 
 fn groups_command() -> CommandNodeBuilder {
-    literal("groups").then(
-        literal("list")
-            .requires_subcommand_permission()
-            .executes(group_list),
-    )
+    literal("groups")
+        .then(
+            literal("list")
+                .requires_subcommand_permission()
+                .executes(group_list),
+        )
+        .then(
+            literal("default")
+                .then(
+                    literal("add")
+                        .requires_additional_subcommand_permission()
+                        .then(argument("group", PermissionGroupParser).executes(add_default_group)),
+                )
+                .then(
+                    literal("remove")
+                        .requires_additional_subcommand_permission()
+                        .then(
+                            argument("group", PermissionGroupParser).executes(remove_default_group),
+                        ),
+                ),
+        )
 }
 
 fn permission_key_argument(
@@ -720,13 +736,37 @@ fn group_list(
     context: &mut CommandContext,
     _arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
+    let config = context.server.permission_groups.config_snapshot();
     let groups = context.server.permission_groups.group_names();
     context.sender.send_message(&TextComponent::plain(format!(
-        "Permission groups: {}",
+        "Permission groups: defaults [{}], groups [{}]",
+        group_list_text(&config.default_groups),
         groups.join(", ")
     )));
 
     Ok(command_result(groups.len()))
+}
+
+fn add_default_group(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let group = group(arguments)?;
+    require_group_management(context, &group)?;
+    spawn_add_default_group(Arc::clone(&context.server), context.sender.clone(), group);
+
+    Ok(CommandResult::success())
+}
+
+fn remove_default_group(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let group = group(arguments)?;
+    require_group_management(context, &group)?;
+    spawn_remove_default_group(Arc::clone(&context.server), context.sender.clone(), group);
+
+    Ok(CommandResult::success())
 }
 
 fn group_info(
@@ -1216,6 +1256,38 @@ fn spawn_create_group(server: Arc<Server>, sender: CommandSender, group: String)
     });
 }
 
+fn spawn_add_default_group(server: Arc<Server>, sender: CommandSender, group: String) {
+    tokio::spawn(async move {
+        let group_for_update = group.clone();
+        match server
+            .try_update_permission_groups(move |config| {
+                add_default_group_config(config, &group_for_update)
+            })
+            .await
+        {
+            Ok(true) => send_add_default_group_summary(&sender, &group),
+            Ok(false) => send_default_group_already_set_summary(&sender, &group),
+            Err(error) => send_group_update_error(&sender, error),
+        }
+    });
+}
+
+fn spawn_remove_default_group(server: Arc<Server>, sender: CommandSender, group: String) {
+    tokio::spawn(async move {
+        let group_for_update = group.clone();
+        match server
+            .try_update_permission_groups(move |config| {
+                remove_default_group_config(config, &group_for_update)
+            })
+            .await
+        {
+            Ok(true) => send_remove_default_group_summary(&sender, &group),
+            Ok(false) => send_default_group_not_set_summary(&sender, &group),
+            Err(error) => send_group_update_error(&sender, error),
+        }
+    });
+}
+
 fn spawn_set_group_permission(
     server: Arc<Server>,
     sender: CommandSender,
@@ -1613,6 +1685,33 @@ fn create_group_config(
         .groups
         .insert(group.to_owned(), PermissionGroupConfig::default());
     Ok(())
+}
+
+fn add_default_group_config(
+    config: &mut PermissionGroupsConfig,
+    group: &str,
+) -> Result<bool, PermissionGroupEditError> {
+    if !config.groups.contains_key(group) {
+        return Err(PermissionGroupEditError::Missing(group.to_owned()));
+    }
+    if config.default_groups.iter().any(|default| default == group) {
+        return Ok(false);
+    }
+
+    config.default_groups.push(group.to_owned());
+    Ok(true)
+}
+
+fn remove_default_group_config(
+    config: &mut PermissionGroupsConfig,
+    group: &str,
+) -> Result<bool, PermissionGroupEditError> {
+    if !config.groups.contains_key(group) {
+        return Err(PermissionGroupEditError::Missing(group.to_owned()));
+    }
+    let old_len = config.default_groups.len();
+    config.default_groups.retain(|default| default != group);
+    Ok(config.default_groups.len() != old_len)
 }
 
 fn set_group_config_permission(
@@ -2014,6 +2113,30 @@ fn send_set_group_priority_summary(sender: &CommandSender, group: &str, priority
 fn send_group_priority_unchanged_summary(sender: &CommandSender, group: &str, priority: i32) {
     sender.send_message(&TextComponent::plain(format!(
         "Group '{group}' already has priority {priority}"
+    )));
+}
+
+fn send_add_default_group_summary(sender: &CommandSender, group: &str) {
+    sender.send_message(&TextComponent::plain(format!(
+        "Added group '{group}' to default groups"
+    )));
+}
+
+fn send_default_group_already_set_summary(sender: &CommandSender, group: &str) {
+    sender.send_message(&TextComponent::plain(format!(
+        "Group '{group}' is already a default group"
+    )));
+}
+
+fn send_remove_default_group_summary(sender: &CommandSender, group: &str) {
+    sender.send_message(&TextComponent::plain(format!(
+        "Removed group '{group}' from default groups"
+    )));
+}
+
+fn send_default_group_not_set_summary(sender: &CommandSender, group: &str) {
+    sender.send_message(&TextComponent::plain(format!(
+        "Group '{group}' is not a default group"
     )));
 }
 
@@ -2584,13 +2707,14 @@ fn command_result(count: usize) -> CommandResult {
 mod tests {
     use super::{
         PermissionAssignedGroupParser, PermissionGroupEditError, PermissionGroupNameParser,
-        assigned_group_suggestions, can_manage_group, can_manage_metadata, can_manage_permission,
-        direct_metadata_override_suggestions, direct_permission_override_suggestions,
-        group_config_metadata_value, group_config_permission_states, group_metadata_suggestions,
-        group_permission_suggestions, metadata_management_key, permission_check_result_text,
-        permission_resolution_source_text, permission_rule_context_suffix,
-        set_group_config_metadata, set_group_config_permission, set_group_config_priority,
-        unset_group_config_metadata, unset_group_config_permission,
+        add_default_group_config, assigned_group_suggestions, can_manage_group,
+        can_manage_metadata, can_manage_permission, direct_metadata_override_suggestions,
+        direct_permission_override_suggestions, group_config_metadata_value,
+        group_config_permission_states, group_metadata_suggestions, group_permission_suggestions,
+        metadata_management_key, permission_check_result_text, permission_resolution_source_text,
+        permission_rule_context_suffix, remove_default_group_config, set_group_config_metadata,
+        set_group_config_permission, set_group_config_priority, unset_group_config_metadata,
+        unset_group_config_permission,
     };
     use crate::command::graph::{CommandArgumentParser, CommandParseErrorKind, ParsedArgument};
     use crate::command::reader::CommandReader;
@@ -3072,6 +3196,41 @@ mod tests {
 
         assert_eq!(
             set_group_config_priority(&mut config, "missing", 10),
+            Err(PermissionGroupEditError::Missing("missing".to_owned()))
+        );
+    }
+
+    #[test]
+    fn default_group_config_add_and_remove_update_default_groups() {
+        let mut config = PermissionGroupsConfig::default();
+        config
+            .groups
+            .insert("builder".to_owned(), PermissionGroupConfig::default());
+
+        assert_eq!(add_default_group_config(&mut config, "builder"), Ok(true));
+        assert_eq!(config.default_groups, vec!["default", "builder"]);
+        assert_eq!(add_default_group_config(&mut config, "builder"), Ok(false));
+        assert_eq!(
+            remove_default_group_config(&mut config, "builder"),
+            Ok(true)
+        );
+        assert_eq!(config.default_groups, vec!["default"]);
+        assert_eq!(
+            remove_default_group_config(&mut config, "builder"),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn default_group_config_edits_report_missing_groups() {
+        let mut config = PermissionGroupsConfig::default();
+
+        assert_eq!(
+            add_default_group_config(&mut config, "missing"),
+            Err(PermissionGroupEditError::Missing("missing".to_owned()))
+        );
+        assert_eq!(
+            remove_default_group_config(&mut config, "missing"),
             Err(PermissionGroupEditError::Missing("missing".to_owned()))
         );
     }
