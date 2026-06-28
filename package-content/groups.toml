@@ -12,7 +12,7 @@ default_groups = ["default"]
 allow = []
 deny = []
 # Structured rules can add a context. Omit `context` for a global rule.
-# Each rule may use one context selector: `domain` or `world`.
+# Each rule may use one context selector: `domain`, `world`, or `custom`.
 #
 # [[groups.default.rules]]
 # key = "minecraft.command.gamemode"
@@ -23,6 +23,22 @@ deny = []
 # key = "minecraft.command.gamemode.creative"
 # state = "deny"
 # context = { world = "lobby:spawn" }
+#
+# Custom contexts are available for plugins/subsystems that provide matching
+# runtime context during permission checks.
+#
+# [[groups.default.rules]]
+# key = "plugin.region.build"
+# state = "allow"
+# context = { custom = { key = "region", value = "spawn" } }
+#
+# Permission values configure typed metadata resolved through the same context
+# model. Values are separate from boolean allow/deny rules.
+#
+# [[groups.default.values]]
+# key = "plugin:homes"
+# value = 10
+# context = { domain = "survival" }
 
 [groups.op]
 allow = ["*"]

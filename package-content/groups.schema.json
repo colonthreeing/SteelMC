@@ -44,6 +44,25 @@
       "description": "Dotted permission key. Only a full trailing segment may be a wildcard.",
       "pattern": "^(\\*|[a-z0-9_-]+(\\.[a-z0-9_-]+)*(\\.\\*)?)$"
     },
+    "permission_value_key": {
+      "type": "string",
+      "description": "Namespaced permission metadata key.",
+      "pattern": "^[a-z0-9_.-]+:[a-z0-9_.-/]+$"
+    },
+    "permission_value": {
+      "description": "Typed permission metadata value",
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
     "group": {
       "type": "object",
       "properties": {
@@ -72,6 +91,14 @@
             "$ref": "#/definitions/rule"
           },
           "default": []
+        },
+        "values": {
+          "type": "array",
+          "description": "Structured permission values with optional contexts",
+          "items": {
+            "$ref": "#/definitions/value_rule"
+          },
+          "default": []
         }
       },
       "additionalProperties": false
@@ -93,6 +120,22 @@
       "required": ["key", "state"],
       "additionalProperties": false
     },
+    "value_rule": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "$ref": "#/definitions/permission_value_key"
+        },
+        "value": {
+          "$ref": "#/definitions/permission_value"
+        },
+        "context": {
+          "$ref": "#/definitions/rule_context"
+        }
+      },
+      "required": ["key", "value"],
+      "additionalProperties": false
+    },
     "rule_context": {
       "type": "object",
       "description": "Rule-side context where this permission applies. Declare at most one selector.",
@@ -102,10 +145,28 @@
         },
         "world": {
           "$ref": "#/definitions/world_identifier"
+        },
+        "custom": {
+          "$ref": "#/definitions/custom_context"
         }
       },
       "minProperties": 1,
       "maxProperties": 1,
+      "additionalProperties": false
+    },
+    "custom_context": {
+      "type": "object",
+      "description": "Plugin or subsystem-defined permission context",
+      "properties": {
+        "key": {
+          "$ref": "#/definitions/group_name"
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["key", "value"],
       "additionalProperties": false
     }
   }

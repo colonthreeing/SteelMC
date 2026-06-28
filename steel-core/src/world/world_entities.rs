@@ -139,6 +139,7 @@ impl World {
                     last_active_domain: domain.clone(),
                     groups: player.permission_groups(),
                     permissions: player.permission_overrides(),
+                    values: player.permission_value_overrides(),
                 });
                 global.last_active_domain = domain;
                 Ok::<_, io::Error>(global)

@@ -1159,10 +1159,12 @@ fn permission_rule_context_config(
         PermissionRuleContext::Domain(domain) => Ok(PermissionRuleContextConfig {
             domain: Some(domain.clone()),
             world: None,
+            custom: None,
         }),
         PermissionRuleContext::World(world) => Ok(PermissionRuleContextConfig {
             domain: None,
             world: Some(world.to_string()),
+            custom: None,
         }),
         PermissionRuleContext::Custom { .. } => Err(PermissionGroupEditError::UnsupportedContext(
             rule_context.clone(),
@@ -1421,11 +1423,18 @@ fn permission_rule_config_suffix(context: Option<&PermissionRuleContextConfig>) 
         Some(PermissionRuleContextConfig {
             domain: Some(domain),
             world: None,
+            custom: None,
         }) => format!(" (domain {domain})"),
         Some(PermissionRuleContextConfig {
             domain: None,
             world: Some(world),
+            custom: None,
         }) => format!(" (world {world})"),
+        Some(PermissionRuleContextConfig {
+            domain: None,
+            world: None,
+            custom: Some(custom),
+        }) => format!(" ({} {})", custom.key, custom.value),
         Some(_) => " (invalid context)".to_owned(),
     }
 }
@@ -1868,6 +1877,7 @@ mod tests {
             Some(PermissionRuleContextConfig {
                 domain: Some("lobby".to_owned()),
                 world: None,
+                custom: None,
             })
         );
 
@@ -1955,8 +1965,10 @@ mod tests {
                 context: Some(PermissionRuleContextConfig {
                     domain: Some("lobby".to_owned()),
                     world: None,
+                    custom: None,
                 }),
             }],
+            values: Vec::new(),
         };
 
         assert_eq!(

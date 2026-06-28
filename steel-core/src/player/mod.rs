@@ -102,7 +102,9 @@ use crate::entity::{
 use crate::fluid::get_fluid_state;
 use crate::inventory::{SyncPlayerInv, equipment::EquipmentSlot};
 use crate::level_data::RespawnData;
-use crate::permission::{PermissionContext, PermissionExpr, PermissionSet};
+use crate::permission::{
+    PermissionContext, PermissionExpr, PermissionSet, PermissionValue, PermissionValueSet,
+};
 use crate::physics::MoveResult;
 use crate::player::experience::Experience;
 use crate::player::player_data::PersistentRootVehicle;
@@ -297,7 +299,9 @@ struct PendingRootVehicleRestore {
 struct PlayerPermissionState {
     groups: Vec<String>,
     overrides: PermissionSet,
+    value_overrides: PermissionValueSet,
     effective: PermissionSet,
+    effective_values: PermissionValueSet,
     version: u64,
 }
 
@@ -1070,14 +1074,18 @@ impl Player {
         &self,
         groups: Vec<String>,
         overrides: PermissionSet,
+        value_overrides: PermissionValueSet,
         effective: PermissionSet,
+        effective_values: PermissionValueSet,
     ) -> u64 {
         let mut permissions = self.permissions.lock();
         let version = permissions.version.wrapping_add(1);
         *permissions = PlayerPermissionState {
             groups,
             overrides,
+            value_overrides,
             effective,
+            effective_values,
             version,
         };
         version
@@ -1099,6 +1107,12 @@ impl Player {
     #[must_use]
     pub fn permission_overrides(&self) -> PermissionSet {
         self.permissions.lock().overrides.clone()
+    }
+
+    /// Returns the player's direct permission value overrides.
+    #[must_use]
+    pub fn permission_value_overrides(&self) -> PermissionValueSet {
+        self.permissions.lock().value_overrides.clone()
     }
 
     /// Returns the current permission-state version.
@@ -1126,6 +1140,28 @@ impl Player {
             .lock()
             .effective
             .allows_in(permission, context)
+    }
+
+    /// Returns a configured permission value in the player's current world context.
+    #[must_use]
+    pub fn permission_value(&self, key: &Identifier) -> Option<PermissionValue> {
+        let world = self.get_world();
+        let context = PermissionContext::for_world(world.domain().to_owned(), world.key.clone());
+        self.permission_value_in(key, &context)
+    }
+
+    /// Returns a configured permission value in `context`.
+    #[must_use]
+    pub fn permission_value_in(
+        &self,
+        key: &Identifier,
+        context: &PermissionContext,
+    ) -> Option<PermissionValue> {
+        self.permissions
+            .lock()
+            .effective_values
+            .resolve_in(key, context)
+            .cloned()
     }
 
     /// Sets the world the player is in.

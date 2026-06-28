@@ -505,6 +505,7 @@ mod tests {
                 allow: vec!["steel.build".to_owned()],
                 deny: Vec::new(),
                 rules: Vec::new(),
+                values: Vec::new(),
             },
         );
 
