@@ -23,9 +23,10 @@ use crate::permission::{
     OP_GROUP, PermissionContext, PermissionEntry, PermissionExpr, PermissionGroupConfig,
     PermissionGroupsConfig, PermissionKey, PermissionKeyError, PermissionMetadataCatalog,
     PermissionResolution, PermissionResolutionSource, PermissionRuleConfig, PermissionRuleContext,
-    PermissionRuleContextConfig, PermissionRuleStateConfig, PermissionSegment, PermissionSet,
-    PermissionState, PermissionValue, PermissionValueEntry, PermissionValueResolution,
-    PermissionValueRuleConfig, PermissionValueSet, parse_permission_value_key,
+    PermissionRuleContextConfig, PermissionRuleCustomContextConfig, PermissionRuleStateConfig,
+    PermissionSegment, PermissionSet, PermissionState, PermissionValue, PermissionValueEntry,
+    PermissionValueResolution, PermissionValueRuleConfig, PermissionValueSet,
+    parse_permission_value_key,
 };
 use crate::server::Server;
 use crate::world::World;
@@ -2106,9 +2107,14 @@ fn permission_rule_context_config(
             world: Some(world.to_string()),
             custom: None,
         }),
-        PermissionRuleContext::Custom { .. } => Err(PermissionGroupEditError::UnsupportedContext(
-            rule_context.clone(),
-        )),
+        PermissionRuleContext::Custom { key, value } => Ok(PermissionRuleContextConfig {
+            domain: None,
+            world: None,
+            custom: Some(PermissionRuleCustomContextConfig {
+                key: key.as_str().to_owned(),
+                value: value.clone(),
+            }),
+        }),
     }
 }
 
@@ -2131,6 +2137,14 @@ fn permission_rule_config_matches(
                     .as_ref()
                     .is_some_and(|configured| configured == &world.to_string())
         }
+        (
+            Some(PermissionRuleContextConfig {
+                domain: None,
+                world: None,
+                custom: Some(custom),
+            }),
+            PermissionRuleContext::Custom { key, value },
+        ) => custom.key == key.as_str() && custom.value == *value,
         _ => false,
     }
 }
@@ -2928,9 +2942,9 @@ mod tests {
         PermissionContext, PermissionEntry, PermissionGroupConfig, PermissionGroupsConfig,
         PermissionKey, PermissionMetadataCatalog, PermissionMetadataCatalogSource,
         PermissionResolutionSource, PermissionRuleConfig, PermissionRuleContext,
-        PermissionRuleContextConfig, PermissionRuleStateConfig, PermissionSet, PermissionState,
-        PermissionValue, PermissionValueEntry, PermissionValueRuleConfig, PermissionValueSet,
-        parse_permission_value_key,
+        PermissionRuleContextConfig, PermissionRuleCustomContextConfig, PermissionRuleStateConfig,
+        PermissionSegment, PermissionSet, PermissionState, PermissionValue, PermissionValueEntry,
+        PermissionValueRuleConfig, PermissionValueSet, parse_permission_value_key,
     };
     use steel_utils::Identifier;
 
@@ -2979,6 +2993,14 @@ mod tests {
 
     fn metadata_key(value: &str) -> Identifier {
         parse_permission_value_key(value).expect("metadata key parses")
+    }
+
+    fn custom_context(key: &str, value: &str) -> PermissionRuleContext {
+        PermissionRuleContext::custom(
+            PermissionSegment::parse(key).expect("context key parses"),
+            value,
+        )
+        .expect("custom context parses")
     }
 
     fn suggestion_texts(
@@ -3355,6 +3377,44 @@ mod tests {
     }
 
     #[test]
+    fn group_config_custom_context_permission_edits_use_structured_rules() {
+        let mut config = PermissionGroupsConfig::default();
+        let permission = key("steel.region.build");
+        let spawn_region = custom_context("region", "spawn");
+
+        assert_eq!(
+            set_group_config_permission(
+                &mut config,
+                "default",
+                &permission,
+                &spawn_region,
+                PermissionState::Allow,
+            ),
+            Ok(true)
+        );
+
+        let default = config.groups.get("default").expect("default group exists");
+        assert_eq!(default.rules.len(), 1);
+        assert_eq!(default.rules[0].key, "steel.region.build");
+        assert_eq!(default.rules[0].state, PermissionRuleStateConfig::Allow);
+        assert_eq!(
+            default.rules[0].context,
+            Some(PermissionRuleContextConfig {
+                domain: None,
+                world: None,
+                custom: Some(PermissionRuleCustomContextConfig {
+                    key: "region".to_owned(),
+                    value: "spawn".to_owned(),
+                }),
+            })
+        );
+        assert_eq!(
+            group_config_permission_states(default, &permission, &spawn_region),
+            vec![PermissionState::Allow]
+        );
+    }
+
+    #[test]
     fn group_config_metadata_edits_use_value_rules() {
         let mut config = PermissionGroupsConfig::default();
         let homes = metadata_key("plugin:homes");
@@ -3400,6 +3460,44 @@ mod tests {
                 &lobby,
             ),
             Ok(false)
+        );
+    }
+
+    #[test]
+    fn group_config_custom_context_metadata_edits_use_value_rules() {
+        let mut config = PermissionGroupsConfig::default();
+        let homes = metadata_key("plugin:homes");
+        let spawn_region = custom_context("region", "spawn");
+
+        assert_eq!(
+            set_group_config_metadata(
+                &mut config,
+                "default",
+                &homes,
+                &PermissionValue::Integer(10),
+                &spawn_region,
+            ),
+            Ok(true)
+        );
+
+        let default = config.groups.get("default").expect("default group exists");
+        assert_eq!(default.values.len(), 1);
+        assert_eq!(default.values[0].key, "plugin:homes");
+        assert_eq!(default.values[0].value, PermissionValue::Integer(10));
+        assert_eq!(
+            default.values[0].context,
+            Some(PermissionRuleContextConfig {
+                domain: None,
+                world: None,
+                custom: Some(PermissionRuleCustomContextConfig {
+                    key: "region".to_owned(),
+                    value: "spawn".to_owned(),
+                }),
+            })
+        );
+        assert_eq!(
+            group_config_metadata_value(default, &homes, &spawn_region),
+            Some(&PermissionValue::Integer(10))
         );
     }
 
