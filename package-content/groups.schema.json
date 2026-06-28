@@ -66,6 +66,11 @@
     "group": {
       "type": "object",
       "properties": {
+        "priority": {
+          "type": "integer",
+          "description": "Conflict priority used when equally specific rules from multiple groups match. Higher priority wins.",
+          "default": 0
+        },
         "allow": {
           "type": "array",
           "description": "Permission keys explicitly allowed by this group",

@@ -502,6 +502,7 @@ mod tests {
         config.groups.insert(
             "builder".to_owned(),
             steel_core::permission::PermissionGroupConfig {
+                priority: 0,
                 allow: vec!["steel.build".to_owned()],
                 deny: Vec::new(),
                 rules: Vec::new(),

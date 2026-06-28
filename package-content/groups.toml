@@ -9,6 +9,8 @@
 default_groups = ["default"]
 
 [groups.default]
+# Higher priority wins when equally specific rules from multiple groups match.
+priority = 0
 allow = []
 deny = []
 # Structured rules can add a context. Omit `context` for a global rule.
@@ -41,5 +43,6 @@ deny = []
 # context = { domain = "survival" }
 
 [groups.op]
+priority = 0
 allow = ["*"]
 deny = []

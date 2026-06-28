@@ -891,6 +891,7 @@ impl PermissionValueEntry {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PermissionSet {
     entries: Vec<PermissionEntry>,
+    sources: Vec<PermissionEntrySource>,
 }
 
 impl PermissionSet {
@@ -899,15 +900,16 @@ impl PermissionSet {
     pub const fn new() -> Self {
         Self {
             entries: Vec::new(),
+            sources: Vec::new(),
         }
     }
 
     /// Creates a permission set from entries.
     #[must_use]
     pub fn from_entries(entries: impl IntoIterator<Item = PermissionEntry>) -> Self {
-        Self {
-            entries: entries.into_iter().collect(),
-        }
+        let entries = entries.into_iter().collect::<Vec<_>>();
+        let sources = vec![PermissionEntrySource::Subject; entries.len()];
+        Self { entries, sources }
     }
 
     /// Returns all entries in insertion order.
@@ -918,7 +920,7 @@ impl PermissionSet {
 
     /// Adds one permission entry.
     pub fn push(&mut self, entry: PermissionEntry) {
-        self.entries.push(entry);
+        self.push_with_source(entry, PermissionEntrySource::Subject);
     }
 
     /// Adds one allow entry.
@@ -953,10 +955,8 @@ impl PermissionSet {
         context: PermissionRuleContext,
         state: PermissionState,
     ) {
-        self.entries
-            .retain(|entry| entry.key != key || entry.context != context);
-        self.entries
-            .push(PermissionEntry::new_with_context(key, context, state));
+        self.retain_entries(|entry| entry.key != key || entry.context != context);
+        self.push(PermissionEntry::new_with_context(key, context, state));
     }
 
     /// Removes one exact global permission entry.
@@ -971,8 +971,7 @@ impl PermissionSet {
     /// Returns true when an entry was removed.
     pub fn unset_in(&mut self, key: &PermissionKey, context: &PermissionRuleContext) -> bool {
         let old_len = self.entries.len();
-        self.entries
-            .retain(|entry| entry.key() != key || entry.context() != context);
+        self.retain_entries(|entry| entry.key() != key || entry.context() != context);
         self.entries.len() != old_len
     }
 
@@ -991,7 +990,7 @@ impl PermissionSet {
     ) -> Option<PermissionState> {
         let mut best = None;
 
-        for entry in &self.entries {
+        for (entry, source) in self.entries.iter().zip(&self.sources) {
             if !entry.context.matches_context(context) {
                 continue;
             }
@@ -1003,17 +1002,19 @@ impl PermissionSet {
                 &mut best,
                 entry.key.specificity(),
                 entry.context.specificity(),
+                *source,
                 entry.state,
             );
         }
 
-        best.map(|(_, _, state)| state)
+        best.map(|candidate| candidate.state)
     }
 
     /// Resolves a child key in the global context while treating `parent` as a broad grant.
     ///
     /// Unset permissions return `None`. If both parent and child-side entries
-    /// match, the more specific entry wins; tied specificity resolves to deny.
+    /// match, the more specific entry wins; tied specificity resolves by
+    /// source/priority, then deny.
     #[must_use]
     pub fn resolve_scoped_key(
         &self,
@@ -1026,7 +1027,8 @@ impl PermissionSet {
     /// Resolves a child key in a permission context while treating `parent` as a broad grant.
     ///
     /// Unset permissions return `None`. If both parent and child-side entries
-    /// match, the more specific entry wins; tied specificity resolves to deny.
+    /// match, the more specific entry wins; tied specificity resolves by
+    /// source/priority, then deny.
     #[must_use]
     pub fn resolve_scoped_key_in(
         &self,
@@ -1037,7 +1039,7 @@ impl PermissionSet {
         let mut best = None;
         let parent_scopes_key = parent.scopes(key);
 
-        for entry in &self.entries {
+        for (entry, source) in self.entries.iter().zip(&self.sources) {
             if !entry.context.matches_context(context) {
                 continue;
             }
@@ -1055,11 +1057,12 @@ impl PermissionSet {
                 &mut best,
                 specificity,
                 entry.context.specificity(),
+                *source,
                 entry.state,
             );
         }
 
-        best.map(|(_, _, state)| state)
+        best.map(|candidate| candidate.state)
     }
 
     /// Returns whether a key is allowed in the global context. Unset defaults to deny.
@@ -1113,12 +1116,33 @@ impl PermissionSet {
             }
         }
     }
+
+    fn push_group(&mut self, entry: PermissionEntry, group_priority: i32) {
+        self.push_with_source(entry, PermissionEntrySource::Group { group_priority });
+    }
+
+    fn push_with_source(&mut self, entry: PermissionEntry, source: PermissionEntrySource) {
+        self.entries.push(entry);
+        self.sources.push(source);
+    }
+
+    fn retain_entries(&mut self, mut keep: impl FnMut(&PermissionEntry) -> bool) {
+        let entries = std::mem::take(&mut self.entries);
+        let sources = std::mem::take(&mut self.sources);
+        for (entry, source) in entries.into_iter().zip(sources) {
+            if keep(&entry) {
+                self.entries.push(entry);
+                self.sources.push(source);
+            }
+        }
+    }
 }
 
 /// A flat effective permission value set.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PermissionValueSet {
     entries: Vec<PermissionValueEntry>,
+    sources: Vec<PermissionEntrySource>,
 }
 
 impl PermissionValueSet {
@@ -1127,15 +1151,16 @@ impl PermissionValueSet {
     pub const fn new() -> Self {
         Self {
             entries: Vec::new(),
+            sources: Vec::new(),
         }
     }
 
     /// Creates a permission value set from entries.
     #[must_use]
     pub fn from_entries(entries: impl IntoIterator<Item = PermissionValueEntry>) -> Self {
-        Self {
-            entries: entries.into_iter().collect(),
-        }
+        let entries = entries.into_iter().collect::<Vec<_>>();
+        let sources = vec![PermissionEntrySource::Subject; entries.len()];
+        Self { entries, sources }
     }
 
     /// Returns all entries in insertion order.
@@ -1146,7 +1171,7 @@ impl PermissionValueSet {
 
     /// Adds one permission value entry.
     pub fn push(&mut self, entry: PermissionValueEntry) {
-        self.entries.push(entry);
+        self.push_with_source(entry, PermissionEntrySource::Subject);
     }
 
     /// Sets one exact global permission value, replacing any previous exact value.
@@ -1161,10 +1186,8 @@ impl PermissionValueSet {
         context: PermissionRuleContext,
         value: PermissionValue,
     ) {
-        self.entries
-            .retain(|entry| entry.key != key || entry.context != context);
-        self.entries
-            .push(PermissionValueEntry::new_with_context(key, context, value));
+        self.retain_entries(|entry| entry.key != key || entry.context != context);
+        self.push(PermissionValueEntry::new_with_context(key, context, value));
     }
 
     /// Removes one exact global permission value.
@@ -1179,8 +1202,7 @@ impl PermissionValueSet {
     /// Returns true when an entry was removed.
     pub fn unset_in(&mut self, key: &Identifier, context: &PermissionRuleContext) -> bool {
         let old_len = self.entries.len();
-        self.entries
-            .retain(|entry| entry.key() != key || entry.context() != context);
+        self.retain_entries(|entry| entry.key() != key || entry.context() != context);
         self.entries.len() != old_len
     }
 
@@ -1192,9 +1214,9 @@ impl PermissionValueSet {
 
     /// Resolves one value in a permission context.
     ///
-    /// More specific contexts win. If multiple entries tie on context
-    /// specificity, the later entry wins so assigned groups and player-level
-    /// overrides can replace earlier values deterministically.
+    /// More specific contexts win. Tied contexts prefer player-level values
+    /// over group values, then group priority, then final insertion order as a
+    /// deterministic fallback.
     #[must_use]
     pub fn resolve_in(
         &self,
@@ -1203,46 +1225,112 @@ impl PermissionValueSet {
     ) -> Option<&PermissionValue> {
         let mut best = None;
 
-        for (index, entry) in self.entries.iter().enumerate() {
+        for (index, (entry, source)) in self.entries.iter().zip(&self.sources).enumerate() {
             if entry.key() != key || !entry.context.matches_context(context) {
                 continue;
             }
             let specificity = entry.context.specificity();
+            let rank = source.rank();
+            let priority = source.group_priority();
             match best {
-                None => best = Some((specificity, index)),
-                Some((best_specificity, best_index))
-                    if (specificity, index) > (best_specificity, best_index) =>
+                None => best = Some((specificity, rank, priority, index)),
+                Some((best_specificity, best_rank, best_priority, best_index))
+                    if (specificity, rank, priority, index)
+                        > (best_specificity, best_rank, best_priority, best_index) =>
                 {
-                    best = Some((specificity, index));
+                    best = Some((specificity, rank, priority, index));
                 }
                 _ => {}
             }
         }
 
-        best.map(|(_, index)| self.entries[index].value())
+        best.map(|(_, _, _, index)| self.entries[index].value())
+    }
+
+    fn push_group(&mut self, entry: PermissionValueEntry, group_priority: i32) {
+        self.push_with_source(entry, PermissionEntrySource::Group { group_priority });
+    }
+
+    fn push_with_source(&mut self, entry: PermissionValueEntry, source: PermissionEntrySource) {
+        self.entries.push(entry);
+        self.sources.push(source);
+    }
+
+    fn retain_entries(&mut self, mut keep: impl FnMut(&PermissionValueEntry) -> bool) {
+        let entries = std::mem::take(&mut self.entries);
+        let sources = std::mem::take(&mut self.sources);
+        for (entry, source) in entries.into_iter().zip(sources) {
+            if keep(&entry) {
+                self.entries.push(entry);
+                self.sources.push(source);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PermissionEntrySource {
+    Group { group_priority: i32 },
+    Subject,
+}
+
+impl PermissionEntrySource {
+    const fn rank(self) -> usize {
+        match self {
+            Self::Group { .. } => 0,
+            Self::Subject => 1,
+        }
+    }
+
+    const fn group_priority(self) -> i32 {
+        match self {
+            Self::Group { group_priority } => group_priority,
+            Self::Subject => 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PermissionCandidate {
+    key_specificity: usize,
+    context_specificity: usize,
+    source: PermissionEntrySource,
+    state: PermissionState,
+}
+
+impl PermissionCandidate {
+    const fn order(self) -> (usize, usize, usize, i32) {
+        (
+            self.key_specificity,
+            self.context_specificity,
+            self.source.rank(),
+            self.source.group_priority(),
+        )
     }
 }
 
 fn push_permission_candidate(
-    best: &mut Option<(usize, usize, PermissionState)>,
+    best: &mut Option<PermissionCandidate>,
     key_specificity: usize,
     context_specificity: usize,
+    source: PermissionEntrySource,
     state: PermissionState,
 ) {
+    let candidate = PermissionCandidate {
+        key_specificity,
+        context_specificity,
+        source,
+        state,
+    };
     match best {
-        None => *best = Some((key_specificity, context_specificity, state)),
-        Some((best_key_specificity, best_context_specificity, _))
-            if (key_specificity, context_specificity)
-                > (*best_key_specificity, *best_context_specificity) =>
-        {
-            *best = Some((key_specificity, context_specificity, state));
-        }
-        Some((best_key_specificity, best_context_specificity, PermissionState::Allow))
-            if (key_specificity, context_specificity)
-                == (*best_key_specificity, *best_context_specificity)
+        None => *best = Some(candidate),
+        Some(current) if candidate.order() > current.order() => *best = Some(candidate),
+        Some(current)
+            if candidate.order() == current.order()
+                && current.state == PermissionState::Allow
                 && state == PermissionState::Deny =>
         {
-            *best = Some((key_specificity, context_specificity, PermissionState::Deny));
+            *best = Some(candidate);
         }
         _ => {}
     }
@@ -1265,6 +1353,7 @@ impl Default for PermissionGroupsConfig {
         groups.insert(
             OP_GROUP.to_owned(),
             PermissionGroupConfig {
+                priority: 0,
                 allow: vec!["*".to_owned()],
                 deny: Vec::new(),
                 rules: Vec::new(),
@@ -1283,6 +1372,9 @@ impl Default for PermissionGroupsConfig {
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct PermissionGroupConfig {
+    /// Priority used to resolve conflicts between equally specific group rules.
+    /// Higher priority wins.
+    pub priority: i32,
     /// Permission keys explicitly allowed by this group.
     pub allow: Vec<String>,
     /// Permission keys explicitly denied by this group.
@@ -1687,6 +1779,7 @@ impl Default for PermissionGroups {
         groups.insert(
             "default".to_owned(),
             PermissionGroup {
+                priority: 0,
                 permissions: PermissionSet::new(),
                 values: PermissionValueSet::new(),
             },
@@ -1694,6 +1787,7 @@ impl Default for PermissionGroups {
         groups.insert(
             OP_GROUP.to_owned(),
             PermissionGroup {
+                priority: 0,
                 permissions: op_permissions,
                 values: PermissionValueSet::new(),
             },
@@ -1793,6 +1887,7 @@ impl PermissionGroups {
             groups.insert(
                 name,
                 PermissionGroup {
+                    priority: group.priority,
                     permissions,
                     values,
                 },
@@ -1851,7 +1946,7 @@ impl PermissionGroups {
             self.append_group_permissions(group, &mut effective);
         }
         for entry in player_permissions.entries() {
-            effective.set_in(entry.key().clone(), entry.context().clone(), entry.state());
+            effective.push(entry.clone());
         }
 
         effective
@@ -1876,11 +1971,7 @@ impl PermissionGroups {
             self.append_group_values(group, &mut effective);
         }
         for entry in player_values.entries() {
-            effective.set_in(
-                entry.key().clone(),
-                entry.context().clone(),
-                entry.value().clone(),
-            );
+            effective.push(entry.clone());
         }
 
         effective
@@ -1892,7 +1983,7 @@ impl PermissionGroups {
         };
 
         for entry in group.permissions.entries() {
-            effective.push(entry.clone());
+            effective.push_group(entry.clone(), group.priority);
         }
     }
 
@@ -1902,7 +1993,7 @@ impl PermissionGroups {
         };
 
         for entry in group.values.entries() {
-            effective.push(entry.clone());
+            effective.push_group(entry.clone(), group.priority);
         }
     }
 }
@@ -1922,11 +2013,18 @@ fn validate_group_name(group: &str) -> Result<(), PermissionConfigError> {
 /// One resolved permission group.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PermissionGroup {
+    priority: i32,
     permissions: PermissionSet,
     values: PermissionValueSet,
 }
 
 impl PermissionGroup {
+    /// Returns this group's conflict priority.
+    #[must_use]
+    pub const fn priority(&self) -> i32 {
+        self.priority
+    }
+
     /// Returns this group's permission entries.
     #[must_use]
     pub const fn permissions(&self) -> &PermissionSet {
@@ -2135,6 +2233,7 @@ mod tests {
         config.groups.insert(
             "builder".to_owned(),
             super::PermissionGroupConfig {
+                priority: 0,
                 allow: vec!["steel.build".to_owned()],
                 deny: Vec::new(),
                 rules: Vec::new(),
@@ -2646,6 +2745,7 @@ mod tests {
                 config.groups.insert(
                     "builder".to_owned(),
                     super::PermissionGroupConfig {
+                        priority: 0,
                         allow: vec!["steel.build".to_owned()],
                         deny: Vec::new(),
                         rules: Vec::new(),
@@ -2676,6 +2776,7 @@ mod tests {
                 config.groups.insert(
                     "builder".to_owned(),
                     super::PermissionGroupConfig {
+                        priority: 0,
                         allow: vec!["steel.build".to_owned()],
                         deny: Vec::new(),
                         rules: Vec::new(),
@@ -2842,6 +2943,171 @@ mod tests {
                 .resolve_in(&limit, &world_context("lobby", "spawn"))
                 .and_then(PermissionValue::as_i64),
             Some(20)
+        );
+    }
+
+    #[test]
+    fn group_priority_breaks_equally_specific_permission_ties() {
+        let mut config = PermissionGroupsConfig::default();
+        config.groups.insert(
+            "low".to_owned(),
+            super::PermissionGroupConfig {
+                priority: 0,
+                allow: Vec::new(),
+                deny: vec!["steel.fly".to_owned()],
+                rules: Vec::new(),
+                values: Vec::new(),
+            },
+        );
+        config.groups.insert(
+            "high".to_owned(),
+            super::PermissionGroupConfig {
+                priority: 50,
+                allow: vec!["steel.fly".to_owned()],
+                deny: Vec::new(),
+                rules: Vec::new(),
+                values: Vec::new(),
+            },
+        );
+        let groups = PermissionGroups::from_config(config).expect("groups config is valid");
+        let effective = groups.effective_permissions(
+            &["high".to_owned(), "low".to_owned()],
+            &PermissionSet::new(),
+        );
+
+        assert!(effective.allows_key(&key("steel.fly")));
+    }
+
+    #[test]
+    fn deny_wins_equally_specific_same_priority_group_ties() {
+        let mut config = PermissionGroupsConfig::default();
+        config.groups.insert(
+            "allow".to_owned(),
+            super::PermissionGroupConfig {
+                priority: 10,
+                allow: vec!["steel.fly".to_owned()],
+                deny: Vec::new(),
+                rules: Vec::new(),
+                values: Vec::new(),
+            },
+        );
+        config.groups.insert(
+            "deny".to_owned(),
+            super::PermissionGroupConfig {
+                priority: 10,
+                allow: Vec::new(),
+                deny: vec!["steel.fly".to_owned()],
+                rules: Vec::new(),
+                values: Vec::new(),
+            },
+        );
+        let groups = PermissionGroups::from_config(config).expect("groups config is valid");
+        let effective = groups.effective_permissions(
+            &["deny".to_owned(), "allow".to_owned()],
+            &PermissionSet::new(),
+        );
+
+        assert!(!effective.allows_key(&key("steel.fly")));
+    }
+
+    #[test]
+    fn permission_specificity_beats_group_priority() {
+        let mut config = PermissionGroupsConfig::default();
+        config.groups.insert(
+            "broad".to_owned(),
+            super::PermissionGroupConfig {
+                priority: 100,
+                allow: vec!["steel.*".to_owned()],
+                deny: Vec::new(),
+                rules: Vec::new(),
+                values: Vec::new(),
+            },
+        );
+        config.groups.insert(
+            "specific".to_owned(),
+            super::PermissionGroupConfig {
+                priority: 0,
+                allow: Vec::new(),
+                deny: vec!["steel.fly".to_owned()],
+                rules: Vec::new(),
+                values: Vec::new(),
+            },
+        );
+        let groups = PermissionGroups::from_config(config).expect("groups config is valid");
+        let effective = groups.effective_permissions(
+            &["specific".to_owned(), "broad".to_owned()],
+            &PermissionSet::new(),
+        );
+
+        assert!(!effective.allows_key(&key("steel.fly")));
+    }
+
+    #[test]
+    fn context_specificity_beats_player_permission_source() {
+        let mut config = PermissionGroupsConfig::default();
+        let default_group = config
+            .groups
+            .get_mut("default")
+            .expect("default group exists");
+        default_group.priority = 100;
+        default_group.rules.push(super::PermissionRuleConfig {
+            key: "steel.fly".to_owned(),
+            state: super::PermissionRuleStateConfig::Deny,
+            context: Some(super::PermissionRuleContextConfig {
+                domain: Some("lobby".to_owned()),
+                world: None,
+                custom: None,
+            }),
+        });
+        let groups = PermissionGroups::from_config(config).expect("groups config is valid");
+        let player_permissions =
+            PermissionSet::from_entries([PermissionEntry::allow(key("steel.fly"))]);
+        let effective = groups.effective_permissions(&[], &player_permissions);
+
+        assert!(!effective.allows_key_in(&key("steel.fly"), &world_context("lobby", "spawn")));
+    }
+
+    #[test]
+    fn group_priority_breaks_equally_specific_metadata_ties() {
+        let mut config = PermissionGroupsConfig::default();
+        config.groups.insert(
+            "low".to_owned(),
+            super::PermissionGroupConfig {
+                priority: 0,
+                allow: Vec::new(),
+                deny: Vec::new(),
+                rules: Vec::new(),
+                values: vec![super::PermissionValueRuleConfig {
+                    key: "steel:homes".to_owned(),
+                    value: PermissionValue::Integer(5),
+                    context: None,
+                }],
+            },
+        );
+        config.groups.insert(
+            "high".to_owned(),
+            super::PermissionGroupConfig {
+                priority: 50,
+                allow: Vec::new(),
+                deny: Vec::new(),
+                rules: Vec::new(),
+                values: vec![super::PermissionValueRuleConfig {
+                    key: "steel:homes".to_owned(),
+                    value: PermissionValue::Integer(10),
+                    context: None,
+                }],
+            },
+        );
+        let groups = PermissionGroups::from_config(config).expect("groups config is valid");
+        let effective = groups.effective_values(
+            &["high".to_owned(), "low".to_owned()],
+            &PermissionValueSet::new(),
+        );
+        let limit = value_key("steel:homes");
+
+        assert_eq!(
+            effective.resolve(&limit).and_then(PermissionValue::as_i64),
+            Some(10)
         );
     }
 
@@ -3023,12 +3289,13 @@ mod tests {
     }
 
     #[test]
-    fn player_permissions_override_exact_group_entries() {
+    fn player_permissions_break_same_specificity_group_ties() {
         let mut config = PermissionGroupsConfig::default();
         let default_group = config
             .groups
             .get_mut("default")
             .expect("default group exists");
+        default_group.priority = 100;
         default_group.deny.push("steel.admin".to_owned());
         default_group.allow.push("steel.fly".to_owned());
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");

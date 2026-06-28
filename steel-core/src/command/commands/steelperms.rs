@@ -2847,6 +2847,7 @@ mod tests {
     #[test]
     fn group_permission_suggestions_only_include_manageable_group_rules() {
         let group = PermissionGroupConfig {
+            priority: 0,
             allow: vec![
                 "steel.fly".to_owned(),
                 "minecraft.command.gamemode".to_owned(),
@@ -2877,6 +2878,7 @@ mod tests {
     #[test]
     fn group_metadata_suggestions_only_include_manageable_group_values() {
         let group = PermissionGroupConfig {
+            priority: 0,
             allow: Vec::new(),
             deny: Vec::new(),
             rules: Vec::new(),
