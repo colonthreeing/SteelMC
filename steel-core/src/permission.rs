@@ -33,6 +33,8 @@ pub enum PermissionRuleContext {
         /// Context value owned by the provider.
         value: String,
     },
+    /// Permission applies when every nested context applies.
+    All(Vec<PermissionRuleContext>),
 }
 
 impl PermissionRuleContext {
@@ -70,6 +72,29 @@ impl PermissionRuleContext {
         Ok(Self::Custom { key, value })
     }
 
+    /// Creates an AND-chain of rule contexts.
+    #[must_use]
+    pub fn all(contexts: impl IntoIterator<Item = Self>) -> Self {
+        let mut flattened = Vec::new();
+        for context in contexts {
+            match context {
+                Self::Global => {}
+                Self::All(contexts) => {
+                    for context in contexts {
+                        push_unique_context(&mut flattened, context);
+                    }
+                }
+                context => push_unique_context(&mut flattened, context),
+            }
+        }
+
+        match flattened.len() {
+            0 => Self::Global,
+            1 => flattened.pop().unwrap_or(Self::Global),
+            _ => Self::All(flattened),
+        }
+    }
+
     /// Returns true if this entry applies in every context.
     #[must_use]
     pub const fn is_global(&self) -> bool {
@@ -82,6 +107,9 @@ impl PermissionRuleContext {
             Self::Domain(domain) => context.domain.as_ref() == Some(domain),
             Self::World(world) => context.world.as_ref() == Some(world),
             Self::Custom { .. } => context.custom_contexts.contains(self),
+            Self::All(contexts) => contexts
+                .iter()
+                .all(|constraint| constraint.matches_context(context)),
         }
     }
 
@@ -90,6 +118,7 @@ impl PermissionRuleContext {
             Self::Global => 0,
             Self::Domain(_) | Self::Custom { .. } => 1,
             Self::World(_) => 2,
+            Self::All(contexts) => contexts.iter().map(Self::specificity).sum(),
         }
     }
 }
@@ -101,8 +130,24 @@ impl fmt::Display for PermissionRuleContext {
             Self::Domain(domain) => write!(f, "domain {domain}"),
             Self::World(world) => write!(f, "world {world}"),
             Self::Custom { key, value } => write!(f, "{} {value}", key.as_str()),
+            Self::All(contexts) => {
+                for (index, context) in contexts.iter().enumerate() {
+                    if index != 0 {
+                        write!(f, " + ")?;
+                    }
+                    write!(f, "{context}")?;
+                }
+                Ok(())
+            }
         }
     }
+}
+
+fn push_unique_context(contexts: &mut Vec<PermissionRuleContext>, context: PermissionRuleContext) {
+    if contexts.iter().any(|existing| existing == &context) {
+        return;
+    }
+    contexts.push(context);
 }
 
 /// Invalid permission rule context.
@@ -1812,27 +1857,39 @@ pub struct PermissionRuleContextConfig {
     /// Loaded world where the rule applies. Must be a namespaced world id.
     pub world: Option<String>,
     /// Plugin or subsystem-defined custom context.
-    pub custom: Option<PermissionRuleCustomContextConfig>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_custom_contexts",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub custom: Vec<PermissionRuleCustomContextConfig>,
 }
 
 impl PermissionRuleContextConfig {
-    fn into_rule_context(self) -> Result<PermissionRuleContext, PermissionRuleContextConfigError> {
-        match (self.domain, self.world, self.custom) {
-            (None, None, None) => Err(PermissionRuleContextConfigError::EmptyContext),
-            (Some(domain), None, None) => {
-                if domain.is_empty() || !Identifier::validate_namespace(&domain) {
-                    return Err(PermissionRuleContextConfigError::InvalidDomain(domain));
-                }
-                Ok(PermissionRuleContext::domain(domain))
+    pub(crate) fn into_rule_context(
+        self,
+    ) -> Result<PermissionRuleContext, PermissionRuleContextConfigError> {
+        let mut contexts = Vec::new();
+        if let Some(domain) = self.domain {
+            if domain.is_empty() || !Identifier::validate_namespace(&domain) {
+                return Err(PermissionRuleContextConfigError::InvalidDomain(domain));
             }
-            (None, Some(world), None) => {
-                parse_loaded_world_context(world).map(PermissionRuleContext::world)
-            }
-            (None, None, Some(custom)) => custom.into_rule_context(),
-            (Some(_), Some(_), _) | (Some(_), None, Some(_)) | (None, Some(_), Some(_)) => {
-                Err(PermissionRuleContextConfigError::MultipleContexts)
-            }
+            contexts.push(PermissionRuleContext::domain(domain));
         }
+        if let Some(world) = self.world {
+            contexts.push(PermissionRuleContext::world(parse_loaded_world_context(
+                world,
+            )?));
+        }
+        for custom in self.custom {
+            contexts.push(custom.into_rule_context()?);
+        }
+
+        if contexts.is_empty() {
+            return Err(PermissionRuleContextConfigError::EmptyContext);
+        }
+
+        Ok(PermissionRuleContext::all(contexts))
     }
 }
 
@@ -1856,6 +1913,26 @@ impl PermissionRuleCustomContextConfig {
         })?;
         PermissionRuleContext::custom(key, self.value)
             .map_err(|_| PermissionRuleContextConfigError::InvalidCustomValue)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PermissionRuleCustomContextsConfig {
+    One(PermissionRuleCustomContextConfig),
+    Many(Vec<PermissionRuleCustomContextConfig>),
+}
+
+fn deserialize_custom_contexts<'de, D>(
+    deserializer: D,
+) -> Result<Vec<PermissionRuleCustomContextConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match Option::<PermissionRuleCustomContextsConfig>::deserialize(deserializer)? {
+        None => Ok(Vec::new()),
+        Some(PermissionRuleCustomContextsConfig::One(context)) => Ok(vec![context]),
+        Some(PermissionRuleCustomContextsConfig::Many(contexts)) => Ok(contexts),
     }
 }
 
@@ -2477,10 +2554,8 @@ pub enum PermissionConfigError {
 /// Invalid configured permission rule context.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PermissionRuleContextConfigError {
-    /// A present context table must declare one selector.
+    /// A present context table must declare at least one constraint.
     EmptyContext,
-    /// A rule can only declare one context selector for now.
-    MultipleContexts,
     /// Domain name is not valid.
     InvalidDomain(String),
     /// World identifier is not valid.
@@ -2541,8 +2616,7 @@ impl Error for PermissionConfigError {}
 impl fmt::Display for PermissionRuleContextConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptyContext => write!(f, "rule context must contain one selector"),
-            Self::MultipleContexts => write!(f, "rule context must contain only one selector"),
+            Self::EmptyContext => write!(f, "rule context must contain at least one constraint"),
             Self::InvalidDomain(domain) => write!(f, "invalid domain context '{domain}'"),
             Self::InvalidWorld(world) => write!(f, "invalid world context '{world}'"),
             Self::InvalidCustomKey { key, source } => {
@@ -2813,6 +2887,33 @@ mod tests {
         assert!(permissions.allows_key_in(&fly, &world_context("lobby", "spawn")));
         assert!(!permissions.allows_key_in(&fly, &world_context("survival", "overworld")));
         assert!(!permissions.allows_key(&fly));
+    }
+
+    #[test]
+    fn chained_context_specificity_beats_single_context() {
+        let fly = key("steel.fly");
+        let world = PermissionRuleContext::world(Identifier::new("lobby", "spawn"));
+        let region = PermissionRuleContext::custom(
+            PermissionSegment::parse("region").expect("context key parses"),
+            "spawn",
+        )
+        .expect("custom context parses");
+        let permissions = PermissionSet::from_entries([
+            PermissionEntry::allow_with_context(fly.clone(), world.clone()),
+            PermissionEntry::deny_with_context(
+                fly.clone(),
+                PermissionRuleContext::all([world, region]),
+            ),
+        ]);
+        let matching_context = world_context("lobby", "spawn")
+            .with_custom_context(
+                PermissionSegment::parse("region").expect("context key parses"),
+                "spawn",
+            )
+            .expect("custom context is valid");
+
+        assert!(!permissions.allows_key_in(&fly, &matching_context));
+        assert!(permissions.allows_key_in(&fly, &world_context("lobby", "spawn")));
     }
 
     #[test]
@@ -3326,7 +3427,7 @@ mod tests {
             context: Some(super::PermissionRuleContextConfig {
                 domain: Some("lobby".to_owned()),
                 world: None,
-                custom: None,
+                custom: Vec::new(),
             }),
         });
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
@@ -3358,7 +3459,7 @@ mod tests {
             context: Some(super::PermissionRuleContextConfig {
                 domain: Some("lobby".to_owned()),
                 world: None,
-                custom: None,
+                custom: Vec::new(),
             }),
         });
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
@@ -3513,7 +3614,7 @@ mod tests {
             context: Some(super::PermissionRuleContextConfig {
                 domain: Some("lobby".to_owned()),
                 world: None,
-                custom: None,
+                custom: Vec::new(),
             }),
         });
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
@@ -3606,7 +3707,7 @@ mod tests {
     }
 
     #[test]
-    fn group_rules_reject_ambiguous_contexts() {
+    fn group_rules_support_chained_contexts() {
         let mut config = PermissionGroupsConfig::default();
         let default_group = config
             .groups
@@ -3618,21 +3719,34 @@ mod tests {
             context: Some(super::PermissionRuleContextConfig {
                 domain: Some("lobby".to_owned()),
                 world: Some("lobby:spawn".to_owned()),
-                custom: None,
+                custom: vec![super::PermissionRuleCustomContextConfig {
+                    key: "region".to_owned(),
+                    value: "spawn".to_owned(),
+                }],
             }),
         });
+        let groups = PermissionGroups::from_config(config).expect("groups config is valid");
+        let effective = groups.effective_permissions(&[], &PermissionSet::new());
+        let matching_context = world_context("lobby", "spawn")
+            .with_custom_context(
+                PermissionSegment::parse("region").expect("context key parses"),
+                "spawn",
+            )
+            .expect("custom context is valid");
+        let wrong_region = world_context("lobby", "spawn")
+            .with_custom_context(
+                PermissionSegment::parse("region").expect("context key parses"),
+                "market",
+            )
+            .expect("custom context is valid");
 
-        assert!(matches!(
-            PermissionGroups::from_config(config),
-            Err(super::PermissionConfigError::InvalidRuleContext {
-                group,
-                source: super::PermissionRuleContextConfigError::MultipleContexts,
-            }) if group == "default"
-        ));
+        assert!(effective.allows_key_in(&key("steel.fly"), &matching_context));
+        assert!(!effective.allows_key_in(&key("steel.fly"), &wrong_region));
+        assert!(!effective.allows_key_in(&key("steel.fly"), &world_context("lobby", "creative")));
     }
 
     #[test]
-    fn group_values_reject_ambiguous_contexts() {
+    fn group_values_support_chained_contexts() {
         let mut config = PermissionGroupsConfig::default();
         let default_group = config
             .groups
@@ -3644,17 +3758,34 @@ mod tests {
             context: Some(super::PermissionRuleContextConfig {
                 domain: Some("lobby".to_owned()),
                 world: Some("lobby:spawn".to_owned()),
-                custom: None,
+                custom: vec![super::PermissionRuleCustomContextConfig {
+                    key: "region".to_owned(),
+                    value: "spawn".to_owned(),
+                }],
             }),
         });
+        let groups = PermissionGroups::from_config(config).expect("groups config is valid");
+        let effective = groups.effective_values(&[], &PermissionValueSet::new());
+        let homes = value_key("steel:homes");
+        let matching_context = world_context("lobby", "spawn")
+            .with_custom_context(
+                PermissionSegment::parse("region").expect("context key parses"),
+                "spawn",
+            )
+            .expect("custom context is valid");
 
-        assert!(matches!(
-            PermissionGroups::from_config(config),
-            Err(super::PermissionConfigError::InvalidValueContext {
-                group,
-                source: super::PermissionRuleContextConfigError::MultipleContexts,
-            }) if group == "default"
-        ));
+        assert_eq!(
+            effective
+                .resolve_in(&homes, &matching_context)
+                .and_then(PermissionValue::as_i64),
+            Some(5)
+        );
+        assert_eq!(
+            effective
+                .resolve_in(&homes, &world_context("lobby", "spawn"))
+                .and_then(PermissionValue::as_i64),
+            None
+        );
     }
 
     #[test]
@@ -3692,7 +3823,7 @@ mod tests {
             context: Some(super::PermissionRuleContextConfig {
                 domain: None,
                 world: Some("lobby:spawn".to_owned()),
-                custom: None,
+                custom: Vec::new(),
             }),
         });
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
@@ -3715,10 +3846,10 @@ mod tests {
             context: Some(super::PermissionRuleContextConfig {
                 domain: None,
                 world: None,
-                custom: Some(super::PermissionRuleCustomContextConfig {
+                custom: vec![super::PermissionRuleCustomContextConfig {
                     key: "region".to_owned(),
                     value: "spawn".to_owned(),
-                }),
+                }],
             }),
         });
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
@@ -3747,7 +3878,7 @@ mod tests {
             context: Some(super::PermissionRuleContextConfig {
                 domain: None,
                 world: Some("lobby:spawn/extra".to_owned()),
-                custom: None,
+                custom: Vec::new(),
             }),
         });
 

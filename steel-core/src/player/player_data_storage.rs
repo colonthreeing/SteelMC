@@ -34,9 +34,9 @@ const PLAYER_MAGIC: [u8; 4] = *b"STLP";
 const GLOBAL_MAGIC: [u8; 4] = *b"STLG";
 const KNOWN_PLAYERS_MAGIC: [u8; 4] = *b"STLK";
 const PLAYER_STORAGE_VERSION: u16 = 6;
-const GLOBAL_STORAGE_VERSION: u16 = 5;
+const GLOBAL_STORAGE_VERSION: u16 = 6;
 const KNOWN_PLAYERS_STORAGE_VERSION: u16 = 1;
-const GLOBAL_PLAYER_DATA_VERSION: i32 = 5;
+const GLOBAL_PLAYER_DATA_VERSION: i32 = 6;
 const KNOWN_PLAYERS_DATA_VERSION: i32 = 1;
 
 /// Server-wide player data.
@@ -132,20 +132,31 @@ struct GlobalPlayerDataFile {
 #[derive(SchemaWrite, SchemaRead)]
 struct PermissionEntryFile {
     key: String,
-    context_kind: Option<String>,
-    context_value: Option<String>,
+    context: Option<PermissionRuleContextFile>,
     allow: bool,
 }
 
 #[derive(SchemaWrite, SchemaRead)]
 struct PermissionValueEntryFile {
     key: String,
-    context_kind: Option<String>,
-    context_value: Option<String>,
+    context: Option<PermissionRuleContextFile>,
     value_kind: String,
     bool_value: Option<bool>,
     integer_value: Option<i64>,
     string_value: Option<String>,
+}
+
+#[derive(SchemaWrite, SchemaRead)]
+struct PermissionRuleContextFile {
+    domain: Option<String>,
+    world: Option<String>,
+    custom: Vec<PermissionRuleCustomContextFile>,
+}
+
+#[derive(SchemaWrite, SchemaRead)]
+struct PermissionRuleCustomContextFile {
+    key: String,
+    value: String,
 }
 
 #[derive(SchemaWrite, SchemaRead)]
@@ -626,14 +637,10 @@ impl GlobalPlayerDataFile {
                 .permissions
                 .entries()
                 .iter()
-                .map(|entry| {
-                    let (context_kind, context_value) = permission_context_file(entry.context());
-                    PermissionEntryFile {
-                        key: entry.key().as_str().to_owned(),
-                        context_kind,
-                        context_value,
-                        allow: entry.state() == PermissionState::Allow,
-                    }
+                .map(|entry| PermissionEntryFile {
+                    key: entry.key().as_str().to_owned(),
+                    context: permission_context_file(entry.context()),
+                    allow: entry.state() == PermissionState::Allow,
                 })
                 .collect(),
             values: data
@@ -641,13 +648,11 @@ impl GlobalPlayerDataFile {
                 .entries()
                 .iter()
                 .map(|entry| {
-                    let (context_kind, context_value) = permission_context_file(entry.context());
                     let (value_kind, bool_value, integer_value, string_value) =
                         permission_value_file(entry.value());
                     PermissionValueEntryFile {
                         key: entry.key().to_string(),
-                        context_kind,
-                        context_value,
+                        context: permission_context_file(entry.context()),
                         value_kind,
                         bool_value,
                         integer_value,
@@ -677,8 +682,7 @@ impl GlobalPlayerDataFile {
                     format!("invalid permission key in global player data: {error:?}"),
                 )
             })?;
-            let rule_context =
-                permission_context_from_file(entry.context_kind, entry.context_value)?;
+            let rule_context = permission_context_from_file(entry.context)?;
             permissions.push(PermissionEntry::new_with_context(
                 key,
                 rule_context,
@@ -698,8 +702,7 @@ impl GlobalPlayerDataFile {
                     format!("invalid permission metadata key in global player data: {error}"),
                 )
             })?;
-            let rule_context =
-                permission_context_from_file(entry.context_kind, entry.context_value)?;
+            let rule_context = permission_context_from_file(entry.context)?;
             let value = permission_value_from_file(
                 entry.value_kind,
                 entry.bool_value,
@@ -755,40 +758,72 @@ fn permission_value_from_file(
 
 fn permission_context_file(
     rule_context: &PermissionRuleContext,
-) -> (Option<String>, Option<String>) {
+) -> Option<PermissionRuleContextFile> {
+    let mut file = PermissionRuleContextFile {
+        domain: None,
+        world: None,
+        custom: Vec::new(),
+    };
+    append_permission_context_file(&mut file, rule_context);
+    if file.domain.is_none() && file.world.is_none() && file.custom.is_empty() {
+        None
+    } else {
+        Some(file)
+    }
+}
+
+fn append_permission_context_file(
+    file: &mut PermissionRuleContextFile,
+    rule_context: &PermissionRuleContext,
+) {
     match rule_context {
-        PermissionRuleContext::Global => (None, None),
-        PermissionRuleContext::Domain(domain) => (Some("domain".to_owned()), Some(domain.clone())),
-        PermissionRuleContext::World(world) => (Some("world".to_owned()), Some(world.to_string())),
+        PermissionRuleContext::Global => {}
+        PermissionRuleContext::Domain(domain) => file.domain = Some(domain.clone()),
+        PermissionRuleContext::World(world) => file.world = Some(world.to_string()),
         PermissionRuleContext::Custom { key, value } => {
-            (Some(key.as_str().to_owned()), Some(value.clone()))
+            file.custom.push(PermissionRuleCustomContextFile {
+                key: key.as_str().to_owned(),
+                value: value.clone(),
+            });
+        }
+        PermissionRuleContext::All(contexts) => {
+            for context in contexts {
+                append_permission_context_file(file, context);
+            }
         }
     }
 }
 
 fn permission_context_from_file(
-    kind: Option<String>,
-    value: Option<String>,
+    context: Option<PermissionRuleContextFile>,
 ) -> io::Result<PermissionRuleContext> {
-    match (kind, value) {
-        (None, None) => Ok(PermissionRuleContext::Global),
-        (Some(kind), Some(value)) if kind == "domain" => {
-            if value.is_empty() || !Identifier::validate_namespace(&value) {
-                return Err(invalid_permission_context("invalid domain context"));
-            }
-            Ok(PermissionRuleContext::domain(value))
+    let Some(context) = context else {
+        return Ok(PermissionRuleContext::Global);
+    };
+
+    let mut contexts = Vec::new();
+    if let Some(domain) = context.domain {
+        if domain.is_empty() || !Identifier::validate_namespace(&domain) {
+            return Err(invalid_permission_context("invalid domain context"));
         }
-        (Some(kind), Some(value)) if kind == "world" => permission_world_context_from_file(value),
-        (Some(kind), Some(value)) => {
-            let key = PermissionSegment::parse(kind).map_err(|error| {
-                invalid_permission_context(format!("invalid custom context key: {error}"))
-            })?;
-            PermissionRuleContext::custom(key, value).map_err(permission_context_error)
-        }
-        _ => Err(invalid_permission_context(
-            "permission context must include both kind and value",
-        )),
+        contexts.push(PermissionRuleContext::domain(domain));
     }
+    if let Some(world) = context.world {
+        contexts.push(permission_world_context_from_file(world)?);
+    }
+    for custom in context.custom {
+        let key = PermissionSegment::parse(custom.key).map_err(|error| {
+            invalid_permission_context(format!("invalid custom context key: {error}"))
+        })?;
+        contexts.push(
+            PermissionRuleContext::custom(key, custom.value).map_err(permission_context_error)?,
+        );
+    }
+    if contexts.is_empty() {
+        return Err(invalid_permission_context("permission context is empty"));
+    }
+
+    Ok(PermissionRuleContext::all(contexts))
 }
 
 fn permission_context_error(error: PermissionRuleContextError) -> io::Error {
@@ -1223,6 +1258,17 @@ mod tests {
                     PermissionKey::parse("minecraft.command.stop").expect("key parses"),
                     PermissionRuleContext::world(Identifier::new("lobby", "spawn")),
                 ),
+                PermissionEntry::allow_with_context(
+                    PermissionKey::parse("steel.region.build").expect("key parses"),
+                    PermissionRuleContext::all([
+                        PermissionRuleContext::world(Identifier::new("lobby", "spawn")),
+                        PermissionRuleContext::custom(
+                            PermissionSegment::parse("region").expect("context key parses"),
+                            "spawn",
+                        )
+                        .expect("custom context parses"),
+                    ]),
+                ),
             ]),
             values: PermissionValueSet::default(),
         };
@@ -1277,8 +1323,11 @@ mod tests {
             groups: Vec::new(),
             permissions: vec![PermissionEntryFile {
                 key: "minecraft.command.stop".to_owned(),
-                context_kind: Some("world".to_owned()),
-                context_value: Some("lobby:spawn/extra".to_owned()),
+                context: Some(PermissionRuleContextFile {
+                    domain: None,
+                    world: Some("lobby:spawn/extra".to_owned()),
+                    custom: Vec::new(),
+                }),
                 allow: false,
             }],
             values: Vec::new(),
@@ -1300,8 +1349,7 @@ mod tests {
             permissions: Vec::new(),
             values: vec![PermissionValueEntryFile {
                 key: "steel:homes".to_owned(),
-                context_kind: None,
-                context_value: None,
+                context: None,
                 value_kind: "integer".to_owned(),
                 bool_value: None,
                 integer_value: None,

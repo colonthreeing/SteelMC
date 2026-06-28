@@ -263,34 +263,49 @@ fn contextual_user_permission_arguments() -> CommandNodeBuilder {
             "context_world",
             WorldParser,
         )))
+        .then(user_custom_context_argument())
 }
 
 fn user_permission_context_argument(
     name: &'static str,
     parser: impl CommandArgumentParser + Clone + 'static,
 ) -> CommandNodeBuilder {
-    argument(name, parser)
-        .then(
-            literal("allow")
-                .requires_additional_subcommand_permission()
-                .then(permission_key_argument(allow_permission)),
-        )
-        .then(
-            literal("deny")
-                .requires_additional_subcommand_permission()
-                .then(permission_key_argument(deny_permission)),
-        )
-        .then(
-            literal("unset")
-                .requires_additional_subcommand_permission()
-                .then(permission_override_argument(unset_permission)),
-        )
-        .then(
-            literal("check")
-                .requires_subcommand_permission()
-                .then(permission_key_argument(check_permission)),
-        )
-        .then(user_metadata_arguments())
+    user_context_actions(argument(name, parser)).then(user_custom_context_argument())
+}
+
+fn user_custom_context_argument() -> CommandNodeBuilder {
+    literal("custom").then(
+        argument("context_custom_key", PermissionContextKeyParser).then(user_context_actions(
+            argument(
+                "context_custom_value",
+                StringParser::new(StringMode::SingleWord),
+            ),
+        )),
+    )
+}
+
+fn user_context_actions(node: CommandNodeBuilder) -> CommandNodeBuilder {
+    node.then(
+        literal("allow")
+            .requires_additional_subcommand_permission()
+            .then(permission_key_argument(allow_permission)),
+    )
+    .then(
+        literal("deny")
+            .requires_additional_subcommand_permission()
+            .then(permission_key_argument(deny_permission)),
+    )
+    .then(
+        literal("unset")
+            .requires_additional_subcommand_permission()
+            .then(permission_override_argument(unset_permission)),
+    )
+    .then(
+        literal("check")
+            .requires_subcommand_permission()
+            .then(permission_key_argument(check_permission)),
+    )
+    .then(user_metadata_arguments())
 }
 
 fn contextual_group_permission_arguments() -> CommandNodeBuilder {
@@ -303,29 +318,44 @@ fn contextual_group_permission_arguments() -> CommandNodeBuilder {
             "context_world",
             WorldParser,
         )))
+        .then(group_custom_context_argument())
 }
 
 fn group_permission_context_argument(
     name: &'static str,
     parser: impl CommandArgumentParser + Clone + 'static,
 ) -> CommandNodeBuilder {
-    argument(name, parser)
-        .then(
-            literal("allow")
-                .requires_additional_subcommand_permission()
-                .then(permission_key_argument(allow_group_permission)),
-        )
-        .then(
-            literal("deny")
-                .requires_additional_subcommand_permission()
-                .then(permission_key_argument(deny_group_permission)),
-        )
-        .then(
-            literal("unset")
-                .requires_additional_subcommand_permission()
-                .then(group_permission_argument(unset_group_permission)),
-        )
-        .then(group_metadata_arguments())
+    group_context_actions(argument(name, parser)).then(group_custom_context_argument())
+}
+
+fn group_custom_context_argument() -> CommandNodeBuilder {
+    literal("custom").then(
+        argument("context_custom_key", PermissionContextKeyParser).then(group_context_actions(
+            argument(
+                "context_custom_value",
+                StringParser::new(StringMode::SingleWord),
+            ),
+        )),
+    )
+}
+
+fn group_context_actions(node: CommandNodeBuilder) -> CommandNodeBuilder {
+    node.then(
+        literal("allow")
+            .requires_additional_subcommand_permission()
+            .then(permission_key_argument(allow_group_permission)),
+    )
+    .then(
+        literal("deny")
+            .requires_additional_subcommand_permission()
+            .then(permission_key_argument(deny_group_permission)),
+    )
+    .then(
+        literal("unset")
+            .requires_additional_subcommand_permission()
+            .then(group_permission_argument(unset_group_permission)),
+    )
+    .then(group_metadata_arguments())
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -530,6 +560,41 @@ impl CommandArgumentParser for PermissionGroupRuleParser {
         };
 
         group_permission_suggestions(prefix, group_config, context)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct PermissionContextKeyParser;
+
+impl CommandArgumentParser for PermissionContextKeyParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let value = reader.read_string(StringMode::SingleWord)?;
+        PermissionSegment::parse(value.as_str()).map_err(|_| {
+            CommandParseError::new(
+                CommandParseErrorKind::InvalidPermissionKey(value.clone()),
+                cursor,
+            )
+        })?;
+
+        Ok(ParsedArgument::String(value))
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        (
+            ArgumentType::String {
+                behavior: steel_protocol::packets::game::ArgumentStringTypeBehavior::SingleWord,
+            },
+            None,
+        )
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "string"
     }
 }
 
@@ -2093,59 +2158,49 @@ fn remove_group_config_metadata(
 fn permission_rule_context_config(
     rule_context: &PermissionRuleContext,
 ) -> Result<PermissionRuleContextConfig, PermissionGroupEditError> {
-    match rule_context {
-        PermissionRuleContext::Global => Err(PermissionGroupEditError::UnsupportedContext(
+    let mut config = PermissionRuleContextConfig::default();
+    append_permission_rule_context_config(&mut config, rule_context)?;
+    if config.domain.is_none() && config.world.is_none() && config.custom.is_empty() {
+        return Err(PermissionGroupEditError::UnsupportedContext(
             rule_context.clone(),
-        )),
-        PermissionRuleContext::Domain(domain) => Ok(PermissionRuleContextConfig {
-            domain: Some(domain.clone()),
-            world: None,
-            custom: None,
-        }),
-        PermissionRuleContext::World(world) => Ok(PermissionRuleContextConfig {
-            domain: None,
-            world: Some(world.to_string()),
-            custom: None,
-        }),
-        PermissionRuleContext::Custom { key, value } => Ok(PermissionRuleContextConfig {
-            domain: None,
-            world: None,
-            custom: Some(PermissionRuleCustomContextConfig {
+        ));
+    }
+    Ok(config)
+}
+
+fn append_permission_rule_context_config(
+    config: &mut PermissionRuleContextConfig,
+    rule_context: &PermissionRuleContext,
+) -> Result<(), PermissionGroupEditError> {
+    match rule_context {
+        PermissionRuleContext::Global => {}
+        PermissionRuleContext::Domain(domain) => config.domain = Some(domain.clone()),
+        PermissionRuleContext::World(world) => config.world = Some(world.to_string()),
+        PermissionRuleContext::Custom { key, value } => {
+            config.custom.push(PermissionRuleCustomContextConfig {
                 key: key.as_str().to_owned(),
                 value: value.clone(),
-            }),
-        }),
+            });
+        }
+        PermissionRuleContext::All(contexts) => {
+            for context in contexts {
+                append_permission_rule_context_config(config, context)?;
+            }
+        }
     }
+    Ok(())
 }
 
 fn permission_rule_config_matches(
     config: Option<&PermissionRuleContextConfig>,
     rule_context: &PermissionRuleContext,
 ) -> bool {
-    match (config, rule_context) {
-        (None, PermissionRuleContext::Global) => true,
-        (Some(config), PermissionRuleContext::Domain(domain)) => {
-            config.domain.as_deref() == Some(domain.as_str())
-                && config.world.is_none()
-                && config.custom.is_none()
-        }
-        (Some(config), PermissionRuleContext::World(world)) => {
-            config.domain.is_none()
-                && config.custom.is_none()
-                && config
-                    .world
-                    .as_ref()
-                    .is_some_and(|configured| configured == &world.to_string())
-        }
-        (
-            Some(PermissionRuleContextConfig {
-                domain: None,
-                world: None,
-                custom: Some(custom),
-            }),
-            PermissionRuleContext::Custom { key, value },
-        ) => custom.key == key.as_str() && custom.value == *value,
-        _ => false,
+    match config {
+        None => rule_context.is_global(),
+        Some(config) => config
+            .clone()
+            .into_rule_context()
+            .is_ok_and(|context| &context == rule_context),
     }
 }
 
@@ -2481,28 +2536,61 @@ fn metadata_value(arguments: &ParsedArguments) -> Result<PermissionValue, Comman
 fn permission_rule_context(
     arguments: &ParsedArguments,
 ) -> Result<PermissionRuleContext, CommandError> {
+    let mut contexts = Vec::new();
     if let Ok(domain) = arguments.get::<String>("context_domain") {
-        return Ok(PermissionRuleContext::domain(domain));
+        contexts.push(PermissionRuleContext::domain(domain));
     }
     if let Ok(world) = arguments.get::<Arc<World>>("context_world") {
-        return Ok(PermissionRuleContext::world(world.key.clone()));
+        contexts.push(PermissionRuleContext::world(world.key.clone()));
+    }
+    if let Some(custom) = custom_permission_rule_context(arguments)? {
+        contexts.push(custom);
     }
 
-    Ok(PermissionRuleContext::Global)
+    Ok(PermissionRuleContext::all(contexts))
 }
 
 fn permission_context(arguments: &ParsedArguments) -> Result<PermissionContext, CommandError> {
+    let mut context = PermissionContext::global();
     if let Ok(domain) = arguments.get::<String>("context_domain") {
-        return Ok(PermissionContext::for_domain(domain));
+        context = PermissionContext::for_domain(domain);
     }
     if let Ok(world) = arguments.get::<Arc<World>>("context_world") {
-        return Ok(PermissionContext::for_world(
-            world.domain().to_owned(),
-            world.key.clone(),
-        ));
+        context = PermissionContext::for_world(world.domain().to_owned(), world.key.clone());
+    }
+    if let Some((key, value)) = custom_permission_context(arguments)? {
+        context = context
+            .with_custom_context(key, value)
+            .map_err(|error| CommandError::failure(error.to_string()))?;
     }
 
-    Ok(PermissionContext::global())
+    Ok(context)
+}
+
+fn custom_permission_rule_context(
+    arguments: &ParsedArguments,
+) -> Result<Option<PermissionRuleContext>, CommandError> {
+    let Some((key, value)) = custom_permission_context(arguments)? else {
+        return Ok(None);
+    };
+
+    PermissionRuleContext::custom(key, value)
+        .map(Some)
+        .map_err(|error| CommandError::failure(error.to_string()))
+}
+
+fn custom_permission_context(
+    arguments: &ParsedArguments,
+) -> Result<Option<(PermissionSegment, String)>, CommandError> {
+    let Ok(key) = arguments.get::<String>("context_custom_key") else {
+        return Ok(None);
+    };
+    let value = arguments
+        .get::<String>("context_custom_value")
+        .map_err(super::invalid_parsed_argument)?;
+    let key = PermissionSegment::parse(key)
+        .map_err(|error| CommandError::failure(format!("Invalid context key: {error}")))?;
+    Ok(Some((key, value)))
 }
 
 fn group_list_text(groups: &[String]) -> String {
@@ -2616,22 +2704,10 @@ fn permission_rule_context_suffix(rule_context: &PermissionRuleContext) -> Strin
 fn permission_rule_config_suffix(context: Option<&PermissionRuleContextConfig>) -> String {
     match context {
         None => String::new(),
-        Some(PermissionRuleContextConfig {
-            domain: Some(domain),
-            world: None,
-            custom: None,
-        }) => format!(" (domain {domain})"),
-        Some(PermissionRuleContextConfig {
-            domain: None,
-            world: Some(world),
-            custom: None,
-        }) => format!(" (world {world})"),
-        Some(PermissionRuleContextConfig {
-            domain: None,
-            world: None,
-            custom: Some(custom),
-        }) => format!(" ({} {})", custom.key, custom.value),
-        Some(_) => " (invalid context)".to_owned(),
+        Some(context) => context.clone().into_rule_context().map_or_else(
+            |_| " (invalid context)".to_owned(),
+            |context| permission_rule_context_suffix(&context),
+        ),
     }
 }
 
@@ -2920,16 +2996,17 @@ fn command_result(count: usize) -> CommandResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        PermissionAssignedGroupParser, PermissionGroupEditError, PermissionGroupNameParser,
-        PermissionMetadataKeyParser, add_default_group_config, assigned_group_suggestions,
-        can_manage_group, can_manage_metadata, can_manage_permission, delete_group_config,
-        direct_metadata_override_suggestions, direct_permission_override_suggestions,
-        group_config_metadata_value, group_config_permission_states, group_metadata_suggestions,
-        group_permission_suggestions, metadata_catalog_suggestions, metadata_management_key,
-        metadata_resolution_text, permission_check_result_text, permission_resolution_source_text,
-        permission_rule_context_suffix, remove_default_group_config, set_group_config_metadata,
-        set_group_config_permission, set_group_config_priority, unset_group_config_metadata,
-        unset_group_config_permission,
+        PermissionAssignedGroupParser, PermissionContextKeyParser, PermissionGroupEditError,
+        PermissionGroupNameParser, PermissionMetadataKeyParser, add_default_group_config,
+        assigned_group_suggestions, can_manage_group, can_manage_metadata, can_manage_permission,
+        delete_group_config, direct_metadata_override_suggestions,
+        direct_permission_override_suggestions, group_config_metadata_value,
+        group_config_permission_states, group_metadata_suggestions, group_permission_suggestions,
+        metadata_catalog_suggestions, metadata_management_key, metadata_resolution_text,
+        permission_check_result_text, permission_context, permission_resolution_source_text,
+        permission_rule_context, permission_rule_context_suffix, remove_default_group_config,
+        set_group_config_metadata, set_group_config_permission, set_group_config_priority,
+        unset_group_config_metadata, unset_group_config_permission,
     };
     use crate::command::graph::{
         CommandArgumentParser, CommandParseErrorKind, ParsedArgument, ParsedArguments,
@@ -3139,6 +3216,47 @@ mod tests {
             )),
             vec!["plugin:homes"]
         );
+    }
+
+    #[test]
+    fn permission_context_key_parser_rejects_invalid_segments() {
+        let mut reader = CommandReader::new("region.spawn");
+        let error = PermissionContextKeyParser
+            .parse(&mut reader, &TestContext::empty())
+            .expect_err("context key should be one permission segment");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidPermissionKey(value) if value == "region.spawn"
+        ));
+    }
+
+    #[test]
+    fn parsed_contexts_can_chain_domain_and_custom_constraints() {
+        let permission = key("steel.region.build");
+        let mut arguments = ParsedArguments::default();
+        arguments.insert("context_domain", ParsedArgument::String("lobby".to_owned()));
+        arguments.insert(
+            "context_custom_key",
+            ParsedArgument::String("region".to_owned()),
+        );
+        arguments.insert(
+            "context_custom_value",
+            ParsedArgument::String("spawn".to_owned()),
+        );
+        let Ok(rule_context) = permission_rule_context(&arguments) else {
+            panic!("rule context should parse");
+        };
+        let Ok(check_context) = permission_context(&arguments) else {
+            panic!("check context should parse");
+        };
+        let permissions = PermissionSet::from_entries([PermissionEntry::allow_with_context(
+            permission.clone(),
+            rule_context,
+        )]);
+
+        assert!(permissions.allows_key_in(&permission, &check_context));
+        assert!(!permissions.allows_key_in(&permission, &PermissionContext::for_domain("lobby")));
     }
 
     #[test]
@@ -3352,7 +3470,7 @@ mod tests {
             Some(PermissionRuleContextConfig {
                 domain: Some("lobby".to_owned()),
                 world: None,
-                custom: None,
+                custom: Vec::new(),
             })
         );
 
@@ -3402,10 +3520,10 @@ mod tests {
             Some(PermissionRuleContextConfig {
                 domain: None,
                 world: None,
-                custom: Some(PermissionRuleCustomContextConfig {
+                custom: vec![PermissionRuleCustomContextConfig {
                     key: "region".to_owned(),
                     value: "spawn".to_owned(),
-                }),
+                }],
             })
         );
         assert_eq!(
@@ -3489,10 +3607,10 @@ mod tests {
             Some(PermissionRuleContextConfig {
                 domain: None,
                 world: None,
-                custom: Some(PermissionRuleCustomContextConfig {
+                custom: vec![PermissionRuleCustomContextConfig {
                     key: "region".to_owned(),
                     value: "spawn".to_owned(),
-                }),
+                }],
             })
         );
         assert_eq!(
@@ -3706,7 +3824,7 @@ mod tests {
                 context: Some(PermissionRuleContextConfig {
                     domain: Some("lobby".to_owned()),
                     world: None,
-                    custom: None,
+                    custom: Vec::new(),
                 }),
             }],
             values: Vec::new(),
