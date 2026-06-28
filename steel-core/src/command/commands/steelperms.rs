@@ -19,7 +19,7 @@ use crate::command::requirement::{CommandInputContext, RequirementContext};
 use crate::command::sender::CommandSender;
 use crate::command::{CommandRegistration, CommandRegistrationError};
 use crate::permission::{
-    PermissionEntry, PermissionExpr, PermissionKey, PermissionKeyError, PermissionScope,
+    PermissionEntry, PermissionExpr, PermissionKey, PermissionKeyError, PermissionRuleContext,
     PermissionSegment, PermissionSet, PermissionState,
 };
 use crate::server::Server;
@@ -46,19 +46,19 @@ pub fn command() -> CommandNodeBuilder {
                     literal("allow")
                         .requires_additional_subcommand_permission()
                         .then(permission_key_argument(allow_permission))
-                        .then(scoped_permission_key_argument(allow_permission)),
+                        .then(contextual_permission_key_argument(allow_permission)),
                 )
                 .then(
                     literal("deny")
                         .requires_additional_subcommand_permission()
                         .then(permission_key_argument(deny_permission))
-                        .then(scoped_permission_key_argument(deny_permission)),
+                        .then(contextual_permission_key_argument(deny_permission)),
                 )
                 .then(
                     literal("unset")
                         .requires_additional_subcommand_permission()
                         .then(permission_override_argument(unset_permission))
-                        .then(scoped_permission_override_argument(unset_permission)),
+                        .then(contextual_permission_override_argument(unset_permission)),
                 )
                 .then(
                     literal("group").then(
@@ -93,35 +93,35 @@ fn permission_override_argument(
     argument("permission", PermissionOverrideParser::new("targets")).executes(executor)
 }
 
-fn scoped_permission_key_argument(
+fn contextual_permission_key_argument(
     executor: fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>,
 ) -> CommandNodeBuilder {
-    literal("scope")
+    literal("context")
         .then(
             literal("domain").then(
-                argument("scope_domain", DomainParser)
+                argument("context_domain", DomainParser)
                     .then(argument("permission", PermissionKeyParser).executes(executor)),
             ),
         )
         .then(
             literal("world").then(
-                argument("scope_world", WorldParser)
+                argument("context_world", WorldParser)
                     .then(argument("permission", PermissionKeyParser).executes(executor)),
             ),
         )
 }
 
-fn scoped_permission_override_argument(
+fn contextual_permission_override_argument(
     executor: fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>,
 ) -> CommandNodeBuilder {
-    literal("scope")
+    literal("context")
         .then(
-            literal("domain").then(argument("scope_domain", DomainParser).then(
+            literal("domain").then(argument("context_domain", DomainParser).then(
                 argument("permission", PermissionOverrideParser::new("targets")).executes(executor),
             )),
         )
         .then(
-            literal("world").then(argument("scope_world", WorldParser).then(
+            literal("world").then(argument("context_world", WorldParser).then(
                 argument("permission", PermissionOverrideParser::new("targets")).executes(executor),
             )),
         )
@@ -375,7 +375,7 @@ fn set_permission(
 ) -> Result<CommandResult, CommandError> {
     let targets = targets(arguments)?;
     let permission = permission(arguments)?;
-    let scope = permission_scope(arguments)?;
+    let rule_context = permission_rule_context(arguments)?;
     require_permission_management(context, &permission)?;
     let mut changed = 0;
     let mut offline_targets = Vec::new();
@@ -386,7 +386,7 @@ fn set_permission(
         {
             target_state
                 .overrides
-                .set_in(permission.clone(), scope.clone(), state);
+                .set_in(permission.clone(), rule_context.clone(), state);
             permission_targets::save_online_state(&context.server, &player, target_state)?;
             changed += 1;
         } else {
@@ -396,7 +396,7 @@ fn set_permission(
 
     let scheduled = offline_targets.len();
     if changed != 0 || scheduled == 0 {
-        send_set_permission_summary(&context.sender, state, &permission, &scope, changed);
+        send_set_permission_summary(&context.sender, state, &permission, &rule_context, changed);
     }
     if scheduled != 0 {
         spawn_set_permission(
@@ -404,7 +404,7 @@ fn set_permission(
             context.sender.clone(),
             offline_targets,
             permission,
-            scope,
+            rule_context,
             state,
         );
     }
@@ -418,7 +418,7 @@ fn unset_permission(
 ) -> Result<CommandResult, CommandError> {
     let targets = targets(arguments)?;
     let permission = permission(arguments)?;
-    let scope = permission_scope(arguments)?;
+    let rule_context = permission_rule_context(arguments)?;
     require_permission_management(context, &permission)?;
     let mut changed = 0;
     let mut offline_targets = Vec::new();
@@ -427,7 +427,7 @@ fn unset_permission(
         if let Some((player, mut target_state)) =
             permission_targets::online_state(&context.server, &target)
         {
-            if !target_state.overrides.unset_in(&permission, &scope) {
+            if !target_state.overrides.unset_in(&permission, &rule_context) {
                 continue;
             }
 
@@ -440,7 +440,7 @@ fn unset_permission(
 
     let scheduled = offline_targets.len();
     if changed != 0 || scheduled == 0 {
-        send_unset_permission_summary(&context.sender, &permission, &scope, changed);
+        send_unset_permission_summary(&context.sender, &permission, &rule_context, changed);
     }
     if scheduled != 0 {
         spawn_unset_permission(
@@ -448,7 +448,7 @@ fn unset_permission(
             context.sender.clone(),
             offline_targets,
             permission,
-            scope,
+            rule_context,
         );
     }
 
@@ -532,7 +532,7 @@ fn spawn_set_permission(
     sender: CommandSender,
     targets: Vec<PermissionTarget>,
     permission: PermissionKey,
-    scope: PermissionScope,
+    rule_context: PermissionRuleContext,
     state: PermissionState,
 ) {
     tokio::spawn(async move {
@@ -544,14 +544,14 @@ fn spawn_set_permission(
             let target_state = loaded.state_mut();
             target_state
                 .overrides
-                .set_in(permission.clone(), scope.clone(), state);
+                .set_in(permission.clone(), rule_context.clone(), state);
 
             if save_or_report(&server, &sender, loaded).await {
                 changed += 1;
             }
         }
 
-        send_set_permission_summary(&sender, state, &permission, &scope, changed);
+        send_set_permission_summary(&sender, state, &permission, &rule_context, changed);
     });
 }
 
@@ -560,7 +560,7 @@ fn spawn_unset_permission(
     sender: CommandSender,
     targets: Vec<PermissionTarget>,
     permission: PermissionKey,
-    scope: PermissionScope,
+    rule_context: PermissionRuleContext,
 ) {
     tokio::spawn(async move {
         let mut changed = 0;
@@ -569,7 +569,7 @@ fn spawn_unset_permission(
                 continue;
             };
             let target_state = loaded.state_mut();
-            if !target_state.overrides.unset_in(&permission, &scope) {
+            if !target_state.overrides.unset_in(&permission, &rule_context) {
                 continue;
             }
 
@@ -578,7 +578,7 @@ fn spawn_unset_permission(
             }
         }
 
-        send_unset_permission_summary(&sender, &permission, &scope, changed);
+        send_unset_permission_summary(&sender, &permission, &rule_context, changed);
     });
 }
 
@@ -630,14 +630,14 @@ fn send_set_permission_summary(
     sender: &CommandSender,
     state: PermissionState,
     permission: &PermissionKey,
-    scope: &PermissionScope,
+    rule_context: &PermissionRuleContext,
     count: usize,
 ) {
     sender.send_message(&TextComponent::plain(format!(
         "{} permission '{}'{} for {}",
         permission_action_text(state),
         permission.as_str(),
-        permission_scope_suffix(scope),
+        permission_rule_context_suffix(rule_context),
         target_count_text(count)
     )));
 }
@@ -645,13 +645,13 @@ fn send_set_permission_summary(
 fn send_unset_permission_summary(
     sender: &CommandSender,
     permission: &PermissionKey,
-    scope: &PermissionScope,
+    rule_context: &PermissionRuleContext,
     count: usize,
 ) {
     sender.send_message(&TextComponent::plain(format!(
         "Unset direct permission '{}'{} for {}",
         permission.as_str(),
-        permission_scope_suffix(scope),
+        permission_rule_context_suffix(rule_context),
         target_count_text(count)
     )));
 }
@@ -683,15 +683,17 @@ fn permission(arguments: &ParsedArguments) -> Result<PermissionKey, CommandError
         .map_err(super::invalid_parsed_argument)
 }
 
-fn permission_scope(arguments: &ParsedArguments) -> Result<PermissionScope, CommandError> {
-    if let Ok(domain) = arguments.get::<String>("scope_domain") {
-        return Ok(PermissionScope::domain(domain));
+fn permission_rule_context(
+    arguments: &ParsedArguments,
+) -> Result<PermissionRuleContext, CommandError> {
+    if let Ok(domain) = arguments.get::<String>("context_domain") {
+        return Ok(PermissionRuleContext::domain(domain));
     }
-    if let Ok(world) = arguments.get::<Arc<World>>("scope_world") {
-        return Ok(PermissionScope::world(world.key.clone()));
+    if let Ok(world) = arguments.get::<Arc<World>>("context_world") {
+        return Ok(PermissionRuleContext::world(world.key.clone()));
     }
 
-    Ok(PermissionScope::Global)
+    Ok(PermissionRuleContext::Global)
 }
 
 fn group_list_text(groups: &[String]) -> String {
@@ -714,18 +716,18 @@ fn permission_entries_text(entries: &[PermissionEntry]) -> String {
                 "{} {}{}",
                 permission_state_text(entry.state()),
                 entry.key().as_str(),
-                permission_scope_suffix(entry.scope())
+                permission_rule_context_suffix(entry.context())
             )
         })
         .collect::<Vec<_>>()
         .join(", ")
 }
 
-fn permission_scope_suffix(scope: &PermissionScope) -> String {
-    if scope.is_global() {
+fn permission_rule_context_suffix(rule_context: &PermissionRuleContext) -> String {
+    if rule_context.is_global() {
         String::new()
     } else {
-        format!(" ({scope})")
+        format!(" ({rule_context})")
     }
 }
 
@@ -844,13 +846,15 @@ mod tests {
     use super::{
         PermissionAssignedGroupParser, assigned_group_suggestions, can_manage_group,
         can_manage_permission, direct_permission_override_suggestions,
+        permission_rule_context_suffix,
     };
     use crate::command::graph::{CommandArgumentParser, CommandParseErrorKind, ParsedArgument};
     use crate::command::reader::CommandReader;
     use crate::command::requirement::{
         CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext,
     };
-    use crate::permission::{PermissionEntry, PermissionKey, PermissionSet};
+    use crate::permission::{PermissionEntry, PermissionKey, PermissionRuleContext, PermissionSet};
+    use steel_utils::Identifier;
 
     struct TestContext {
         permissions: PermissionSet,
@@ -920,6 +924,44 @@ mod tests {
                 "minecraft.command.gamemode.creative",
                 "minecraft.command.gamemode.survival",
             ]
+        );
+    }
+
+    #[test]
+    fn unset_permission_suggestions_include_contextual_overrides() {
+        let overrides = PermissionSet::from_entries([
+            PermissionEntry::deny_with_context(
+                key("steel.fly"),
+                PermissionRuleContext::domain("lobby"),
+            ),
+            PermissionEntry::allow(key("steel.stop")),
+        ]);
+
+        assert_eq!(
+            suggestion_texts(direct_permission_override_suggestions(
+                "steel.f",
+                [overrides],
+                &TestContext::with_permissions(["steel.permission.manage.steel.*"]),
+            )),
+            vec!["steel.fly"]
+        );
+    }
+
+    #[test]
+    fn permission_context_suffix_describes_non_global_contexts() {
+        assert_eq!(
+            permission_rule_context_suffix(&PermissionRuleContext::Global),
+            ""
+        );
+        assert_eq!(
+            permission_rule_context_suffix(&PermissionRuleContext::domain("lobby")),
+            " (domain lobby)"
+        );
+        assert_eq!(
+            permission_rule_context_suffix(&PermissionRuleContext::world(Identifier::new(
+                "lobby", "spawn"
+            ))),
+            " (world lobby:spawn)"
         );
     }
 

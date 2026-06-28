@@ -30,6 +30,15 @@
       "type": "string",
       "pattern": "^[a-z0-9_-]+$"
     },
+    "domain_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9_.-]+$"
+    },
+    "world_identifier": {
+      "type": "string",
+      "description": "Namespaced loaded world id such as lobby:spawn",
+      "pattern": "^[a-z0-9_.-]+:[a-z0-9_.-]+$"
+    },
     "permission_key": {
       "type": "string",
       "description": "Dotted permission key. Only a full trailing segment may be a wildcard.",
@@ -55,8 +64,48 @@
           },
           "uniqueItems": true,
           "default": []
+        },
+        "rules": {
+          "type": "array",
+          "description": "Structured permission rules with optional contexts",
+          "items": {
+            "$ref": "#/definitions/rule"
+          },
+          "default": []
         }
       },
+      "additionalProperties": false
+    },
+    "rule": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "$ref": "#/definitions/permission_key"
+        },
+        "state": {
+          "type": "string",
+          "enum": ["allow", "deny"]
+        },
+        "context": {
+          "$ref": "#/definitions/rule_context"
+        }
+      },
+      "required": ["key", "state"],
+      "additionalProperties": false
+    },
+    "rule_context": {
+      "type": "object",
+      "description": "Rule-side context where this permission applies. Declare at most one selector.",
+      "properties": {
+        "domain": {
+          "$ref": "#/definitions/domain_name"
+        },
+        "world": {
+          "$ref": "#/definitions/world_identifier"
+        }
+      },
+      "minProperties": 1,
+      "maxProperties": 1,
       "additionalProperties": false
     }
   }

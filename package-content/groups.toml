@@ -11,6 +11,18 @@ default_groups = ["default"]
 [groups.default]
 allow = []
 deny = []
+# Structured rules can add a context. Omit `context` for a global rule.
+# Each rule may use one context selector: `domain` or `world`.
+#
+# [[groups.default.rules]]
+# key = "minecraft.command.gamemode"
+# state = "allow"
+# context = { domain = "lobby" }
+#
+# [[groups.default.rules]]
+# key = "minecraft.command.gamemode.creative"
+# state = "deny"
+# context = { world = "lobby:spawn" }
 
 [groups.op]
 allow = ["*"]

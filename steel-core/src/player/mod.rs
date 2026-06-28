@@ -102,7 +102,7 @@ use crate::entity::{
 use crate::fluid::get_fluid_state;
 use crate::inventory::{SyncPlayerInv, equipment::EquipmentSlot};
 use crate::level_data::RespawnData;
-use crate::permission::{PermissionCheckContext, PermissionExpr, PermissionSet};
+use crate::permission::{PermissionContext, PermissionExpr, PermissionSet};
 use crate::physics::MoveResult;
 use crate::player::experience::Experience;
 use crate::player::player_data::PersistentRootVehicle;
@@ -1111,8 +1111,7 @@ impl Player {
     #[must_use]
     pub fn has_permission(&self, permission: &PermissionExpr) -> bool {
         let world = self.get_world();
-        let context =
-            PermissionCheckContext::for_world(world.domain().to_owned(), world.key.clone());
+        let context = PermissionContext::for_world(world.domain().to_owned(), world.key.clone());
         self.has_permission_in(permission, &context)
     }
 
@@ -1121,7 +1120,7 @@ impl Player {
     pub fn has_permission_in(
         &self,
         permission: &PermissionExpr,
-        context: &PermissionCheckContext,
+        context: &PermissionContext,
     ) -> bool {
         self.permissions
             .lock()

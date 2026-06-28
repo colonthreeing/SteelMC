@@ -1,4 +1,4 @@
-//! Player data storage for global and domain-scoped player state.
+//! Player data storage for global and domain-specific player state.
 
 use std::{
     io::Cursor,
@@ -19,8 +19,9 @@ use super::player_data::{
 use crate::chunk_saver::PersistentEntity;
 use crate::config::StorageSelection;
 use crate::permission::{
-    PermissionEntry, PermissionKey, PermissionScope, PermissionScopeError, PermissionSegment,
-    PermissionSet, PermissionState, PermissionSubjectIndex, PermissionSubjectState,
+    PermissionEntry, PermissionKey, PermissionRuleContext, PermissionRuleContextError,
+    PermissionSegment, PermissionSet, PermissionState, PermissionSubjectIndex,
+    PermissionSubjectState,
 };
 use crate::player::Player;
 use crate::player::known_players::{KnownPlayer, KnownPlayers};
@@ -127,8 +128,8 @@ struct GlobalPlayerDataFile {
 #[derive(SchemaWrite, SchemaRead)]
 struct PermissionEntryFile {
     key: String,
-    scope_kind: Option<String>,
-    scope_value: Option<String>,
+    context_kind: Option<String>,
+    context_value: Option<String>,
     allow: bool,
 }
 
@@ -609,11 +610,11 @@ impl GlobalPlayerDataFile {
                 .entries()
                 .iter()
                 .map(|entry| {
-                    let (scope_kind, scope_value) = permission_scope_file(entry.scope());
+                    let (context_kind, context_value) = permission_context_file(entry.context());
                     PermissionEntryFile {
                         key: entry.key().as_str().to_owned(),
-                        scope_kind,
-                        scope_value,
+                        context_kind,
+                        context_value,
                         allow: entry.state() == PermissionState::Allow,
                     }
                 })
@@ -640,10 +641,11 @@ impl GlobalPlayerDataFile {
                     format!("invalid permission key in global player data: {error:?}"),
                 )
             })?;
-            let scope = permission_scope_from_file(entry.scope_kind, entry.scope_value)?;
-            permissions.push(PermissionEntry::new_scoped(
+            let rule_context =
+                permission_context_from_file(entry.context_kind, entry.context_value)?;
+            permissions.push(PermissionEntry::new_with_context(
                 key,
-                scope,
+                rule_context,
                 if entry.allow {
                     PermissionState::Allow
                 } else {
@@ -660,50 +662,69 @@ impl GlobalPlayerDataFile {
     }
 }
 
-fn permission_scope_file(scope: &PermissionScope) -> (Option<String>, Option<String>) {
-    match scope {
-        PermissionScope::Global => (None, None),
-        PermissionScope::Domain(domain) => (Some("domain".to_owned()), Some(domain.clone())),
-        PermissionScope::World(world) => (Some("world".to_owned()), Some(world.to_string())),
-        PermissionScope::Custom { key, value } => {
+fn permission_context_file(
+    rule_context: &PermissionRuleContext,
+) -> (Option<String>, Option<String>) {
+    match rule_context {
+        PermissionRuleContext::Global => (None, None),
+        PermissionRuleContext::Domain(domain) => (Some("domain".to_owned()), Some(domain.clone())),
+        PermissionRuleContext::World(world) => (Some("world".to_owned()), Some(world.to_string())),
+        PermissionRuleContext::Custom { key, value } => {
             (Some(key.as_str().to_owned()), Some(value.clone()))
         }
     }
 }
 
-fn permission_scope_from_file(
+fn permission_context_from_file(
     kind: Option<String>,
     value: Option<String>,
-) -> io::Result<PermissionScope> {
+) -> io::Result<PermissionRuleContext> {
     match (kind, value) {
-        (None, None) => Ok(PermissionScope::Global),
+        (None, None) => Ok(PermissionRuleContext::Global),
         (Some(kind), Some(value)) if kind == "domain" => {
             if value.is_empty() || !Identifier::validate_namespace(&value) {
-                return Err(invalid_permission_scope("invalid domain scope"));
+                return Err(invalid_permission_context("invalid domain context"));
             }
-            Ok(PermissionScope::domain(value))
+            Ok(PermissionRuleContext::domain(value))
         }
-        (Some(kind), Some(value)) if kind == "world" => value
-            .parse::<Identifier>()
-            .map(PermissionScope::world)
-            .map_err(|_| invalid_permission_scope("invalid world scope")),
+        (Some(kind), Some(value)) if kind == "world" => permission_world_context_from_file(value),
         (Some(kind), Some(value)) => {
             let key = PermissionSegment::parse(kind).map_err(|error| {
-                invalid_permission_scope(format!("invalid custom scope key: {error}"))
+                invalid_permission_context(format!("invalid custom context key: {error}"))
             })?;
-            PermissionScope::custom(key, value).map_err(permission_scope_error)
+            PermissionRuleContext::custom(key, value).map_err(permission_context_error)
         }
-        _ => Err(invalid_permission_scope(
-            "permission scope must include both kind and value",
+        _ => Err(invalid_permission_context(
+            "permission context must include both kind and value",
         )),
     }
 }
 
-fn permission_scope_error(error: PermissionScopeError) -> io::Error {
-    invalid_permission_scope(error.to_string())
+fn permission_context_error(error: PermissionRuleContextError) -> io::Error {
+    invalid_permission_context(error.to_string())
 }
 
-fn invalid_permission_scope(message: impl Into<String>) -> io::Error {
+fn permission_world_context_from_file(value: String) -> io::Result<PermissionRuleContext> {
+    let Some((domain, world)) = value.split_once(':') else {
+        return Err(invalid_permission_context("invalid world context"));
+    };
+    if domain.is_empty()
+        || world.is_empty()
+        || world.contains(':')
+        || world.contains('/')
+        || !Identifier::validate_namespace(domain)
+        || !Identifier::validate_path(world)
+    {
+        return Err(invalid_permission_context("invalid world context"));
+    }
+
+    Ok(PermissionRuleContext::world(Identifier::new(
+        domain.to_owned(),
+        world.to_owned(),
+    )))
+}
+
+fn invalid_permission_context(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
@@ -1106,9 +1127,9 @@ mod tests {
                 PermissionEntry::allow(
                     PermissionKey::parse("minecraft.command.give").expect("key parses"),
                 ),
-                PermissionEntry::deny_scoped(
+                PermissionEntry::deny_with_context(
                     PermissionKey::parse("minecraft.command.stop").expect("key parses"),
-                    PermissionScope::world(Identifier::new("lobby", "spawn")),
+                    PermissionRuleContext::world(Identifier::new("lobby", "spawn")),
                 ),
             ]),
         };
@@ -1122,6 +1143,27 @@ mod tests {
 
         assert_eq!(decoded.permissions, data.permissions);
         assert_eq!(decoded.groups, data.groups);
+    }
+
+    #[test]
+    fn global_file_rejects_invalid_permission_world_context() {
+        let file = GlobalPlayerDataFile {
+            data_version: GLOBAL_PLAYER_DATA_VERSION,
+            last_active_domain: "minecraft".to_owned(),
+            groups: Vec::new(),
+            permissions: vec![PermissionEntryFile {
+                key: "minecraft.command.stop".to_owned(),
+                context_kind: Some("world".to_owned()),
+                context_value: Some("lobby:spawn/extra".to_owned()),
+                allow: false,
+            }],
+        };
+
+        let error = file
+            .into_global_data()
+            .expect_err("invalid loaded world context should be rejected");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
     #[tokio::test]
