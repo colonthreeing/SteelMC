@@ -19,8 +19,8 @@ use super::player_data::{
 use crate::chunk_saver::PersistentEntity;
 use crate::config::StorageSelection;
 use crate::permission::{
-    PermissionEntry, PermissionKey, PermissionSet, PermissionState, PermissionSubjectIndex,
-    PermissionSubjectState,
+    PermissionEntry, PermissionKey, PermissionScope, PermissionScopeError, PermissionSegment,
+    PermissionSet, PermissionState, PermissionSubjectIndex, PermissionSubjectState,
 };
 use crate::player::Player;
 use crate::player::known_players::{KnownPlayer, KnownPlayers};
@@ -32,9 +32,9 @@ const PLAYER_MAGIC: [u8; 4] = *b"STLP";
 const GLOBAL_MAGIC: [u8; 4] = *b"STLG";
 const KNOWN_PLAYERS_MAGIC: [u8; 4] = *b"STLK";
 const PLAYER_STORAGE_VERSION: u16 = 6;
-const GLOBAL_STORAGE_VERSION: u16 = 3;
+const GLOBAL_STORAGE_VERSION: u16 = 4;
 const KNOWN_PLAYERS_STORAGE_VERSION: u16 = 1;
-const GLOBAL_PLAYER_DATA_VERSION: i32 = 3;
+const GLOBAL_PLAYER_DATA_VERSION: i32 = 4;
 const KNOWN_PLAYERS_DATA_VERSION: i32 = 1;
 
 /// Server-wide player data.
@@ -127,6 +127,8 @@ struct GlobalPlayerDataFile {
 #[derive(SchemaWrite, SchemaRead)]
 struct PermissionEntryFile {
     key: String,
+    scope_kind: Option<String>,
+    scope_value: Option<String>,
     allow: bool,
 }
 
@@ -606,9 +608,14 @@ impl GlobalPlayerDataFile {
                 .permissions
                 .entries()
                 .iter()
-                .map(|entry| PermissionEntryFile {
-                    key: entry.key().as_str().to_owned(),
-                    allow: entry.state() == PermissionState::Allow,
+                .map(|entry| {
+                    let (scope_kind, scope_value) = permission_scope_file(entry.scope());
+                    PermissionEntryFile {
+                        key: entry.key().as_str().to_owned(),
+                        scope_kind,
+                        scope_value,
+                        allow: entry.state() == PermissionState::Allow,
+                    }
                 })
                 .collect(),
         }
@@ -633,8 +640,10 @@ impl GlobalPlayerDataFile {
                     format!("invalid permission key in global player data: {error:?}"),
                 )
             })?;
-            permissions.push(PermissionEntry::new(
+            let scope = permission_scope_from_file(entry.scope_kind, entry.scope_value)?;
+            permissions.push(PermissionEntry::new_scoped(
                 key,
+                scope,
                 if entry.allow {
                     PermissionState::Allow
                 } else {
@@ -649,6 +658,53 @@ impl GlobalPlayerDataFile {
             permissions,
         })
     }
+}
+
+fn permission_scope_file(scope: &PermissionScope) -> (Option<String>, Option<String>) {
+    match scope {
+        PermissionScope::Global => (None, None),
+        PermissionScope::Domain(domain) => (Some("domain".to_owned()), Some(domain.clone())),
+        PermissionScope::World(world) => (Some("world".to_owned()), Some(world.to_string())),
+        PermissionScope::Custom { key, value } => {
+            (Some(key.as_str().to_owned()), Some(value.clone()))
+        }
+    }
+}
+
+fn permission_scope_from_file(
+    kind: Option<String>,
+    value: Option<String>,
+) -> io::Result<PermissionScope> {
+    match (kind, value) {
+        (None, None) => Ok(PermissionScope::Global),
+        (Some(kind), Some(value)) if kind == "domain" => {
+            if value.is_empty() || !Identifier::validate_namespace(&value) {
+                return Err(invalid_permission_scope("invalid domain scope"));
+            }
+            Ok(PermissionScope::domain(value))
+        }
+        (Some(kind), Some(value)) if kind == "world" => value
+            .parse::<Identifier>()
+            .map(PermissionScope::world)
+            .map_err(|_| invalid_permission_scope("invalid world scope")),
+        (Some(kind), Some(value)) => {
+            let key = PermissionSegment::parse(kind).map_err(|error| {
+                invalid_permission_scope(format!("invalid custom scope key: {error}"))
+            })?;
+            PermissionScope::custom(key, value).map_err(permission_scope_error)
+        }
+        _ => Err(invalid_permission_scope(
+            "permission scope must include both kind and value",
+        )),
+    }
+}
+
+fn permission_scope_error(error: PermissionScopeError) -> io::Error {
+    invalid_permission_scope(error.to_string())
+}
+
+fn invalid_permission_scope(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
 impl KnownPlayersFile {
@@ -1050,8 +1106,9 @@ mod tests {
                 PermissionEntry::allow(
                     PermissionKey::parse("minecraft.command.give").expect("key parses"),
                 ),
-                PermissionEntry::deny(
+                PermissionEntry::deny_scoped(
                     PermissionKey::parse("minecraft.command.stop").expect("key parses"),
+                    PermissionScope::world(Identifier::new("lobby", "spawn")),
                 ),
             ]),
         };

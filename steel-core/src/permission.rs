@@ -8,10 +8,159 @@ use std::{
 };
 
 use serde::Deserialize;
+use steel_utils::Identifier;
 use uuid::Uuid;
 
 /// Built-in operator group name used by `/op`.
 pub(crate) const OP_GROUP: &str = "op";
+
+/// Context where a permission entry applies.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum PermissionScope {
+    /// Permission applies in every context.
+    Global,
+    /// Permission applies while the subject is in a domain.
+    Domain(String),
+    /// Permission applies while the subject is in one loaded world.
+    World(Identifier),
+    /// Permission applies when a plugin or subsystem provides the same custom context.
+    Custom {
+        /// Context key, such as `region`.
+        key: PermissionSegment,
+        /// Context value owned by the provider.
+        value: String,
+    },
+}
+
+impl PermissionScope {
+    /// Returns the global permission scope.
+    #[must_use]
+    pub const fn global() -> Self {
+        Self::Global
+    }
+
+    /// Creates a domain permission scope.
+    #[must_use]
+    pub fn domain(domain: impl Into<String>) -> Self {
+        Self::Domain(domain.into())
+    }
+
+    /// Creates a world permission scope.
+    #[must_use]
+    pub const fn world(world: Identifier) -> Self {
+        Self::World(world)
+    }
+
+    /// Creates a custom permission scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the value is empty.
+    pub fn custom(
+        key: PermissionSegment,
+        value: impl Into<String>,
+    ) -> Result<Self, PermissionScopeError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(PermissionScopeError::EmptyValue);
+        }
+        Ok(Self::Custom { key, value })
+    }
+
+    /// Returns true if this entry applies in every context.
+    #[must_use]
+    pub const fn is_global(&self) -> bool {
+        matches!(self, Self::Global)
+    }
+
+    fn matches_context(&self, context: &PermissionCheckContext) -> bool {
+        match self {
+            Self::Global => true,
+            Self::Domain(domain) => context.domain.as_ref() == Some(domain),
+            Self::World(world) => context.world.as_ref() == Some(world),
+            Self::Custom { .. } => context.custom_scopes.contains(self),
+        }
+    }
+
+    fn specificity(&self) -> usize {
+        match self {
+            Self::Global => 0,
+            Self::Domain(_) | Self::Custom { .. } => 1,
+            Self::World(_) => 2,
+        }
+    }
+}
+
+impl fmt::Display for PermissionScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Global => write!(f, "global"),
+            Self::Domain(domain) => write!(f, "domain {domain}"),
+            Self::World(world) => write!(f, "world {world}"),
+            Self::Custom { key, value } => write!(f, "{} {value}", key.as_str()),
+        }
+    }
+}
+
+/// Invalid permission scope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PermissionScopeError {
+    /// Scope value is empty.
+    EmptyValue,
+}
+
+impl fmt::Display for PermissionScopeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyValue => write!(f, "permission scope value is empty"),
+        }
+    }
+}
+
+impl Error for PermissionScopeError {}
+
+/// Context used when evaluating a permission expression.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PermissionCheckContext {
+    domain: Option<String>,
+    world: Option<Identifier>,
+    custom_scopes: Vec<PermissionScope>,
+}
+
+impl PermissionCheckContext {
+    /// Creates a context with no active scopes.
+    #[must_use]
+    pub fn global() -> Self {
+        Self::default()
+    }
+
+    /// Creates a context for one loaded world and its domain.
+    #[must_use]
+    pub fn for_world(domain: impl Into<String>, world: Identifier) -> Self {
+        Self {
+            domain: Some(domain.into()),
+            world: Some(world),
+            custom_scopes: Vec::new(),
+        }
+    }
+
+    /// Adds a custom active scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the value is empty.
+    pub fn with_custom_scope(
+        mut self,
+        key: PermissionSegment,
+        value: impl Into<String>,
+    ) -> Result<Self, PermissionScopeError> {
+        let scope = PermissionScope::custom(key, value)?;
+        if !self.custom_scopes.iter().any(|existing| existing == &scope) {
+            self.custom_scopes.push(scope);
+        }
+        Ok(self)
+    }
+}
 
 /// One dotted permission key.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -455,32 +604,65 @@ pub enum PermissionState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PermissionEntry {
     key: PermissionKey,
+    scope: PermissionScope,
     state: PermissionState,
 }
 
 impl PermissionEntry {
-    /// Creates one permission entry.
+    /// Creates one global permission entry.
     #[must_use]
     pub const fn new(key: PermissionKey, state: PermissionState) -> Self {
-        Self { key, state }
+        Self {
+            key,
+            scope: PermissionScope::Global,
+            state,
+        }
     }
 
-    /// Creates an allow entry.
+    /// Creates one scoped permission entry.
+    #[must_use]
+    pub const fn new_scoped(
+        key: PermissionKey,
+        scope: PermissionScope,
+        state: PermissionState,
+    ) -> Self {
+        Self { key, scope, state }
+    }
+
+    /// Creates a global allow entry.
     #[must_use]
     pub const fn allow(key: PermissionKey) -> Self {
         Self::new(key, PermissionState::Allow)
     }
 
-    /// Creates a deny entry.
+    /// Creates a scoped allow entry.
+    #[must_use]
+    pub const fn allow_scoped(key: PermissionKey, scope: PermissionScope) -> Self {
+        Self::new_scoped(key, scope, PermissionState::Allow)
+    }
+
+    /// Creates a global deny entry.
     #[must_use]
     pub const fn deny(key: PermissionKey) -> Self {
         Self::new(key, PermissionState::Deny)
+    }
+
+    /// Creates a scoped deny entry.
+    #[must_use]
+    pub const fn deny_scoped(key: PermissionKey, scope: PermissionScope) -> Self {
+        Self::new_scoped(key, scope, PermissionState::Deny)
     }
 
     /// Returns the permission key pattern.
     #[must_use]
     pub const fn key(&self) -> &PermissionKey {
         &self.key
+    }
+
+    /// Returns the permission scope.
+    #[must_use]
+    pub const fn scope(&self) -> &PermissionScope {
+        &self.scope
     }
 
     /// Returns the entry state.
@@ -529,43 +711,86 @@ impl PermissionSet {
         self.push(PermissionEntry::allow(key));
     }
 
+    /// Adds one scoped allow entry.
+    pub fn allow_in(&mut self, key: PermissionKey, scope: PermissionScope) {
+        self.push(PermissionEntry::allow_scoped(key, scope));
+    }
+
     /// Adds one deny entry.
     pub fn deny(&mut self, key: PermissionKey) {
         self.push(PermissionEntry::deny(key));
     }
 
-    /// Sets one exact permission entry, replacing any previous exact entry.
-    pub fn set(&mut self, key: PermissionKey, state: PermissionState) {
-        self.entries.retain(|entry| entry.key != key);
-        self.entries.push(PermissionEntry::new(key, state));
+    /// Adds one scoped deny entry.
+    pub fn deny_in(&mut self, key: PermissionKey, scope: PermissionScope) {
+        self.push(PermissionEntry::deny_scoped(key, scope));
     }
 
-    /// Removes one exact permission entry.
+    /// Sets one exact global permission entry, replacing any previous exact entry.
+    pub fn set(&mut self, key: PermissionKey, state: PermissionState) {
+        self.set_in(key, PermissionScope::Global, state);
+    }
+
+    /// Sets one exact scoped permission entry, replacing any previous exact entry in that scope.
+    pub fn set_in(&mut self, key: PermissionKey, scope: PermissionScope, state: PermissionState) {
+        self.entries
+            .retain(|entry| entry.key != key || entry.scope != scope);
+        self.entries
+            .push(PermissionEntry::new_scoped(key, scope, state));
+    }
+
+    /// Removes one exact global permission entry.
     ///
     /// Returns true when an entry was removed.
     pub fn unset(&mut self, key: &PermissionKey) -> bool {
+        self.unset_in(key, &PermissionScope::Global)
+    }
+
+    /// Removes one exact scoped permission entry.
+    ///
+    /// Returns true when an entry was removed.
+    pub fn unset_in(&mut self, key: &PermissionKey, scope: &PermissionScope) -> bool {
         let old_len = self.entries.len();
-        self.entries.retain(|entry| entry.key() != key);
+        self.entries
+            .retain(|entry| entry.key() != key || entry.scope() != scope);
         self.entries.len() != old_len
     }
 
-    /// Resolves one key. Unset permissions return `None`.
+    /// Resolves one key in the global context. Unset permissions return `None`.
     #[must_use]
     pub fn resolve_key(&self, key: &PermissionKey) -> Option<PermissionState> {
+        self.resolve_key_in(key, &PermissionCheckContext::global())
+    }
+
+    /// Resolves one key in a permission context. Unset permissions return `None`.
+    #[must_use]
+    pub fn resolve_key_in(
+        &self,
+        key: &PermissionKey,
+        context: &PermissionCheckContext,
+    ) -> Option<PermissionState> {
         let mut best = None;
 
         for entry in &self.entries {
+            if !entry.scope.matches_context(context) {
+                continue;
+            }
             if !entry.key.matches(key) {
                 continue;
             }
 
-            push_permission_candidate(&mut best, entry.key.specificity(), entry.state);
+            push_permission_candidate(
+                &mut best,
+                entry.key.specificity(),
+                entry.scope.specificity(),
+                entry.state,
+            );
         }
 
-        best.map(|(_, state)| state)
+        best.map(|(_, _, state)| state)
     }
 
-    /// Resolves a child key while treating `parent` as a broad grant.
+    /// Resolves a child key in the global context while treating `parent` as a broad grant.
     ///
     /// Unset permissions return `None`. If both parent and child-side entries
     /// match, the more specific entry wins; tied specificity resolves to deny.
@@ -575,10 +800,27 @@ impl PermissionSet {
         parent: &PermissionKey,
         key: &PermissionKey,
     ) -> Option<PermissionState> {
+        self.resolve_scoped_key_in(parent, key, &PermissionCheckContext::global())
+    }
+
+    /// Resolves a child key in a permission context while treating `parent` as a broad grant.
+    ///
+    /// Unset permissions return `None`. If both parent and child-side entries
+    /// match, the more specific entry wins; tied specificity resolves to deny.
+    #[must_use]
+    pub fn resolve_scoped_key_in(
+        &self,
+        parent: &PermissionKey,
+        key: &PermissionKey,
+        context: &PermissionCheckContext,
+    ) -> Option<PermissionState> {
         let mut best = None;
         let parent_scopes_key = parent.scopes(key);
 
         for entry in &self.entries {
+            if !entry.scope.matches_context(context) {
+                continue;
+            }
             let matches_parent = parent_scopes_key && entry.key.matches(parent);
             let matches_key = entry.key.matches(key);
             if !matches_parent && !matches_key {
@@ -589,50 +831,90 @@ impl PermissionSet {
             if matches_key && !matches_parent {
                 specificity += 1;
             }
-            push_permission_candidate(&mut best, specificity, entry.state);
+            push_permission_candidate(
+                &mut best,
+                specificity,
+                entry.scope.specificity(),
+                entry.state,
+            );
         }
 
-        best.map(|(_, state)| state)
+        best.map(|(_, _, state)| state)
     }
 
-    /// Returns whether a key is allowed. Unset defaults to deny.
+    /// Returns whether a key is allowed in the global context. Unset defaults to deny.
     #[must_use]
     pub fn allows_key(&self, key: &PermissionKey) -> bool {
         self.resolve_key(key) == Some(PermissionState::Allow)
     }
 
-    /// Returns whether a child key is allowed through itself or a broad parent.
+    /// Returns whether a key is allowed in a permission context. Unset defaults to deny.
+    #[must_use]
+    pub fn allows_key_in(&self, key: &PermissionKey, context: &PermissionCheckContext) -> bool {
+        self.resolve_key_in(key, context) == Some(PermissionState::Allow)
+    }
+
+    /// Returns whether a child key is allowed through itself or a broad parent in the global context.
     #[must_use]
     pub fn allows_scoped_key(&self, parent: &PermissionKey, key: &PermissionKey) -> bool {
         self.resolve_scoped_key(parent, key) == Some(PermissionState::Allow)
     }
 
-    /// Returns whether this set allows a permission expression.
+    /// Returns whether a child key is allowed through itself or a broad parent in a permission context.
+    #[must_use]
+    pub fn allows_scoped_key_in(
+        &self,
+        parent: &PermissionKey,
+        key: &PermissionKey,
+        context: &PermissionCheckContext,
+    ) -> bool {
+        self.resolve_scoped_key_in(parent, key, context) == Some(PermissionState::Allow)
+    }
+
+    /// Returns whether this set allows a permission expression in the global context.
     #[must_use]
     pub fn allows(&self, permission: &PermissionExpr) -> bool {
+        self.allows_in(permission, &PermissionCheckContext::global())
+    }
+
+    /// Returns whether this set allows a permission expression in a permission context.
+    #[must_use]
+    pub fn allows_in(&self, permission: &PermissionExpr, context: &PermissionCheckContext) -> bool {
         match permission {
-            PermissionExpr::Key(key) => self.allows_key(key),
-            PermissionExpr::ScopedKey { parent, key } => self.allows_scoped_key(parent, key),
-            PermissionExpr::All(children) => children.iter().all(|child| self.allows(child)),
-            PermissionExpr::Any(children) => children.iter().any(|child| self.allows(child)),
+            PermissionExpr::Key(key) => self.allows_key_in(key, context),
+            PermissionExpr::ScopedKey { parent, key } => {
+                self.allows_scoped_key_in(parent, key, context)
+            }
+            PermissionExpr::All(children) => {
+                children.iter().all(|child| self.allows_in(child, context))
+            }
+            PermissionExpr::Any(children) => {
+                children.iter().any(|child| self.allows_in(child, context))
+            }
         }
     }
 }
 
 fn push_permission_candidate(
-    best: &mut Option<(usize, PermissionState)>,
-    specificity: usize,
+    best: &mut Option<(usize, usize, PermissionState)>,
+    key_specificity: usize,
+    scope_specificity: usize,
     state: PermissionState,
 ) {
     match best {
-        None => *best = Some((specificity, state)),
-        Some((best_specificity, _)) if specificity > *best_specificity => {
-            *best = Some((specificity, state));
-        }
-        Some((best_specificity, PermissionState::Allow))
-            if specificity == *best_specificity && state == PermissionState::Deny =>
+        None => *best = Some((key_specificity, scope_specificity, state)),
+        Some((best_key_specificity, best_scope_specificity, _))
+            if (key_specificity, scope_specificity)
+                > (*best_key_specificity, *best_scope_specificity) =>
         {
-            *best = Some((specificity, PermissionState::Deny));
+            *best = Some((key_specificity, scope_specificity, state));
+        }
+        Some((best_key_specificity, best_scope_specificity, PermissionState::Allow))
+            if (key_specificity, scope_specificity)
+                == (*best_key_specificity, *best_scope_specificity)
+                && state == PermissionState::Deny =>
+        {
+            *best = Some((key_specificity, scope_specificity, PermissionState::Deny));
         }
         _ => {}
     }
@@ -804,7 +1086,7 @@ impl PermissionGroups {
             self.append_group_permissions(group, &mut effective);
         }
         for entry in player_permissions.entries() {
-            effective.set(entry.key().clone(), entry.state());
+            effective.set_in(entry.key().clone(), entry.scope().clone(), entry.state());
         }
 
         effective
@@ -899,11 +1181,19 @@ mod tests {
     use super::{
         PermissionCatalog, PermissionCatalogSource, PermissionEntry, PermissionExpr,
         PermissionGroups, PermissionGroupsConfig, PermissionKey, PermissionKeyError,
-        PermissionSegment, PermissionSet, PermissionState,
+        PermissionScope, PermissionSegment, PermissionSet, PermissionState,
     };
+    use steel_utils::Identifier;
 
     fn key(value: &str) -> PermissionKey {
         PermissionKey::parse(value).expect("key parses")
+    }
+
+    fn world_context(domain: &str, world: &str) -> super::PermissionCheckContext {
+        super::PermissionCheckContext::for_world(
+            domain.to_owned(),
+            Identifier::new(domain.to_owned(), world.to_owned()),
+        )
     }
 
     #[test]
@@ -1005,6 +1295,45 @@ mod tests {
     }
 
     #[test]
+    fn scoped_permissions_only_apply_in_matching_context() {
+        let fly = key("steel.fly");
+        let permissions = PermissionSet::from_entries([PermissionEntry::allow_scoped(
+            fly.clone(),
+            PermissionScope::domain("lobby"),
+        )]);
+
+        assert!(permissions.allows_key_in(&fly, &world_context("lobby", "spawn")));
+        assert!(!permissions.allows_key_in(&fly, &world_context("survival", "overworld")));
+        assert!(!permissions.allows_key(&fly));
+    }
+
+    #[test]
+    fn scoped_exact_entry_overrides_global_exact_entry() {
+        let fly = key("steel.fly");
+        let permissions = PermissionSet::from_entries([
+            PermissionEntry::deny(fly.clone()),
+            PermissionEntry::allow_scoped(fly.clone(), PermissionScope::domain("lobby")),
+        ]);
+
+        assert!(permissions.allows_key_in(&fly, &world_context("lobby", "spawn")));
+        assert!(!permissions.allows_key_in(&fly, &world_context("survival", "overworld")));
+    }
+
+    #[test]
+    fn more_specific_key_overrides_broader_scoped_entry() {
+        let creative = key("minecraft.command.gamemode.creative");
+        let permissions = PermissionSet::from_entries([
+            PermissionEntry::allow_scoped(
+                key("minecraft.command.*"),
+                PermissionScope::domain("lobby"),
+            ),
+            PermissionEntry::deny(creative.clone()),
+        ]);
+
+        assert!(!permissions.allows_key_in(&creative, &world_context("lobby", "spawn")));
+    }
+
+    #[test]
     fn scoped_key_specific_entry_overrides_parent_grant() {
         let permissions = PermissionSet::from_entries([
             PermissionEntry::allow(key("minecraft.command.gamemode")),
@@ -1020,6 +1349,24 @@ mod tests {
         );
         assert!(!permissions.allows(&PermissionExpr::scoped_key(parent.clone(), creative)));
         assert!(permissions.allows(&PermissionExpr::scoped_key(parent, survival)));
+    }
+
+    #[test]
+    fn scoped_child_entry_overrides_parent_grant_in_matching_context() {
+        let permissions = PermissionSet::from_entries([
+            PermissionEntry::allow(key("minecraft.command.gamemode")),
+            PermissionEntry::deny_scoped(
+                key("minecraft.command.gamemode.creative"),
+                PermissionScope::domain("lobby"),
+            ),
+        ]);
+        let expression = PermissionExpr::scoped_key(
+            key("minecraft.command.gamemode"),
+            key("minecraft.command.gamemode.creative"),
+        );
+
+        assert!(!permissions.allows_in(&expression, &world_context("lobby", "spawn")));
+        assert!(permissions.allows_in(&expression, &world_context("survival", "overworld")));
     }
 
     #[test]
@@ -1090,6 +1437,25 @@ mod tests {
     }
 
     #[test]
+    fn set_in_replaces_only_matching_scope() {
+        let fly = key("steel.fly");
+        let mut permissions = PermissionSet::from_entries([
+            PermissionEntry::allow(fly.clone()),
+            PermissionEntry::deny_scoped(fly.clone(), PermissionScope::domain("lobby")),
+        ]);
+
+        permissions.set_in(
+            fly.clone(),
+            PermissionScope::domain("lobby"),
+            PermissionState::Allow,
+        );
+
+        assert!(permissions.allows_key(&fly));
+        assert!(permissions.allows_key_in(&fly, &world_context("lobby", "spawn")));
+        assert_eq!(permissions.entries().len(), 2);
+    }
+
+    #[test]
     fn unset_removes_exact_permission_entry() {
         let mut permissions = PermissionSet::from_entries([
             PermissionEntry::deny(key("minecraft.command.*")),
@@ -1103,6 +1469,22 @@ mod tests {
             permissions.resolve_key(&key("minecraft.command.give")),
             Some(PermissionState::Deny)
         );
+        assert_eq!(permissions.entries().len(), 1);
+    }
+
+    #[test]
+    fn unset_in_removes_only_matching_scope() {
+        let fly = key("steel.fly");
+        let mut permissions = PermissionSet::from_entries([
+            PermissionEntry::allow(fly.clone()),
+            PermissionEntry::deny_scoped(fly.clone(), PermissionScope::domain("lobby")),
+        ]);
+
+        assert!(permissions.unset_in(&fly, &PermissionScope::domain("lobby")));
+        assert!(!permissions.unset_in(&fly, &PermissionScope::domain("lobby")));
+
+        assert!(permissions.allows_key(&fly));
+        assert!(permissions.allows_key_in(&fly, &world_context("lobby", "spawn")));
         assert_eq!(permissions.entries().len(), 1);
     }
 

@@ -143,7 +143,9 @@ impl RequirementContext for CommandContext {
 
     fn has_permission(&self, permission: &PermissionExpr) -> bool {
         match &self.sender {
-            CommandSender::Player(player) => player.has_permission(permission),
+            CommandSender::Player(player) => {
+                player.has_permission_in(permission, &self.permission_check_context())
+            }
             CommandSender::Console | CommandSender::Rcon => true,
         }
     }

@@ -5,7 +5,7 @@ use glam::DVec3;
 
 use crate::command::sender::CommandSender;
 use crate::entity::Entity;
-use crate::permission::PermissionCatalog;
+use crate::permission::{PermissionCatalog, PermissionCheckContext};
 use crate::player::Player;
 use crate::server::Server;
 use crate::world::World;
@@ -85,5 +85,9 @@ impl CommandContext {
 
     pub(crate) fn permission_catalog(&self) -> Option<&PermissionCatalog> {
         self.permission_catalog.as_ref()
+    }
+
+    pub(crate) fn permission_check_context(&self) -> PermissionCheckContext {
+        PermissionCheckContext::for_world(self.world.domain().to_owned(), self.world.key.clone())
     }
 }
