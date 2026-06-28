@@ -21,8 +21,8 @@ use crate::command::sender::CommandSender;
 use crate::command::{CommandRegistration, CommandRegistrationError};
 use crate::permission::{
     OP_GROUP, PermissionContext, PermissionEntry, PermissionExpr, PermissionGroupConfig,
-    PermissionGroupsConfig, PermissionKey, PermissionKeyError, PermissionResolution,
-    PermissionResolutionSource, PermissionRuleConfig, PermissionRuleContext,
+    PermissionGroupsConfig, PermissionKey, PermissionKeyError, PermissionMetadataCatalog,
+    PermissionResolution, PermissionResolutionSource, PermissionRuleConfig, PermissionRuleContext,
     PermissionRuleContextConfig, PermissionRuleStateConfig, PermissionSegment, PermissionSet,
     PermissionState, PermissionValue, PermissionValueEntry, PermissionValueResolution,
     PermissionValueRuleConfig, PermissionValueSet, parse_permission_value_key,
@@ -554,11 +554,27 @@ impl CommandArgumentParser for PermissionMetadataKeyParser {
     }
 
     fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (ArgumentType::ResourceLocation, None)
+        (
+            ArgumentType::ResourceLocation,
+            Some(SuggestionType::AskServer),
+        )
     }
 
     fn parsed_type(&self) -> &'static str {
         "identifier"
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        _arguments: &ParsedArguments,
+        context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        let Some(catalog) = context.permission_metadata_catalog() else {
+            return Vec::new();
+        };
+
+        metadata_catalog_suggestions(prefix, catalog, context)
     }
 }
 
@@ -2681,6 +2697,23 @@ fn group_metadata_suggestions(
     keys.into_iter().map(SuggestionEntry::new).collect()
 }
 
+fn metadata_catalog_suggestions(
+    prefix: &str,
+    catalog: &PermissionMetadataCatalog,
+    context: &dyn RequirementContext,
+) -> Vec<SuggestionEntry> {
+    catalog
+        .suggestions(prefix)
+        .into_iter()
+        .filter_map(|key| {
+            let Ok(parsed_key) = parse_permission_value_key(key.clone()) else {
+                return None;
+            };
+            can_manage_metadata(context, &parsed_key).then(|| SuggestionEntry::new(key))
+        })
+        .collect()
+}
+
 fn push_managed_group_permission_suggestion(
     permissions: &mut BTreeSet<String>,
     prefix: &str,
@@ -2874,24 +2907,27 @@ fn command_result(count: usize) -> CommandResult {
 mod tests {
     use super::{
         PermissionAssignedGroupParser, PermissionGroupEditError, PermissionGroupNameParser,
-        add_default_group_config, assigned_group_suggestions, can_manage_group,
-        can_manage_metadata, can_manage_permission, delete_group_config,
+        PermissionMetadataKeyParser, add_default_group_config, assigned_group_suggestions,
+        can_manage_group, can_manage_metadata, can_manage_permission, delete_group_config,
         direct_metadata_override_suggestions, direct_permission_override_suggestions,
         group_config_metadata_value, group_config_permission_states, group_metadata_suggestions,
-        group_permission_suggestions, metadata_management_key, metadata_resolution_text,
-        permission_check_result_text, permission_resolution_source_text,
+        group_permission_suggestions, metadata_catalog_suggestions, metadata_management_key,
+        metadata_resolution_text, permission_check_result_text, permission_resolution_source_text,
         permission_rule_context_suffix, remove_default_group_config, set_group_config_metadata,
         set_group_config_permission, set_group_config_priority, unset_group_config_metadata,
         unset_group_config_permission,
     };
-    use crate::command::graph::{CommandArgumentParser, CommandParseErrorKind, ParsedArgument};
+    use crate::command::graph::{
+        CommandArgumentParser, CommandParseErrorKind, ParsedArgument, ParsedArguments,
+    };
     use crate::command::reader::CommandReader;
     use crate::command::requirement::{
         CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext,
     };
     use crate::permission::{
         PermissionContext, PermissionEntry, PermissionGroupConfig, PermissionGroupsConfig,
-        PermissionKey, PermissionResolutionSource, PermissionRuleConfig, PermissionRuleContext,
+        PermissionKey, PermissionMetadataCatalog, PermissionMetadataCatalogSource,
+        PermissionResolutionSource, PermissionRuleConfig, PermissionRuleContext,
         PermissionRuleContextConfig, PermissionRuleStateConfig, PermissionSet, PermissionState,
         PermissionValue, PermissionValueEntry, PermissionValueRuleConfig, PermissionValueSet,
         parse_permission_value_key,
@@ -2900,12 +2936,14 @@ mod tests {
 
     struct TestContext {
         permissions: PermissionSet,
+        metadata_catalog: PermissionMetadataCatalog,
     }
 
     impl TestContext {
         fn empty() -> Self {
             Self {
                 permissions: PermissionSet::new(),
+                metadata_catalog: PermissionMetadataCatalog::new(),
             }
         }
 
@@ -2914,6 +2952,7 @@ mod tests {
                 permissions: PermissionSet::from_entries(
                     permissions.map(|permission| PermissionEntry::allow(key(permission))),
                 ),
+                metadata_catalog: PermissionMetadataCatalog::new(),
             }
         }
     }
@@ -2928,7 +2967,11 @@ mod tests {
         }
     }
 
-    impl CommandInputContext for TestContext {}
+    impl CommandInputContext for TestContext {
+        fn permission_metadata_catalog(&self) -> Option<&PermissionMetadataCatalog> {
+            Some(&self.metadata_catalog)
+        }
+    }
 
     fn key(value: &str) -> PermissionKey {
         PermissionKey::parse(value).expect("permission key parses")
@@ -3035,6 +3078,44 @@ mod tests {
                 priority: 50,
             }),
             "group 'admin' priority 50"
+        );
+    }
+
+    #[test]
+    fn metadata_key_parser_requests_server_suggestions() {
+        assert!(matches!(
+            PermissionMetadataKeyParser.usage().1,
+            Some(steel_protocol::packets::game::SuggestionType::AskServer)
+        ));
+    }
+
+    #[test]
+    fn metadata_catalog_suggestions_only_include_manageable_keys() {
+        let mut context = TestContext::with_permissions(["steel.permission.metadata.plugin.*"]);
+        context.metadata_catalog.insert(
+            metadata_key("plugin:homes"),
+            PermissionMetadataCatalogSource::Config,
+        );
+        context.metadata_catalog.insert(
+            metadata_key("other:homes"),
+            PermissionMetadataCatalogSource::Config,
+        );
+
+        assert_eq!(
+            suggestion_texts(PermissionMetadataKeyParser.suggest(
+                "",
+                &ParsedArguments::default(),
+                &context
+            )),
+            vec!["plugin:homes"]
+        );
+        assert_eq!(
+            suggestion_texts(metadata_catalog_suggestions(
+                "plugin:",
+                &context.metadata_catalog,
+                &context
+            )),
+            vec!["plugin:homes"]
         );
     }
 

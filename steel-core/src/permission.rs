@@ -461,6 +461,94 @@ impl PermissionCatalog {
     }
 }
 
+/// Source that registered a permission metadata key for discovery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PermissionMetadataCatalogSource {
+    /// Metadata key already present in resolved group configuration.
+    Config,
+}
+
+/// One discoverable permission metadata key and the sources that registered it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PermissionMetadataCatalogEntry {
+    key: Identifier,
+    sources: BTreeSet<PermissionMetadataCatalogSource>,
+}
+
+impl PermissionMetadataCatalogEntry {
+    fn new(key: Identifier, source: PermissionMetadataCatalogSource) -> Self {
+        let mut sources = BTreeSet::new();
+        sources.insert(source);
+        Self { key, sources }
+    }
+
+    /// Returns the permission metadata key.
+    #[must_use]
+    pub const fn key(&self) -> &Identifier {
+        &self.key
+    }
+
+    /// Returns the sources that registered this key.
+    #[must_use]
+    pub const fn sources(&self) -> &BTreeSet<PermissionMetadataCatalogSource> {
+        &self.sources
+    }
+}
+
+/// Registry of permission metadata keys available for discovery and autocomplete.
+///
+/// The catalog is not an enforcement boundary. Metadata checks and edits still
+/// accept any syntactically valid key so plugins and config can introduce keys
+/// before Steel has metadata for them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PermissionMetadataCatalog {
+    entries: BTreeMap<String, PermissionMetadataCatalogEntry>,
+}
+
+impl PermissionMetadataCatalog {
+    /// Creates an empty permission metadata catalog.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+        }
+    }
+
+    /// Registers one permission metadata key for discovery.
+    pub fn insert(&mut self, key: Identifier, source: PermissionMetadataCatalogSource) {
+        self.entries
+            .entry(key.to_string())
+            .and_modify(|entry| {
+                entry.sources.insert(source);
+            })
+            .or_insert_with(|| PermissionMetadataCatalogEntry::new(key, source));
+    }
+
+    /// Merges another catalog into this one.
+    pub fn extend(&mut self, other: &Self) {
+        for entry in other.entries.values() {
+            for source in &entry.sources {
+                self.insert(entry.key.clone(), *source);
+            }
+        }
+    }
+
+    /// Returns all catalog entries sorted by metadata key.
+    pub fn entries(&self) -> impl Iterator<Item = &PermissionMetadataCatalogEntry> {
+        self.entries.values()
+    }
+
+    /// Returns suggestion text for keys matching `prefix`.
+    #[must_use]
+    pub fn suggestions(&self, prefix: &str) -> Vec<String> {
+        self.entries
+            .keys()
+            .filter(|key| key.starts_with(prefix))
+            .cloned()
+            .collect()
+    }
+}
+
 /// Persisted permission state for one player.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PermissionSubjectState {
@@ -1953,6 +2041,14 @@ impl PermissionGroupManager {
         self.state.read().groups.register_catalog_entries(catalog);
     }
 
+    /// Adds configured group metadata keys to a discovery catalog.
+    pub fn register_metadata_catalog_entries(&self, catalog: &mut PermissionMetadataCatalog) {
+        self.state
+            .read()
+            .groups
+            .register_metadata_catalog_entries(catalog);
+    }
+
     /// Builds an effective permission set from defaults, assigned groups, and player overrides.
     #[must_use]
     pub fn effective_permissions(
@@ -2214,6 +2310,15 @@ impl PermissionGroups {
         }
     }
 
+    /// Adds configured group metadata keys to a discovery catalog.
+    pub fn register_metadata_catalog_entries(&self, catalog: &mut PermissionMetadataCatalog) {
+        for group in self.groups.values() {
+            for entry in group.values.entries() {
+                catalog.insert(entry.key.clone(), PermissionMetadataCatalogSource::Config);
+            }
+        }
+    }
+
     /// Builds an effective permission set from default groups, assigned groups,
     /// and player-level overrides.
     ///
@@ -2457,10 +2562,10 @@ mod tests {
     use super::{
         PermissionCatalog, PermissionCatalogSource, PermissionEntry, PermissionExpr,
         PermissionGroupManager, PermissionGroupManagerError, PermissionGroups,
-        PermissionGroupsConfig, PermissionKey, PermissionKeyError, PermissionResolutionSource,
-        PermissionRuleContext, PermissionSegment, PermissionSet, PermissionState, PermissionValue,
-        PermissionValueEntry, PermissionValueKeyError, PermissionValueSet,
-        parse_permission_value_key,
+        PermissionGroupsConfig, PermissionKey, PermissionKeyError, PermissionMetadataCatalog,
+        PermissionMetadataCatalogSource, PermissionResolutionSource, PermissionRuleContext,
+        PermissionSegment, PermissionSet, PermissionState, PermissionValue, PermissionValueEntry,
+        PermissionValueKeyError, PermissionValueSet, parse_permission_value_key,
     };
     use steel_utils::Identifier;
     use steel_utils::locks::SyncMutex;
@@ -2943,6 +3048,34 @@ mod tests {
     }
 
     #[test]
+    fn permission_metadata_catalog_deduplicates_and_suggests_sorted_keys() {
+        let mut catalog = PermissionMetadataCatalog::new();
+        catalog.insert(
+            value_key("plugin:homes"),
+            PermissionMetadataCatalogSource::Config,
+        );
+        catalog.insert(
+            value_key("plugin:homes"),
+            PermissionMetadataCatalogSource::Config,
+        );
+        catalog.insert(
+            value_key("other:homes"),
+            PermissionMetadataCatalogSource::Config,
+        );
+
+        assert_eq!(catalog.suggestions("plugin:"), vec!["plugin:homes"]);
+        let entry = catalog
+            .entries()
+            .find(|entry| entry.key().to_string() == "plugin:homes")
+            .expect("catalog entry exists");
+        assert!(
+            entry
+                .sources()
+                .contains(&PermissionMetadataCatalogSource::Config)
+        );
+    }
+
+    #[test]
     fn default_group_config_contains_editable_op_group() {
         let groups = PermissionGroups::from_config(PermissionGroupsConfig::default())
             .expect("default groups config is valid");
@@ -2999,6 +3132,31 @@ mod tests {
                 .entries()
                 .all(|entry| entry.sources().contains(&PermissionCatalogSource::Config))
         );
+    }
+
+    #[test]
+    fn groups_register_config_metadata_in_catalog() {
+        let mut config = PermissionGroupsConfig::default();
+        let default_group = config
+            .groups
+            .get_mut("default")
+            .expect("default group exists");
+        default_group.values.push(super::PermissionValueRuleConfig {
+            key: "plugin:homes".to_owned(),
+            value: PermissionValue::Integer(10),
+            context: None,
+        });
+        let groups = PermissionGroups::from_config(config).expect("groups config is valid");
+        let mut catalog = PermissionMetadataCatalog::new();
+
+        groups.register_metadata_catalog_entries(&mut catalog);
+
+        assert_eq!(catalog.suggestions("plugin:"), vec!["plugin:homes"]);
+        assert!(catalog.entries().all(|entry| {
+            entry
+                .sources()
+                .contains(&PermissionMetadataCatalogSource::Config)
+        }));
     }
 
     #[tokio::test]

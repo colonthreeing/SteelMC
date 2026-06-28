@@ -14,7 +14,9 @@ use crate::{
     world::World,
 };
 
-pub use crate::permission::{PermissionCatalog, PermissionExpr, PermissionKey, PermissionKeyError};
+pub use crate::permission::{
+    PermissionCatalog, PermissionExpr, PermissionKey, PermissionKeyError, PermissionMetadataCatalog,
+};
 
 /// The kind of source attempting to use a command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,6 +72,11 @@ pub trait CommandInputContext: RequirementContext {
 
     /// Returns the permission catalog available for command suggestions.
     fn permission_catalog(&self) -> Option<&PermissionCatalog> {
+        None
+    }
+
+    /// Returns the permission metadata catalog available for command suggestions.
+    fn permission_metadata_catalog(&self) -> Option<&PermissionMetadataCatalog> {
         None
     }
 }
@@ -188,6 +195,10 @@ impl CommandInputContext for CommandContext {
 
     fn permission_catalog(&self) -> Option<&PermissionCatalog> {
         self.permission_catalog()
+    }
+
+    fn permission_metadata_catalog(&self) -> Option<&PermissionMetadataCatalog> {
+        self.permission_metadata_catalog()
     }
 }
 
