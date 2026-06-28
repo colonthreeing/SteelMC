@@ -9,8 +9,8 @@ use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
     BoolParser, CommandArgumentParser, CommandNodeBuilder, CommandParseError,
-    CommandParseErrorKind, CommandResult, LongParser, ParsedArgument, ParsedArguments,
-    PermissionTarget, StringParser, argument, literal,
+    CommandParseErrorKind, CommandResult, IntegerParser, LongParser, ParsedArgument,
+    ParsedArguments, PermissionTarget, StringParser, argument, literal,
 };
 use crate::command::parsers::{
     DomainParser, PermissionGroupParser, PermissionKeyParser, PermissionTargetParser, WorldParser,
@@ -123,6 +123,11 @@ fn group_command() -> CommandNodeBuilder {
                 literal("unset")
                     .requires_additional_subcommand_permission()
                     .then(group_permission_argument(unset_group_permission)),
+            )
+            .then(
+                literal("priority")
+                    .requires_additional_subcommand_permission()
+                    .then(argument("priority", IntegerParser::new()).executes(set_group_priority)),
             )
             .then(group_metadata_arguments())
             .then(contextual_group_permission_arguments()),
@@ -738,7 +743,8 @@ fn group_info(
     };
 
     context.sender.send_message(&TextComponent::plain(format!(
-        "Group '{group}': allow [{}], deny [{}], contextual [{}], metadata [{}]",
+        "Group '{group}': priority {}, allow [{}], deny [{}], contextual [{}], metadata [{}]",
+        group_config.priority,
         permission_key_list_text(&group_config.allow),
         permission_key_list_text(&group_config.deny),
         group_rule_list_text(&group_config.rules),
@@ -810,6 +816,23 @@ fn unset_group_permission(
         group,
         permission,
         rule_context,
+    );
+
+    Ok(CommandResult::success())
+}
+
+fn set_group_priority(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let group = group(arguments)?;
+    let priority = group_priority(arguments)?;
+    require_group_management(context, &group)?;
+    spawn_set_group_priority(
+        Arc::clone(&context.server),
+        context.sender.clone(),
+        group,
+        priority,
     );
 
     Ok(CommandResult::success())
@@ -1269,6 +1292,27 @@ fn spawn_unset_group_permission(
     });
 }
 
+fn spawn_set_group_priority(
+    server: Arc<Server>,
+    sender: CommandSender,
+    group: String,
+    priority: i32,
+) {
+    tokio::spawn(async move {
+        let group_for_update = group.clone();
+        match server
+            .try_update_permission_groups(move |config| {
+                set_group_config_priority(config, &group_for_update, priority)
+            })
+            .await
+        {
+            Ok(true) => send_set_group_priority_summary(&sender, &group, priority),
+            Ok(false) => send_group_priority_unchanged_summary(&sender, &group, priority),
+            Err(error) => send_group_update_error(&sender, error),
+        }
+    });
+}
+
 fn spawn_set_group_metadata(
     server: Arc<Server>,
     sender: CommandSender,
@@ -1644,6 +1688,22 @@ fn unset_group_config_metadata(
     ))
 }
 
+fn set_group_config_priority(
+    config: &mut PermissionGroupsConfig,
+    group: &str,
+    priority: i32,
+) -> Result<bool, PermissionGroupEditError> {
+    let Some(group_config) = config.groups.get_mut(group) else {
+        return Err(PermissionGroupEditError::Missing(group.to_owned()));
+    };
+    if group_config.priority == priority {
+        return Ok(false);
+    }
+
+    group_config.priority = priority;
+    Ok(true)
+}
+
 fn push_group_config_permission(
     group_config: &mut PermissionGroupConfig,
     permission: &PermissionKey,
@@ -1945,6 +2005,18 @@ fn send_set_group_permission_summary(
     )));
 }
 
+fn send_set_group_priority_summary(sender: &CommandSender, group: &str, priority: i32) {
+    sender.send_message(&TextComponent::plain(format!(
+        "Set priority {priority} for group '{group}'"
+    )));
+}
+
+fn send_group_priority_unchanged_summary(sender: &CommandSender, group: &str, priority: i32) {
+    sender.send_message(&TextComponent::plain(format!(
+        "Group '{group}' already has priority {priority}"
+    )));
+}
+
 fn send_set_group_metadata_summary(
     sender: &CommandSender,
     group: &str,
@@ -2063,6 +2135,12 @@ fn targets(arguments: &ParsedArguments) -> Result<Vec<PermissionTarget>, Command
 fn group(arguments: &ParsedArguments) -> Result<String, CommandError> {
     arguments
         .get::<String>("group")
+        .map_err(super::invalid_parsed_argument)
+}
+
+fn group_priority(arguments: &ParsedArguments) -> Result<i32, CommandError> {
+    arguments
+        .get::<i32>("priority")
         .map_err(super::invalid_parsed_argument)
 }
 
@@ -2511,8 +2589,8 @@ mod tests {
         group_config_metadata_value, group_config_permission_states, group_metadata_suggestions,
         group_permission_suggestions, metadata_management_key, permission_check_result_text,
         permission_resolution_source_text, permission_rule_context_suffix,
-        set_group_config_metadata, set_group_config_permission, unset_group_config_metadata,
-        unset_group_config_permission,
+        set_group_config_metadata, set_group_config_permission, set_group_config_priority,
+        unset_group_config_metadata, unset_group_config_permission,
     };
     use crate::command::graph::{CommandArgumentParser, CommandParseErrorKind, ParsedArgument};
     use crate::command::reader::CommandReader;
@@ -2967,6 +3045,34 @@ mod tests {
         assert_eq!(
             group_config_metadata_value(default, &homes, &lobby),
             Some(&PermissionValue::Integer(5))
+        );
+    }
+
+    #[test]
+    fn group_config_priority_edit_updates_group_priority() {
+        let mut config = PermissionGroupsConfig::default();
+        let default = config.groups.get("default").expect("default group exists");
+        assert_eq!(default.priority, 0);
+
+        assert_eq!(
+            set_group_config_priority(&mut config, "default", 50),
+            Ok(true)
+        );
+        let default = config.groups.get("default").expect("default group exists");
+        assert_eq!(default.priority, 50);
+        assert_eq!(
+            set_group_config_priority(&mut config, "default", 50),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn group_config_priority_edit_reports_missing_group() {
+        let mut config = PermissionGroupsConfig::default();
+
+        assert_eq!(
+            set_group_config_priority(&mut config, "missing", 10),
+            Err(PermissionGroupEditError::Missing("missing".to_owned()))
         );
     }
 
