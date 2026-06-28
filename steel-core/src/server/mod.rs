@@ -22,7 +22,7 @@ use crate::entity::{Entity, EntityBase, RemovalReason, SharedEntity, init_entiti
 use crate::chunk_saver::{ChunkStorage, registry::WorldStorageRegistry};
 use crate::level_data::{LevelDataManager, RespawnData, WorldGenerationSettings};
 use crate::permission::{
-    PermissionGroups, PermissionSet, PermissionSubjectIndex, PermissionSubjectState,
+    PermissionGroupManager, PermissionSet, PermissionSubjectIndex, PermissionSubjectState,
 };
 use crate::player::chunk_sender::{ChunkSender, EncodedChunk};
 use crate::player::connection::NetworkConnection;
@@ -94,7 +94,7 @@ fn cap_positive_thread_count(
 }
 
 fn validate_player_permission_group_update(
-    permission_groups: &PermissionGroups,
+    permission_groups: &PermissionGroupManager,
     previous_groups: &[String],
     groups: &[String],
 ) -> Result<(), PlayerPermissionUpdateError> {
@@ -114,7 +114,7 @@ mod tests {
         PlayerPermissionUpdateError, cap_positive_thread_count,
         validate_player_permission_group_update,
     };
-    use crate::permission::PermissionGroups;
+    use crate::permission::{PermissionGroupManager, PermissionGroupsConfig};
 
     #[test]
     fn positive_thread_count_is_capped_to_available_threads() {
@@ -130,7 +130,8 @@ mod tests {
 
     #[test]
     fn permission_group_update_preserves_existing_unknown_groups() {
-        let groups = PermissionGroups::default();
+        let groups = PermissionGroupManager::transient(PermissionGroupsConfig::default())
+            .expect("default permission groups resolve");
 
         assert!(
             validate_player_permission_group_update(
@@ -147,7 +148,8 @@ mod tests {
 
     #[test]
     fn permission_group_update_rejects_new_unknown_groups() {
-        let groups = PermissionGroups::default();
+        let groups = PermissionGroupManager::transient(PermissionGroupsConfig::default())
+            .expect("default permission groups resolve");
 
         assert_eq!(
             validate_player_permission_group_update(&groups, &[], &["legacy".to_owned()]),
@@ -450,6 +452,8 @@ fn discard_restored_entities(entities: &[SharedEntity]) {
 pub struct Server {
     /// Runtime configuration (view distance, compression, etc.).
     pub config: Arc<RuntimeConfig>,
+    /// Runtime permission group state.
+    pub permission_groups: PermissionGroupManager,
     /// The cancellation token for graceful shutdown.
     pub cancel_token: CancellationToken,
     /// The key store for the server.
@@ -496,6 +500,7 @@ impl Server {
         cancel_token: CancellationToken,
         config: RuntimeConfig,
         worlds_config: WorldsConfig,
+        permission_groups: PermissionGroupManager,
     ) -> Result<Self, String> {
         let config = Arc::new(config);
         let start = Instant::now();
@@ -616,6 +621,7 @@ impl Server {
 
         Ok(Server {
             config,
+            permission_groups,
             cancel_token,
             key_store: KeyStore::create(),
             worlds,
@@ -748,7 +754,6 @@ impl Server {
                 let groups = Vec::new();
                 let overrides = PermissionSet::default();
                 let permissions = self
-                    .config
                     .permission_groups
                     .effective_permissions(&groups, &overrides);
                 player.set_permission_state(groups, overrides, permissions);
@@ -765,7 +770,7 @@ impl Server {
         overrides: PermissionSet,
     ) -> u64 {
         for group in &groups {
-            if !self.config.permission_groups.contains_group(group) {
+            if !self.permission_groups.contains_group(group) {
                 log::warn!(
                     "Player {} has unknown permission group {group}",
                     player.gameprofile.name
@@ -774,7 +779,6 @@ impl Server {
         }
 
         let permissions = self
-            .config
             .permission_groups
             .effective_permissions(&groups, &overrides);
         self.set_cached_global_permission_state(
@@ -799,7 +803,7 @@ impl Server {
     ) -> Result<(), PlayerPermissionUpdateError> {
         let previous_groups = player.permission_groups();
         validate_player_permission_group_update(
-            &self.config.permission_groups,
+            &self.permission_groups,
             &previous_groups,
             &groups,
         )?;
@@ -830,7 +834,7 @@ impl Server {
                     .as_ref()
                     .map_or_else(Vec::new, |global| global.groups.clone());
                 validate_player_permission_group_update(
-                    &self.config.permission_groups,
+                    &self.permission_groups,
                     &previous_groups,
                     &groups,
                 )?;

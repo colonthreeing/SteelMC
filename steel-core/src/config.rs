@@ -19,7 +19,6 @@ use text_components::TextComponent;
 use toml::map::Map;
 
 use crate::chunk_saver::registry::WorldStorageRegistry;
-use crate::permission::PermissionGroups;
 use crate::worldgen::registry::{ValidatedWorldGeneratorConfig, WorldGeneratorRegistry};
 
 /// Mojang authentication service hosts used by authlib.
@@ -108,8 +107,6 @@ pub struct RuntimeConfig {
     pub server_links: Option<ServerLinks>,
     /// Optional worker count for the Rayon chunk generation pool.
     pub chunk_generation_threads: Option<usize>,
-    /// Resolved permission groups.
-    pub permission_groups: PermissionGroups,
 }
 
 impl RuntimeConfig {

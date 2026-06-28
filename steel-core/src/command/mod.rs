@@ -431,7 +431,6 @@ impl CommandDispatcher {
     ) -> (Vec<SuggestionEntry>, i32, i32) {
         let mut catalog = self.permission_catalog.clone();
         server
-            .config
             .permission_groups
             .register_catalog_entries(&mut catalog);
         let context = CommandContext::new(sender, server).with_permission_catalog(catalog);

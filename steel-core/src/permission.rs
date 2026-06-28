@@ -5,10 +5,13 @@ use std::{
     error::Error,
     fmt,
     ops::{BitAnd, BitOr},
+    sync::Arc,
 };
 
-use serde::Deserialize;
+use futures::future::BoxFuture;
+use serde::{Deserialize, Serialize};
 use steel_utils::Identifier;
+use steel_utils::locks::{AsyncMutex, SyncRwLock};
 use uuid::Uuid;
 
 /// Built-in operator group name used by `/op`.
@@ -934,7 +937,7 @@ fn push_permission_candidate(
 }
 
 /// Parsed `groups.toml` permissions configuration.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct PermissionGroupsConfig {
     /// Groups every player receives.
@@ -964,7 +967,7 @@ impl Default for PermissionGroupsConfig {
 }
 
 /// One configured permission group.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct PermissionGroupConfig {
     /// Permission keys explicitly allowed by this group.
@@ -976,7 +979,7 @@ pub struct PermissionGroupConfig {
 }
 
 /// One structured `groups.toml` permission rule.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PermissionRuleConfig {
     /// Permission key pattern affected by this rule.
@@ -988,7 +991,7 @@ pub struct PermissionRuleConfig {
 }
 
 /// Configured permission rule state.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PermissionRuleStateConfig {
     /// Explicitly allow the matching permission.
@@ -1007,7 +1010,7 @@ impl PermissionRuleStateConfig {
 }
 
 /// Configured rule-side context for one permission rule.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct PermissionRuleContextConfig {
     /// Domain where the rule applies.
@@ -1051,6 +1054,176 @@ fn parse_loaded_world_context(
     }
 
     Ok(Identifier::new(domain.to_owned(), name.to_owned()))
+}
+
+/// Persists permission group configuration owned outside `steel-core`.
+pub trait PermissionGroupStore: Send + Sync {
+    /// Saves the complete permission group config.
+    fn save_groups(
+        &self,
+        config: PermissionGroupsConfig,
+    ) -> BoxFuture<'static, Result<(), PermissionGroupStoreError>>;
+}
+
+/// Permission group store failure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PermissionGroupStoreError {
+    message: String,
+}
+
+impl PermissionGroupStoreError {
+    /// Creates a store error with a displayable message.
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for PermissionGroupStoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl Error for PermissionGroupStoreError {}
+
+/// Permission group manager update failure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PermissionGroupManagerError {
+    /// Updated config does not resolve to valid permission groups.
+    Config(PermissionConfigError),
+    /// Updated config could not be persisted.
+    Store(PermissionGroupStoreError),
+}
+
+impl fmt::Display for PermissionGroupManagerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Config(error) => write!(f, "invalid permission groups config: {error}"),
+            Self::Store(error) => write!(f, "failed to store permission groups config: {error}"),
+        }
+    }
+}
+
+impl Error for PermissionGroupManagerError {}
+
+impl From<PermissionConfigError> for PermissionGroupManagerError {
+    fn from(value: PermissionConfigError) -> Self {
+        Self::Config(value)
+    }
+}
+
+impl From<PermissionGroupStoreError> for PermissionGroupManagerError {
+    fn from(value: PermissionGroupStoreError) -> Self {
+        Self::Store(value)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PermissionGroupManagerState {
+    config: PermissionGroupsConfig,
+    groups: PermissionGroups,
+}
+
+/// Runtime permission group state with optional config persistence.
+pub struct PermissionGroupManager {
+    updates: AsyncMutex<()>,
+    state: SyncRwLock<PermissionGroupManagerState>,
+    store: Option<Arc<dyn PermissionGroupStore>>,
+}
+
+impl fmt::Debug for PermissionGroupManager {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PermissionGroupManager")
+            .field("state", &self.state)
+            .field("has_store", &self.store.is_some())
+            .finish()
+    }
+}
+
+impl PermissionGroupManager {
+    /// Builds a manager from typed config and an optional persistence store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the provided config does not resolve.
+    pub fn new(
+        config: PermissionGroupsConfig,
+        store: Option<Arc<dyn PermissionGroupStore>>,
+    ) -> Result<Self, PermissionConfigError> {
+        let groups = PermissionGroups::from_config(config.clone())?;
+        Ok(Self {
+            updates: AsyncMutex::new(()),
+            state: SyncRwLock::new(PermissionGroupManagerState { config, groups }),
+            store,
+        })
+    }
+
+    /// Builds a manager without persistence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the provided config does not resolve.
+    pub fn transient(config: PermissionGroupsConfig) -> Result<Self, PermissionConfigError> {
+        Self::new(config, None)
+    }
+
+    /// Returns a snapshot of the current typed config.
+    #[must_use]
+    pub fn config_snapshot(&self) -> PermissionGroupsConfig {
+        self.state.read().config.clone()
+    }
+
+    /// Returns whether a group exists.
+    #[must_use]
+    pub fn contains_group(&self, group: &str) -> bool {
+        self.state.read().groups.contains_group(group)
+    }
+
+    /// Returns configured group names sorted by group name.
+    #[must_use]
+    pub fn group_names(&self) -> Vec<String> {
+        self.state.read().groups.groups().keys().cloned().collect()
+    }
+
+    /// Adds configured group permission keys to a discovery catalog.
+    pub fn register_catalog_entries(&self, catalog: &mut PermissionCatalog) {
+        self.state.read().groups.register_catalog_entries(catalog);
+    }
+
+    /// Builds an effective permission set from defaults, assigned groups, and player overrides.
+    #[must_use]
+    pub fn effective_permissions(
+        &self,
+        assigned_groups: &[String],
+        player_permissions: &PermissionSet,
+    ) -> PermissionSet {
+        self.state
+            .read()
+            .groups
+            .effective_permissions(assigned_groups, player_permissions)
+    }
+
+    /// Replaces the complete group config after validation and optional persistence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the config is invalid or if the configured store rejects the save.
+    pub async fn replace_config(
+        &self,
+        config: PermissionGroupsConfig,
+    ) -> Result<(), PermissionGroupManagerError> {
+        let _guard = self.updates.lock().await;
+        let groups = PermissionGroups::from_config(config.clone())?;
+        if let Some(store) = &self.store {
+            store.save_groups(config.clone()).await?;
+        }
+
+        *self.state.write() = PermissionGroupManagerState { config, groups };
+        Ok(())
+    }
 }
 
 /// Resolved permission groups.
@@ -1333,12 +1506,52 @@ impl Error for PermissionRuleContextConfigError {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::{
         PermissionCatalog, PermissionCatalogSource, PermissionEntry, PermissionExpr,
-        PermissionGroups, PermissionGroupsConfig, PermissionKey, PermissionKeyError,
-        PermissionRuleContext, PermissionSegment, PermissionSet, PermissionState,
+        PermissionGroupManager, PermissionGroupManagerError, PermissionGroups,
+        PermissionGroupsConfig, PermissionKey, PermissionKeyError, PermissionRuleContext,
+        PermissionSegment, PermissionSet, PermissionState,
     };
     use steel_utils::Identifier;
+    use steel_utils::locks::SyncMutex;
+
+    #[derive(Clone, Debug)]
+    struct CapturingGroupStore {
+        saved: Arc<SyncMutex<Vec<PermissionGroupsConfig>>>,
+    }
+
+    impl super::PermissionGroupStore for CapturingGroupStore {
+        fn save_groups(
+            &self,
+            config: PermissionGroupsConfig,
+        ) -> futures::future::BoxFuture<'static, Result<(), super::PermissionGroupStoreError>>
+        {
+            let saved = Arc::clone(&self.saved);
+            Box::pin(async move {
+                saved.lock().push(config);
+                Ok(())
+            })
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct FailingGroupStore;
+
+    impl super::PermissionGroupStore for FailingGroupStore {
+        fn save_groups(
+            &self,
+            _config: PermissionGroupsConfig,
+        ) -> futures::future::BoxFuture<'static, Result<(), super::PermissionGroupStoreError>>
+        {
+            Box::pin(async {
+                Err(super::PermissionGroupStoreError::new(
+                    "configured store failure",
+                ))
+            })
+        }
+    }
 
     fn key(value: &str) -> PermissionKey {
         PermissionKey::parse(value).expect("key parses")
@@ -1349,6 +1562,19 @@ mod tests {
             domain.to_owned(),
             Identifier::new(domain.to_owned(), world.to_owned()),
         )
+    }
+
+    fn config_with_builder_group() -> PermissionGroupsConfig {
+        let mut config = PermissionGroupsConfig::default();
+        config.groups.insert(
+            "builder".to_owned(),
+            super::PermissionGroupConfig {
+                allow: vec!["steel.build".to_owned()],
+                deny: Vec::new(),
+                rules: Vec::new(),
+            },
+        );
+        config
     }
 
     #[test]
@@ -1746,6 +1972,44 @@ mod tests {
                 .entries()
                 .all(|entry| entry.sources().contains(&PermissionCatalogSource::Config))
         );
+    }
+
+    #[tokio::test]
+    async fn permission_group_manager_persists_replacements_before_swapping() {
+        let saved = Arc::new(SyncMutex::new(Vec::new()));
+        let manager = PermissionGroupManager::new(
+            PermissionGroupsConfig::default(),
+            Some(Arc::new(CapturingGroupStore {
+                saved: Arc::clone(&saved),
+            })),
+        )
+        .expect("default groups config resolves");
+        let config = config_with_builder_group();
+
+        manager
+            .replace_config(config.clone())
+            .await
+            .expect("replacement config stores and swaps");
+
+        assert!(manager.contains_group("builder"));
+        assert_eq!(&*saved.lock(), &vec![config]);
+    }
+
+    #[tokio::test]
+    async fn permission_group_manager_keeps_state_when_store_fails() {
+        let manager = PermissionGroupManager::new(
+            PermissionGroupsConfig::default(),
+            Some(Arc::new(FailingGroupStore)),
+        )
+        .expect("default groups config resolves");
+
+        let error = manager
+            .replace_config(config_with_builder_group())
+            .await
+            .expect_err("store failure should reject replacement");
+
+        assert!(matches!(error, PermissionGroupManagerError::Store(_)));
+        assert!(!manager.contains_group("builder"));
     }
 
     #[test]

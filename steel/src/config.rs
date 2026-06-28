@@ -5,15 +5,23 @@
 //! (consumed by the server constructor) and a `RuntimeConfig` (stored on `Server`).
 
 use serde::Deserialize;
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs, io,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::filter::Directive;
 
+use futures::future::BoxFuture;
 use reqwest::Url;
 use steel_core::config::{
     AuthServiceConfig, CompressionInfo, RuntimeConfig, ServerLinks, WorldsConfig,
 };
-use steel_core::permission::{PermissionGroups, PermissionGroupsConfig};
+use steel_core::permission::{
+    PermissionGroupStore, PermissionGroupStoreError, PermissionGroups, PermissionGroupsConfig,
+};
 
 #[cfg(feature = "stand-alone")]
 const DEFAULT_FAVICON: &[u8] = include_bytes!("../../package-content/favicon.png");
@@ -35,7 +43,71 @@ pub struct SteelConfig {
     pub worlds: WorldsConfig,
     /// Permission group configuration from `groups.toml`.
     #[serde(skip, default)]
-    pub groups: PermissionGroups,
+    pub groups: PermissionGroupsConfig,
+    /// Path to the loaded `groups.toml`, if this config came from disk.
+    #[serde(skip, default)]
+    pub groups_path: Option<PathBuf>,
+}
+
+impl SteelConfig {
+    /// Builds the permission group store used by `steel-core` for live group edits.
+    #[must_use]
+    pub fn permission_group_store(&self) -> Option<Arc<dyn PermissionGroupStore>> {
+        self.groups_path.as_ref().map(|path| {
+            Arc::new(FilePermissionGroupStore::new(path.clone())) as Arc<dyn PermissionGroupStore>
+        })
+    }
+}
+
+/// TOML-backed permission group store for `groups.toml`.
+#[derive(Clone, Debug)]
+pub struct FilePermissionGroupStore {
+    path: PathBuf,
+}
+
+impl FilePermissionGroupStore {
+    /// Creates a file-backed permission group store.
+    #[must_use]
+    pub const fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl PermissionGroupStore for FilePermissionGroupStore {
+    fn save_groups(
+        &self,
+        config: PermissionGroupsConfig,
+    ) -> BoxFuture<'static, Result<(), PermissionGroupStoreError>> {
+        let path = self.path.clone();
+        Box::pin(async move {
+            let serialized = toml::to_string_pretty(&config).map_err(|error| {
+                PermissionGroupStoreError::new(format!(
+                    "failed to serialize groups config: {error}"
+                ))
+            })?;
+            write_atomic_config(&path, serialized)
+                .await
+                .map_err(|error| {
+                    PermissionGroupStoreError::new(format!(
+                        "failed to write groups config {}: {error}",
+                        path.display()
+                    ))
+                })
+        })
+    }
+}
+
+async fn write_atomic_config(path: &Path, contents: String) -> io::Result<()> {
+    let Some(parent) = path.parent() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "config path has no parent",
+        ));
+    };
+    tokio::fs::create_dir_all(parent).await?;
+    let temp_path = path.with_extension("toml.tmp");
+    tokio::fs::write(&temp_path, contents).await?;
+    tokio::fs::rename(&temp_path, path).await
 }
 
 const fn empty_worlds_config() -> WorldsConfig {
@@ -120,7 +192,7 @@ pub struct ServerConfig {
 impl ServerConfig {
     /// Extracts the `RuntimeConfig` from this full config.
     #[must_use]
-    pub fn into_runtime_config(self, permission_groups: PermissionGroups) -> RuntimeConfig {
+    pub fn into_runtime_config(self) -> RuntimeConfig {
         RuntimeConfig {
             max_players: self.max_players,
             view_distance: self.view_distance,
@@ -138,7 +210,6 @@ impl ServerConfig {
             compression: self.compression,
             server_links: self.server_links,
             chunk_generation_threads: self.threads.chunk_generation,
-            permission_groups,
         }
     }
 }
@@ -285,6 +356,7 @@ pub fn load_or_create(path: &Path) -> Result<SteelConfig, String> {
         .ok_or_else(|| format!("failed to get config directory for {}", path.display()))?
         .join("groups.toml");
     config.groups = load_or_create_groups(&groups_path)?;
+    config.groups_path = Some(groups_path);
 
     // If icon file doesnt exist, write it
     #[cfg(feature = "stand-alone")]
@@ -314,7 +386,7 @@ fn load_or_create_worlds(path: &Path) -> Result<WorldsConfig, String> {
     }
 }
 
-fn load_or_create_groups(path: &Path) -> Result<PermissionGroups, String> {
+fn load_or_create_groups(path: &Path) -> Result<PermissionGroupsConfig, String> {
     let groups_config = if path.exists() {
         let groups_str = fs::read_to_string(path)
             .map_err(|e| format!("failed to read groups config file {}: {e}", path.display()))?;
@@ -327,8 +399,9 @@ fn load_or_create_groups(path: &Path) -> Result<PermissionGroups, String> {
             .map_err(|e| format!("failed to parse default groups config: {e}"))?
     };
 
-    PermissionGroups::from_config(groups_config)
-        .map_err(|e| format!("failed to validate groups config {}: {e}", path.display()))
+    PermissionGroups::from_config(groups_config.clone())
+        .map_err(|e| format!("failed to validate groups config {}: {e}", path.display()))?;
+    Ok(groups_config)
 }
 
 /// Validates the server configuration.
@@ -396,6 +469,15 @@ fn validate_auth_host(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_config_root(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("steelmc-config-{name}-{suffix}"))
+    }
 
     #[test]
     fn packaged_configs_parse() {
@@ -409,6 +491,35 @@ mod tests {
         let groups_config: PermissionGroupsConfig =
             toml::from_str(DEFAULT_GROUPS).expect("default groups parses");
         PermissionGroups::from_config(groups_config).expect("default groups validate");
+    }
+
+    #[tokio::test]
+    async fn file_permission_group_store_roundtrips_toml_config() {
+        let root = temp_config_root("groups-store");
+        let path = root.join("groups.toml");
+        let store = FilePermissionGroupStore::new(path.clone());
+        let mut config = PermissionGroupsConfig::default();
+        config.groups.insert(
+            "builder".to_owned(),
+            steel_core::permission::PermissionGroupConfig {
+                allow: vec!["steel.build".to_owned()],
+                deny: Vec::new(),
+                rules: Vec::new(),
+            },
+        );
+
+        steel_core::permission::PermissionGroupStore::save_groups(&store, config.clone())
+            .await
+            .expect("groups config should save");
+
+        let written = tokio::fs::read_to_string(&path)
+            .await
+            .expect("groups config should be written");
+        let parsed: PermissionGroupsConfig =
+            toml::from_str(&written).expect("written groups config should parse");
+        assert_eq!(parsed, config);
+
+        let _ = tokio::fs::remove_dir_all(root).await;
     }
 
     #[test]
@@ -463,9 +574,7 @@ mod tests {
             config.server.auth.profiles_host(),
             "https://profiles.example.com"
         );
-        let runtime = config
-            .server
-            .into_runtime_config(PermissionGroups::default());
+        let runtime = config.server.into_runtime_config();
         assert_eq!(runtime.auth.session_host(), "https://session.example.com");
         assert_eq!(runtime.auth.services_host(), "https://services.example.com");
         assert_eq!(runtime.auth.profiles_host(), "https://profiles.example.com");
@@ -483,10 +592,7 @@ mod tests {
         assert_eq!(config.server.threads.chunk_runtime, Some(4));
         assert_eq!(config.server.threads.chunk_generation, Some(5));
         assert_eq!(
-            config
-                .server
-                .into_runtime_config(PermissionGroups::default())
-                .chunk_generation_threads,
+            config.server.into_runtime_config().chunk_generation_threads,
             Some(5)
         );
     }

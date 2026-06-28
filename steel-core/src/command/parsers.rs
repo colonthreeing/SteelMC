@@ -421,7 +421,7 @@ impl CommandArgumentParser for PermissionGroupParser {
                 cursor,
             ));
         };
-        if !server.config.permission_groups.contains_group(&value) {
+        if !server.permission_groups.contains_group(&value) {
             return Err(CommandParseError::new(
                 CommandParseErrorKind::InvalidPermissionGroup(value),
                 cursor,
@@ -455,12 +455,10 @@ impl CommandArgumentParser for PermissionGroupParser {
         };
 
         server
-            .config
             .permission_groups
-            .groups()
-            .keys()
+            .group_names()
+            .into_iter()
             .filter(|group| group.starts_with(prefix))
-            .cloned()
             .map(SuggestionEntry::new)
             .collect()
     }
