@@ -201,6 +201,78 @@ impl CommandArgumentParser for IntegerParser {
     }
 }
 
+/// 64-bit signed integer command argument parser.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LongParser {
+    min: Option<i64>,
+    max: Option<i64>,
+}
+
+impl LongParser {
+    /// Creates an unbounded long integer parser.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            min: None,
+            max: None,
+        }
+    }
+
+    /// Creates a bounded long integer parser.
+    #[must_use]
+    pub const fn bounded(min: Option<i64>, max: Option<i64>) -> Self {
+        Self { min, max }
+    }
+}
+
+impl CommandArgumentParser for LongParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let raw = reader.read_string(StringMode::SingleWord)?;
+        let value = raw.parse::<i64>().map_err(|_| {
+            CommandParseError::new(CommandParseErrorKind::InvalidLong(raw.clone()), cursor)
+        })?;
+
+        if let Some(min) = self.min
+            && value < min
+        {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::LongTooLow { value, min },
+                cursor,
+            ));
+        }
+
+        if let Some(max) = self.max
+            && value > max
+        {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::LongTooHigh { value, max },
+                cursor,
+            ));
+        }
+
+        Ok(ParsedArgument::I64(value))
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        (
+            ArgumentType::Long {
+                min: self.min,
+                max: self.max,
+            },
+            None,
+        )
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "i64"
+    }
+}
+
 /// 32-bit floating-point command argument parser.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FloatParser {

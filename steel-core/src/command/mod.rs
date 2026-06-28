@@ -304,6 +304,9 @@ impl CommandDispatcher {
             CommandParseErrorKind::InvalidInteger(value) => translations::PARSING_INT_INVALID
                 .message([TextComponent::from(value.clone())])
                 .into(),
+            CommandParseErrorKind::InvalidLong(value) => {
+                TextComponent::plain(format!("Invalid long integer '{value}'"))
+            }
             CommandParseErrorKind::IntegerTooLow { value, min } => {
                 translations::ARGUMENT_INTEGER_LOW
                     .message([
@@ -320,6 +323,12 @@ impl CommandDispatcher {
                     ])
                     .into()
             }
+            CommandParseErrorKind::LongTooLow { value, min } => {
+                TextComponent::plain(format!("Long integer {value} must not be less than {min}"))
+            }
+            CommandParseErrorKind::LongTooHigh { value, max } => TextComponent::plain(format!(
+                "Long integer {value} must not be greater than {max}"
+            )),
             CommandParseErrorKind::InvalidFloat(value) => translations::PARSING_FLOAT_INVALID
                 .message([TextComponent::from(value.clone())])
                 .into(),
@@ -383,6 +392,9 @@ impl CommandDispatcher {
             }
             CommandParseErrorKind::InvalidPermissionKey(value) => {
                 TextComponent::plain(format!("Invalid permission '{value}'"))
+            }
+            CommandParseErrorKind::InvalidPermissionMetadataKey(value) => {
+                TextComponent::plain(format!("Invalid permission metadata key '{value}'"))
             }
             CommandParseErrorKind::InvalidPermissionGroup(value) => {
                 TextComponent::plain(format!("Invalid permission group '{value}'"))

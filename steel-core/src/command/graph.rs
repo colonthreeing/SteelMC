@@ -26,7 +26,8 @@ pub use arguments::{
 pub use builder::{CommandNodeBuilder, argument, literal};
 use node::{CommandNode, CommandNodeKind, merge_or_push_node};
 pub use primitive_parsers::{
-    AnchorParser, BoolParser, CommandArgumentParser, FloatParser, IntegerParser, StringParser,
+    AnchorParser, BoolParser, CommandArgumentParser, FloatParser, IntegerParser, LongParser,
+    StringParser,
 };
 use traversal::{parse_children, suggest_children};
 
@@ -89,6 +90,8 @@ pub enum CommandParseErrorKind {
     InvalidAnchor(String),
     /// An integer argument was invalid.
     InvalidInteger(String),
+    /// A long integer argument was invalid.
+    InvalidLong(String),
     /// An integer argument was below its minimum.
     IntegerTooLow {
         /// Parsed value.
@@ -102,6 +105,20 @@ pub enum CommandParseErrorKind {
         value: i32,
         /// Maximum accepted value.
         max: i32,
+    },
+    /// A long integer argument was below its minimum.
+    LongTooLow {
+        /// Parsed value.
+        value: i64,
+        /// Minimum accepted value.
+        min: i64,
+    },
+    /// A long integer argument was above its maximum.
+    LongTooHigh {
+        /// Parsed value.
+        value: i64,
+        /// Maximum accepted value.
+        max: i64,
     },
     /// A float argument was invalid.
     InvalidFloat(String),
@@ -149,6 +166,8 @@ pub enum CommandParseErrorKind {
     InvalidTime(String),
     /// A permission key argument was invalid.
     InvalidPermissionKey(String),
+    /// A permission metadata key argument was invalid.
+    InvalidPermissionMetadataKey(String),
     /// A permission group argument was invalid.
     InvalidPermissionGroup(String),
     /// A parser required live command context that was not available.
@@ -162,8 +181,11 @@ impl CommandParseErrorKind {
             Self::InvalidBool(_)
             | Self::InvalidAnchor(_)
             | Self::InvalidInteger(_)
+            | Self::InvalidLong(_)
             | Self::IntegerTooLow { .. }
             | Self::IntegerTooHigh { .. }
+            | Self::LongTooLow { .. }
+            | Self::LongTooHigh { .. }
             | Self::InvalidFloat(_)
             | Self::FloatTooLow { .. }
             | Self::FloatTooHigh { .. }
@@ -182,6 +204,7 @@ impl CommandParseErrorKind {
             | Self::InvalidComponent(_)
             | Self::InvalidTime(_)
             | Self::InvalidPermissionKey(_)
+            | Self::InvalidPermissionMetadataKey(_)
             | Self::InvalidPermissionGroup(_)
             | Self::MissingCommandContext(_)
             | Self::UnclosedQuote
@@ -762,8 +785,8 @@ mod tests {
         graph::{
             AnchorParser, BoolParser, CommandGraph, CommandGraphError, CommandNodeBuilder,
             CommandNodeNameError, CommandParseErrorKind, CommandRedirectTarget, CommandResult,
-            FloatParser, IntegerParser, ParsedCommandAction, StringParser, SuggestionResult,
-            argument, literal,
+            FloatParser, IntegerParser, LongParser, ParsedCommandAction, StringParser,
+            SuggestionResult, argument, literal,
         },
         reader::StringMode,
         requirement::{
@@ -1168,6 +1191,23 @@ mod tests {
 
         assert_eq!(result.path(), ["give", "count"]);
         assert_eq!(result.arguments().get::<i32>("count"), Ok(12));
+    }
+
+    #[test]
+    fn parses_long_argument() {
+        let graph = graph_with_root(literal("meta").then(
+            argument("value", LongParser::new()).executes(|_, _| Ok(CommandResult::success())),
+        ));
+
+        let result = graph
+            .parse("/meta 9223372036854775807", &player_context())
+            .expect("command parses");
+
+        assert_eq!(result.path(), ["meta", "value"]);
+        assert_eq!(
+            result.arguments().get::<i64>("value"),
+            Ok(9_223_372_036_854_775_807)
+        );
     }
 
     #[test]

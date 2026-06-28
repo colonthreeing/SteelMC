@@ -343,6 +343,12 @@ pub fn parse_permission_value_key(
     if path.contains(':') {
         return Err(PermissionValueKeyError::InvalidFormat);
     }
+    if namespace.split('.').any(str::is_empty) {
+        return Err(PermissionValueKeyError::InvalidNamespace);
+    }
+    if path.split(['.', '/']).any(str::is_empty) {
+        return Err(PermissionValueKeyError::InvalidPath);
+    }
     if !Identifier::validate_namespace(namespace) {
         return Err(PermissionValueKeyError::InvalidNamespace);
     }
@@ -2171,6 +2177,14 @@ mod tests {
         assert_eq!(
             parse_permission_value_key("steel:homes:limit").err(),
             Some(PermissionValueKeyError::InvalidFormat)
+        );
+        assert_eq!(
+            parse_permission_value_key("steel.:homes").err(),
+            Some(PermissionValueKeyError::InvalidNamespace)
+        );
+        assert_eq!(
+            parse_permission_value_key("steel:homes//limit").err(),
+            Some(PermissionValueKeyError::InvalidPath)
         );
     }
 

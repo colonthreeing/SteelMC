@@ -8,8 +8,9 @@ use text_components::TextComponent;
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandArgumentParser, CommandNodeBuilder, CommandParseError, CommandParseErrorKind,
-    CommandResult, ParsedArgument, ParsedArguments, PermissionTarget, argument, literal,
+    BoolParser, CommandArgumentParser, CommandNodeBuilder, CommandParseError,
+    CommandParseErrorKind, CommandResult, LongParser, ParsedArgument, ParsedArguments,
+    PermissionTarget, StringParser, argument, literal,
 };
 use crate::command::parsers::{
     DomainParser, PermissionGroupParser, PermissionKeyParser, PermissionTargetParser, WorldParser,
@@ -21,10 +22,13 @@ use crate::command::{CommandRegistration, CommandRegistrationError};
 use crate::permission::{
     PermissionEntry, PermissionExpr, PermissionGroupConfig, PermissionGroupsConfig, PermissionKey,
     PermissionKeyError, PermissionRuleConfig, PermissionRuleContext, PermissionRuleContextConfig,
-    PermissionRuleStateConfig, PermissionSegment, PermissionSet, PermissionState,
+    PermissionRuleStateConfig, PermissionSegment, PermissionSet, PermissionState, PermissionValue,
+    PermissionValueEntry, PermissionValueRuleConfig, PermissionValueSet,
+    parse_permission_value_key,
 };
 use crate::server::Server;
 use crate::world::World;
+use steel_utils::Identifier;
 
 use super::permission_targets;
 
@@ -64,6 +68,7 @@ fn user_command() -> CommandNodeBuilder {
                     .requires_additional_subcommand_permission()
                     .then(permission_override_argument(unset_permission)),
             )
+            .then(user_metadata_arguments())
             .then(contextual_user_permission_arguments())
             .then(
                 literal("group").then(
@@ -113,6 +118,7 @@ fn group_command() -> CommandNodeBuilder {
                     .requires_additional_subcommand_permission()
                     .then(group_permission_argument(unset_group_permission)),
             )
+            .then(group_metadata_arguments())
             .then(contextual_group_permission_arguments()),
     )
 }
@@ -141,6 +147,72 @@ fn group_permission_argument(
     executor: fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>,
 ) -> CommandNodeBuilder {
     argument("permission", PermissionGroupRuleParser::new("group")).executes(executor)
+}
+
+fn metadata_override_argument(
+    executor: fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>,
+) -> CommandNodeBuilder {
+    argument(
+        "metadata_key",
+        PermissionMetadataOverrideParser::new("targets"),
+    )
+    .executes(executor)
+}
+
+fn group_metadata_argument(
+    executor: fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>,
+) -> CommandNodeBuilder {
+    argument("metadata_key", PermissionGroupMetadataParser::new("group")).executes(executor)
+}
+
+fn user_metadata_arguments() -> CommandNodeBuilder {
+    literal("metadata")
+        .then(metadata_set_arguments(set_metadata))
+        .then(
+            literal("unset")
+                .requires_additional_subcommand_permission()
+                .then(metadata_override_argument(unset_metadata)),
+        )
+}
+
+fn group_metadata_arguments() -> CommandNodeBuilder {
+    literal("metadata")
+        .then(metadata_set_arguments(set_group_metadata))
+        .then(
+            literal("unset")
+                .requires_additional_subcommand_permission()
+                .then(group_metadata_argument(unset_group_metadata)),
+        )
+}
+
+fn metadata_set_arguments(
+    executor: fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>,
+) -> CommandNodeBuilder {
+    literal("set")
+        .requires_additional_subcommand_permission()
+        .then(
+            literal("int").then(
+                argument("metadata_key", PermissionMetadataKeyParser)
+                    .then(argument("metadata_int_value", LongParser::new()).executes(executor)),
+            ),
+        )
+        .then(
+            literal("bool").then(
+                argument("metadata_key", PermissionMetadataKeyParser)
+                    .then(argument("metadata_bool_value", BoolParser).executes(executor)),
+            ),
+        )
+        .then(
+            literal("string").then(
+                argument("metadata_key", PermissionMetadataKeyParser).then(
+                    argument(
+                        "metadata_string_value",
+                        StringParser::new(StringMode::QuotablePhrase),
+                    )
+                    .executes(executor),
+                ),
+            ),
+        )
 }
 
 fn contextual_user_permission_arguments() -> CommandNodeBuilder {
@@ -175,6 +247,7 @@ fn user_permission_context_argument(
                 .requires_additional_subcommand_permission()
                 .then(permission_override_argument(unset_permission)),
         )
+        .then(user_metadata_arguments())
 }
 
 fn contextual_group_permission_arguments() -> CommandNodeBuilder {
@@ -209,6 +282,7 @@ fn group_permission_context_argument(
                 .requires_additional_subcommand_permission()
                 .then(group_permission_argument(unset_group_permission)),
         )
+        .then(group_metadata_arguments())
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -416,6 +490,140 @@ impl CommandArgumentParser for PermissionGroupRuleParser {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct PermissionMetadataKeyParser;
+
+impl CommandArgumentParser for PermissionMetadataKeyParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let value = reader.read_string(StringMode::SingleWord)?;
+        let key = parse_permission_value_key(value.clone()).map_err(|_| {
+            CommandParseError::new(
+                CommandParseErrorKind::InvalidPermissionMetadataKey(value),
+                cursor,
+            )
+        })?;
+
+        Ok(ParsedArgument::Identifier(key))
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        (ArgumentType::ResourceLocation, None)
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "identifier"
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PermissionMetadataOverrideParser {
+    targets_argument: &'static str,
+}
+
+impl PermissionMetadataOverrideParser {
+    const fn new(targets_argument: &'static str) -> Self {
+        Self { targets_argument }
+    }
+}
+
+impl CommandArgumentParser for PermissionMetadataOverrideParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        PermissionMetadataKeyParser.parse(reader, context)
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        (
+            ArgumentType::ResourceLocation,
+            Some(SuggestionType::AskServer),
+        )
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "identifier"
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        arguments: &ParsedArguments,
+        context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        let Ok(targets) = arguments.get::<Vec<PermissionTarget>>(self.targets_argument) else {
+            return Vec::new();
+        };
+        let Some(server) = context.server() else {
+            return Vec::new();
+        };
+
+        let values = targets
+            .into_iter()
+            .filter_map(|target| permission_targets::cached_state(server, &target))
+            .map(|state| state.value_overrides);
+        direct_metadata_override_suggestions(prefix, values, context)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PermissionGroupMetadataParser {
+    group_argument: &'static str,
+}
+
+impl PermissionGroupMetadataParser {
+    const fn new(group_argument: &'static str) -> Self {
+        Self { group_argument }
+    }
+}
+
+impl CommandArgumentParser for PermissionGroupMetadataParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        PermissionMetadataKeyParser.parse(reader, context)
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        (
+            ArgumentType::ResourceLocation,
+            Some(SuggestionType::AskServer),
+        )
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "identifier"
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        arguments: &ParsedArguments,
+        context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        let Ok(group) = arguments.get::<String>(self.group_argument) else {
+            return Vec::new();
+        };
+        let Some(server) = context.server() else {
+            return Vec::new();
+        };
+        let config = server.permission_groups.config_snapshot();
+        let Some(group_config) = config.groups.get(&group) else {
+            return Vec::new();
+        };
+
+        group_metadata_suggestions(prefix, group_config, context)
+    }
+}
+
 fn user_info(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
@@ -472,10 +680,11 @@ fn group_info(
     };
 
     context.sender.send_message(&TextComponent::plain(format!(
-        "Group '{group}': allow [{}], deny [{}], contextual [{}]",
+        "Group '{group}': allow [{}], deny [{}], contextual [{}], metadata [{}]",
         permission_key_list_text(&group_config.allow),
         permission_key_list_text(&group_config.deny),
-        group_rule_list_text(&group_config.rules)
+        group_rule_list_text(&group_config.rules),
+        group_metadata_list_text(&group_config.values)
     )));
 
     Ok(CommandResult::success())
@@ -542,6 +751,48 @@ fn unset_group_permission(
         context.sender.clone(),
         group,
         permission,
+        rule_context,
+    );
+
+    Ok(CommandResult::success())
+}
+
+fn set_group_metadata(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let group = group(arguments)?;
+    let key = metadata_key(arguments)?;
+    let value = metadata_value(arguments)?;
+    let rule_context = permission_rule_context(arguments)?;
+    require_group_management(context, &group)?;
+    require_metadata_management(context, &key)?;
+    spawn_set_group_metadata(
+        Arc::clone(&context.server),
+        context.sender.clone(),
+        group,
+        key,
+        value,
+        rule_context,
+    );
+
+    Ok(CommandResult::success())
+}
+
+fn unset_group_metadata(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let group = group(arguments)?;
+    let key = metadata_key(arguments)?;
+    let rule_context = permission_rule_context(arguments)?;
+    require_group_management(context, &group)?;
+    require_metadata_management(context, &key)?;
+    spawn_unset_group_metadata(
+        Arc::clone(&context.server),
+        context.sender.clone(),
+        group,
+        key,
         rule_context,
     );
 
@@ -740,6 +991,93 @@ fn unset_permission(
     Ok(command_result(changed))
 }
 
+fn set_metadata(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let targets = targets(arguments)?;
+    let key = metadata_key(arguments)?;
+    let value = metadata_value(arguments)?;
+    let rule_context = permission_rule_context(arguments)?;
+    require_metadata_management(context, &key)?;
+    let mut changed = 0;
+    let mut offline_targets = Vec::new();
+
+    for target in targets {
+        if let Some((player, mut target_state)) =
+            permission_targets::online_state(&context.server, &target)
+        {
+            target_state
+                .value_overrides
+                .set_in(key.clone(), rule_context.clone(), value.clone());
+            permission_targets::save_online_state(&context.server, &player, target_state)?;
+            changed += 1;
+        } else {
+            offline_targets.push(target);
+        }
+    }
+
+    let scheduled = offline_targets.len();
+    if changed != 0 || scheduled == 0 {
+        send_set_metadata_summary(&context.sender, &key, &value, &rule_context, changed);
+    }
+    if scheduled != 0 {
+        spawn_set_metadata(
+            Arc::clone(&context.server),
+            context.sender.clone(),
+            offline_targets,
+            key,
+            value,
+            rule_context,
+        );
+    }
+
+    Ok(command_result(changed))
+}
+
+fn unset_metadata(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let targets = targets(arguments)?;
+    let key = metadata_key(arguments)?;
+    let rule_context = permission_rule_context(arguments)?;
+    require_metadata_management(context, &key)?;
+    let mut changed = 0;
+    let mut offline_targets = Vec::new();
+
+    for target in targets {
+        if let Some((player, mut target_state)) =
+            permission_targets::online_state(&context.server, &target)
+        {
+            if !target_state.value_overrides.unset_in(&key, &rule_context) {
+                continue;
+            }
+
+            permission_targets::save_online_state(&context.server, &player, target_state)?;
+            changed += 1;
+        } else {
+            offline_targets.push(target);
+        }
+    }
+
+    let scheduled = offline_targets.len();
+    if changed != 0 || scheduled == 0 {
+        send_unset_metadata_summary(&context.sender, &key, &rule_context, changed);
+    }
+    if scheduled != 0 {
+        spawn_unset_metadata(
+            Arc::clone(&context.server),
+            context.sender.clone(),
+            offline_targets,
+            key,
+            rule_context,
+        );
+    }
+
+    Ok(command_result(changed))
+}
+
 fn spawn_user_info(server: Arc<Server>, sender: CommandSender, targets: Vec<PermissionTarget>) {
     tokio::spawn(async move {
         for target in targets {
@@ -839,6 +1177,71 @@ fn spawn_unset_group_permission(
             Ok(false) => {
                 send_group_permission_not_set_summary(&sender, &group, &permission, &rule_context)
             }
+            Err(error) => send_group_update_error(&sender, error),
+        }
+    });
+}
+
+fn spawn_set_group_metadata(
+    server: Arc<Server>,
+    sender: CommandSender,
+    group: String,
+    key: Identifier,
+    value: PermissionValue,
+    rule_context: PermissionRuleContext,
+) {
+    tokio::spawn(async move {
+        let group_for_update = group.clone();
+        let key_for_update = key.clone();
+        let value_for_update = value.clone();
+        let context_for_update = rule_context.clone();
+        match server
+            .try_update_permission_groups(move |config| {
+                set_group_config_metadata(
+                    config,
+                    &group_for_update,
+                    &key_for_update,
+                    &value_for_update,
+                    &context_for_update,
+                )
+            })
+            .await
+        {
+            Ok(true) => {
+                send_set_group_metadata_summary(&sender, &group, &key, &value, &rule_context)
+            }
+            Ok(false) => {
+                send_group_metadata_unchanged_summary(&sender, &group, &key, &value, &rule_context)
+            }
+            Err(error) => send_group_update_error(&sender, error),
+        }
+    });
+}
+
+fn spawn_unset_group_metadata(
+    server: Arc<Server>,
+    sender: CommandSender,
+    group: String,
+    key: Identifier,
+    rule_context: PermissionRuleContext,
+) {
+    tokio::spawn(async move {
+        let group_for_update = group.clone();
+        let key_for_update = key.clone();
+        let context_for_update = rule_context.clone();
+        match server
+            .try_update_permission_groups(move |config| {
+                unset_group_config_metadata(
+                    config,
+                    &group_for_update,
+                    &key_for_update,
+                    &context_for_update,
+                )
+            })
+            .await
+        {
+            Ok(true) => send_unset_group_metadata_summary(&sender, &group, &key, &rule_context),
+            Ok(false) => send_group_metadata_not_set_summary(&sender, &group, &key, &rule_context),
             Err(error) => send_group_update_error(&sender, error),
         }
     });
@@ -960,6 +1363,61 @@ fn spawn_unset_permission(
     });
 }
 
+fn spawn_set_metadata(
+    server: Arc<Server>,
+    sender: CommandSender,
+    targets: Vec<PermissionTarget>,
+    key: Identifier,
+    value: PermissionValue,
+    rule_context: PermissionRuleContext,
+) {
+    tokio::spawn(async move {
+        let mut changed = 0;
+        for target in targets {
+            let Ok(mut loaded) = load_or_report(&server, &sender, target).await else {
+                continue;
+            };
+            let target_state = loaded.state_mut();
+            target_state
+                .value_overrides
+                .set_in(key.clone(), rule_context.clone(), value.clone());
+
+            if save_or_report(&server, &sender, loaded).await {
+                changed += 1;
+            }
+        }
+
+        send_set_metadata_summary(&sender, &key, &value, &rule_context, changed);
+    });
+}
+
+fn spawn_unset_metadata(
+    server: Arc<Server>,
+    sender: CommandSender,
+    targets: Vec<PermissionTarget>,
+    key: Identifier,
+    rule_context: PermissionRuleContext,
+) {
+    tokio::spawn(async move {
+        let mut changed = 0;
+        for target in targets {
+            let Ok(mut loaded) = load_or_report(&server, &sender, target).await else {
+                continue;
+            };
+            let target_state = loaded.state_mut();
+            if !target_state.value_overrides.unset_in(&key, &rule_context) {
+                continue;
+            }
+
+            if save_or_report(&server, &sender, loaded).await {
+                changed += 1;
+            }
+        }
+
+        send_unset_metadata_summary(&sender, &key, &rule_context, changed);
+    });
+}
+
 async fn load_or_report(
     server: &Arc<Server>,
     sender: &CommandSender,
@@ -1063,6 +1521,42 @@ fn unset_group_config_permission(
     ))
 }
 
+fn set_group_config_metadata(
+    config: &mut PermissionGroupsConfig,
+    group: &str,
+    key: &Identifier,
+    value: &PermissionValue,
+    rule_context: &PermissionRuleContext,
+) -> Result<bool, PermissionGroupEditError> {
+    let Some(group_config) = config.groups.get_mut(group) else {
+        return Err(PermissionGroupEditError::Missing(group.to_owned()));
+    };
+    if group_config_metadata_value(group_config, key, rule_context) == Some(value) {
+        return Ok(false);
+    }
+
+    remove_group_config_metadata(group_config, key, rule_context);
+    push_group_config_metadata(group_config, key, value, rule_context)?;
+    Ok(true)
+}
+
+fn unset_group_config_metadata(
+    config: &mut PermissionGroupsConfig,
+    group: &str,
+    key: &Identifier,
+    rule_context: &PermissionRuleContext,
+) -> Result<bool, PermissionGroupEditError> {
+    let Some(group_config) = config.groups.get_mut(group) else {
+        return Err(PermissionGroupEditError::Missing(group.to_owned()));
+    };
+
+    Ok(remove_group_config_metadata(
+        group_config,
+        key,
+        rule_context,
+    ))
+}
+
 fn push_group_config_permission(
     group_config: &mut PermissionGroupConfig,
     permission: &PermissionKey,
@@ -1081,6 +1575,24 @@ fn push_group_config_permission(
         key: permission.as_str().to_owned(),
         state: permission_rule_state_config(state),
         context: Some(permission_rule_context_config(rule_context)?),
+    });
+    Ok(())
+}
+
+fn push_group_config_metadata(
+    group_config: &mut PermissionGroupConfig,
+    key: &Identifier,
+    value: &PermissionValue,
+    rule_context: &PermissionRuleContext,
+) -> Result<(), PermissionGroupEditError> {
+    group_config.values.push(PermissionValueRuleConfig {
+        key: key.to_string(),
+        value: value.clone(),
+        context: if rule_context.is_global() {
+            None
+        } else {
+            Some(permission_rule_context_config(rule_context)?)
+        },
     });
     Ok(())
 }
@@ -1121,6 +1633,21 @@ fn group_config_permission_states(
     states
 }
 
+fn group_config_metadata_value<'a>(
+    group_config: &'a PermissionGroupConfig,
+    key: &Identifier,
+    rule_context: &PermissionRuleContext,
+) -> Option<&'a PermissionValue> {
+    group_config
+        .values
+        .iter()
+        .find(|value| {
+            value.key == key.to_string()
+                && permission_rule_config_matches(value.context.as_ref(), rule_context)
+        })
+        .map(|value| &value.value)
+}
+
 fn remove_group_config_permission(
     group_config: &mut PermissionGroupConfig,
     permission: &PermissionKey,
@@ -1147,6 +1674,19 @@ fn remove_group_config_permission(
             || !permission_rule_config_matches(rule.context.as_ref(), rule_context)
     });
     changed | (group_config.rules.len() != old_rules_len)
+}
+
+fn remove_group_config_metadata(
+    group_config: &mut PermissionGroupConfig,
+    key: &Identifier,
+    rule_context: &PermissionRuleContext,
+) -> bool {
+    let old_len = group_config.values.len();
+    group_config.values.retain(|value| {
+        value.key != key.to_string()
+            || !permission_rule_config_matches(value.context.as_ref(), rule_context)
+    });
+    group_config.values.len() != old_len
 }
 
 fn permission_rule_context_config(
@@ -1179,10 +1719,13 @@ fn permission_rule_config_matches(
     match (config, rule_context) {
         (None, PermissionRuleContext::Global) => true,
         (Some(config), PermissionRuleContext::Domain(domain)) => {
-            config.domain.as_deref() == Some(domain.as_str()) && config.world.is_none()
+            config.domain.as_deref() == Some(domain.as_str())
+                && config.world.is_none()
+                && config.custom.is_none()
         }
         (Some(config), PermissionRuleContext::World(world)) => {
             config.domain.is_none()
+                && config.custom.is_none()
                 && config
                     .world
                     .as_ref()
@@ -1213,12 +1756,14 @@ fn send_user_info(
 ) {
     let groups = group_list_text(&state.groups);
     let overrides = permission_entries_text(state.overrides.entries());
+    let metadata = metadata_entries_text(state.value_overrides.entries());
 
     sender.send_message(&TextComponent::plain(format!(
-        "{}: groups [{}], direct permissions [{}]",
+        "{}: groups [{}], direct permissions [{}], metadata [{}]",
         target.name(),
         groups,
-        overrides
+        overrides,
+        metadata
     )));
 }
 
@@ -1252,6 +1797,34 @@ fn send_unset_permission_summary(
     )));
 }
 
+fn send_set_metadata_summary(
+    sender: &CommandSender,
+    key: &Identifier,
+    value: &PermissionValue,
+    rule_context: &PermissionRuleContext,
+    count: usize,
+) {
+    sender.send_message(&TextComponent::plain(format!(
+        "Set metadata '{key}'{} = {} for {}",
+        permission_rule_context_suffix(rule_context),
+        permission_value_text(value),
+        target_count_text(count)
+    )));
+}
+
+fn send_unset_metadata_summary(
+    sender: &CommandSender,
+    key: &Identifier,
+    rule_context: &PermissionRuleContext,
+    count: usize,
+) {
+    sender.send_message(&TextComponent::plain(format!(
+        "Unset metadata '{key}'{} for {}",
+        permission_rule_context_suffix(rule_context),
+        target_count_text(count)
+    )));
+}
+
 fn send_set_group_permission_summary(
     sender: &CommandSender,
     state: PermissionState,
@@ -1267,6 +1840,34 @@ fn send_set_group_permission_summary(
     )));
 }
 
+fn send_set_group_metadata_summary(
+    sender: &CommandSender,
+    group: &str,
+    key: &Identifier,
+    value: &PermissionValue,
+    rule_context: &PermissionRuleContext,
+) {
+    sender.send_message(&TextComponent::plain(format!(
+        "Set metadata '{key}'{} = {} for group '{group}'",
+        permission_rule_context_suffix(rule_context),
+        permission_value_text(value)
+    )));
+}
+
+fn send_group_metadata_unchanged_summary(
+    sender: &CommandSender,
+    group: &str,
+    key: &Identifier,
+    value: &PermissionValue,
+    rule_context: &PermissionRuleContext,
+) {
+    sender.send_message(&TextComponent::plain(format!(
+        "Group '{group}' already sets metadata '{key}'{} = {}",
+        permission_rule_context_suffix(rule_context),
+        permission_value_text(value)
+    )));
+}
+
 fn send_group_permission_unchanged_summary(
     sender: &CommandSender,
     state: PermissionState,
@@ -1278,6 +1879,30 @@ fn send_group_permission_unchanged_summary(
         "Group '{group}' already {} permission '{}'{}",
         permission_state_text(state),
         permission.as_str(),
+        permission_rule_context_suffix(rule_context)
+    )));
+}
+
+fn send_unset_group_metadata_summary(
+    sender: &CommandSender,
+    group: &str,
+    key: &Identifier,
+    rule_context: &PermissionRuleContext,
+) {
+    sender.send_message(&TextComponent::plain(format!(
+        "Unset metadata '{key}'{} for group '{group}'",
+        permission_rule_context_suffix(rule_context)
+    )));
+}
+
+fn send_group_metadata_not_set_summary(
+    sender: &CommandSender,
+    group: &str,
+    key: &Identifier,
+    rule_context: &PermissionRuleContext,
+) {
+    sender.send_message(&TextComponent::plain(format!(
+        "Group '{group}' does not set metadata '{key}'{}",
         permission_rule_context_suffix(rule_context)
     )));
 }
@@ -1342,6 +1967,26 @@ fn permission(arguments: &ParsedArguments) -> Result<PermissionKey, CommandError
         .map_err(super::invalid_parsed_argument)
 }
 
+fn metadata_key(arguments: &ParsedArguments) -> Result<Identifier, CommandError> {
+    arguments
+        .get::<Identifier>("metadata_key")
+        .map_err(super::invalid_parsed_argument)
+}
+
+fn metadata_value(arguments: &ParsedArguments) -> Result<PermissionValue, CommandError> {
+    if let Ok(value) = arguments.get::<i64>("metadata_int_value") {
+        return Ok(PermissionValue::Integer(value));
+    }
+    if let Ok(value) = arguments.get::<bool>("metadata_bool_value") {
+        return Ok(PermissionValue::Bool(value));
+    }
+    if let Ok(value) = arguments.get::<String>("metadata_string_value") {
+        return Ok(PermissionValue::String(value));
+    }
+
+    Err(CommandError::failure("Missing metadata value"))
+}
+
 fn permission_rule_context(
     arguments: &ParsedArguments,
 ) -> Result<PermissionRuleContext, CommandError> {
@@ -1390,6 +2035,25 @@ fn group_rule_list_text(rules: &[PermissionRuleConfig]) -> String {
         .join(", ")
 }
 
+fn group_metadata_list_text(values: &[PermissionValueRuleConfig]) -> String {
+    if values.is_empty() {
+        return "none".to_owned();
+    }
+
+    values
+        .iter()
+        .map(|value| {
+            format!(
+                "{} = {}{}",
+                value.key,
+                permission_value_text(&value.value),
+                permission_rule_config_suffix(value.context.as_ref())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn permission_entries_text(entries: &[PermissionEntry]) -> String {
     if entries.is_empty() {
         return "none".to_owned();
@@ -1407,6 +2071,33 @@ fn permission_entries_text(entries: &[PermissionEntry]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn metadata_entries_text(entries: &[PermissionValueEntry]) -> String {
+    if entries.is_empty() {
+        return "none".to_owned();
+    }
+
+    entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "{} = {}{}",
+                entry.key(),
+                permission_value_text(entry.value()),
+                permission_rule_context_suffix(entry.context())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn permission_value_text(value: &PermissionValue) -> String {
+    match value {
+        PermissionValue::Bool(value) => value.to_string(),
+        PermissionValue::Integer(value) => value.to_string(),
+        PermissionValue::String(value) => format!("{value:?}"),
+    }
 }
 
 fn permission_rule_context_suffix(rule_context: &PermissionRuleContext) -> String {
@@ -1457,6 +2148,24 @@ fn direct_permission_override_suggestions(
     permissions.into_iter().map(SuggestionEntry::new).collect()
 }
 
+fn direct_metadata_override_suggestions(
+    prefix: &str,
+    values: impl IntoIterator<Item = PermissionValueSet>,
+    context: &dyn RequirementContext,
+) -> Vec<SuggestionEntry> {
+    let mut keys = BTreeSet::new();
+    for values in values {
+        for entry in values.entries() {
+            let key = entry.key().to_string();
+            if key.starts_with(prefix) && can_manage_metadata(context, entry.key()) {
+                keys.insert(key);
+            }
+        }
+    }
+
+    keys.into_iter().map(SuggestionEntry::new).collect()
+}
+
 fn group_permission_suggestions(
     prefix: &str,
     group_config: &PermissionGroupConfig,
@@ -1474,6 +2183,27 @@ fn group_permission_suggestions(
     }
 
     permissions.into_iter().map(SuggestionEntry::new).collect()
+}
+
+fn group_metadata_suggestions(
+    prefix: &str,
+    group_config: &PermissionGroupConfig,
+    context: &dyn RequirementContext,
+) -> Vec<SuggestionEntry> {
+    let mut keys = BTreeSet::new();
+    for value in &group_config.values {
+        if !value.key.starts_with(prefix) {
+            continue;
+        }
+        let Ok(key) = parse_permission_value_key(value.key.clone()) else {
+            continue;
+        };
+        if can_manage_metadata(context, &key) {
+            keys.insert(key.to_string());
+        }
+    }
+
+    keys.into_iter().map(SuggestionEntry::new).collect()
 }
 
 fn push_managed_group_permission_suggestion(
@@ -1509,6 +2239,45 @@ fn can_manage_permission(context: &dyn RequirementContext, permission: &Permissi
         return false;
     };
     context.has_permission(&PermissionExpr::key(management_permission))
+}
+
+fn require_metadata_management(
+    context: &dyn RequirementContext,
+    key: &Identifier,
+) -> Result<(), CommandError> {
+    if can_manage_metadata(context, key) {
+        Ok(())
+    } else {
+        Err(CommandError::PermissionDenied)
+    }
+}
+
+fn can_manage_metadata(context: &dyn RequirementContext, key: &Identifier) -> bool {
+    let Ok(management_permission) = metadata_management_key(key) else {
+        return false;
+    };
+    context.has_permission(&PermissionExpr::key(management_permission))
+}
+
+fn metadata_management_key(key: &Identifier) -> Result<PermissionKey, PermissionKeyError> {
+    let mut segments = vec![
+        PermissionSegment::parse("steel")?,
+        PermissionSegment::parse("permission")?,
+        PermissionSegment::parse("metadata")?,
+    ];
+    push_metadata_permission_segments(&mut segments, key.namespace.as_ref())?;
+    push_metadata_permission_segments(&mut segments, key.path.as_ref())?;
+    PermissionKey::from_segments(segments)
+}
+
+fn push_metadata_permission_segments(
+    segments: &mut Vec<PermissionSegment>,
+    value: &str,
+) -> Result<(), PermissionKeyError> {
+    for segment in value.split(['.', '/']) {
+        segments.push(PermissionSegment::parse(segment)?);
+    }
+    Ok(())
 }
 
 fn permission_management_key(
@@ -1589,9 +2358,11 @@ fn command_result(count: usize) -> CommandResult {
 mod tests {
     use super::{
         PermissionAssignedGroupParser, PermissionGroupEditError, PermissionGroupNameParser,
-        assigned_group_suggestions, can_manage_group, can_manage_permission,
-        direct_permission_override_suggestions, group_config_permission_states,
-        group_permission_suggestions, permission_rule_context_suffix, set_group_config_permission,
+        assigned_group_suggestions, can_manage_group, can_manage_metadata, can_manage_permission,
+        direct_metadata_override_suggestions, direct_permission_override_suggestions,
+        group_config_metadata_value, group_config_permission_states, group_metadata_suggestions,
+        group_permission_suggestions, metadata_management_key, permission_rule_context_suffix,
+        set_group_config_metadata, set_group_config_permission, unset_group_config_metadata,
         unset_group_config_permission,
     };
     use crate::command::graph::{CommandArgumentParser, CommandParseErrorKind, ParsedArgument};
@@ -1602,7 +2373,9 @@ mod tests {
     use crate::permission::{
         PermissionEntry, PermissionGroupConfig, PermissionGroupsConfig, PermissionKey,
         PermissionRuleConfig, PermissionRuleContext, PermissionRuleContextConfig,
-        PermissionRuleStateConfig, PermissionSet, PermissionState,
+        PermissionRuleStateConfig, PermissionSet, PermissionState, PermissionValue,
+        PermissionValueEntry, PermissionValueRuleConfig, PermissionValueSet,
+        parse_permission_value_key,
     };
     use steel_utils::Identifier;
 
@@ -1640,6 +2413,10 @@ mod tests {
 
     fn key(value: &str) -> PermissionKey {
         PermissionKey::parse(value).expect("permission key parses")
+    }
+
+    fn metadata_key(value: &str) -> Identifier {
+        parse_permission_value_key(value).expect("metadata key parses")
     }
 
     fn suggestion_texts(
@@ -1787,6 +2564,37 @@ mod tests {
     }
 
     #[test]
+    fn manage_metadata_uses_namespaced_key_permission() {
+        let context = TestContext::with_permissions(["steel.permission.metadata.plugin.homes"]);
+        let homes = metadata_key("plugin:homes");
+        let other = metadata_key("plugin:other");
+
+        assert_eq!(
+            metadata_management_key(&homes),
+            Ok(key("steel.permission.metadata.plugin.homes"))
+        );
+        assert!(can_manage_metadata(&context, &homes));
+        assert!(!can_manage_metadata(&context, &other));
+    }
+
+    #[test]
+    fn direct_metadata_suggestions_only_include_manageable_overrides() {
+        let values = PermissionValueSet::from_entries([
+            PermissionValueEntry::new(metadata_key("plugin:homes"), PermissionValue::Integer(10)),
+            PermissionValueEntry::new(metadata_key("other:homes"), PermissionValue::Integer(20)),
+        ]);
+
+        assert_eq!(
+            suggestion_texts(direct_metadata_override_suggestions(
+                "",
+                [values],
+                &TestContext::with_permissions(["steel.permission.metadata.plugin.*"]),
+            )),
+            vec!["plugin:homes"]
+        );
+    }
+
+    #[test]
     fn group_config_global_permission_edits_use_allow_and_deny_lists() {
         let mut config = PermissionGroupsConfig::default();
         let permission = key("steel.fly");
@@ -1902,6 +2710,91 @@ mod tests {
     }
 
     #[test]
+    fn group_config_metadata_edits_use_value_rules() {
+        let mut config = PermissionGroupsConfig::default();
+        let homes = metadata_key("plugin:homes");
+        let lobby = PermissionRuleContext::domain("lobby");
+
+        assert_eq!(
+            set_group_config_metadata(
+                &mut config,
+                "default",
+                &homes,
+                &PermissionValue::Integer(10),
+                &PermissionRuleContext::Global,
+            ),
+            Ok(true)
+        );
+        assert_eq!(
+            set_group_config_metadata(
+                &mut config,
+                "default",
+                &homes,
+                &PermissionValue::Integer(5),
+                &lobby,
+            ),
+            Ok(true)
+        );
+        let default = config.groups.get("default").expect("default group exists");
+        assert_eq!(default.values.len(), 2);
+        assert_eq!(
+            group_config_metadata_value(default, &homes, &PermissionRuleContext::Global),
+            Some(&PermissionValue::Integer(10))
+        );
+        assert_eq!(
+            group_config_metadata_value(default, &homes, &lobby),
+            Some(&PermissionValue::Integer(5))
+        );
+
+        assert_eq!(
+            set_group_config_metadata(
+                &mut config,
+                "default",
+                &homes,
+                &PermissionValue::Integer(5),
+                &lobby,
+            ),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn group_config_metadata_unset_is_context_exact() {
+        let mut config = PermissionGroupsConfig::default();
+        let homes = metadata_key("plugin:homes");
+        let global = PermissionRuleContext::Global;
+        let lobby = PermissionRuleContext::domain("lobby");
+
+        set_group_config_metadata(
+            &mut config,
+            "default",
+            &homes,
+            &PermissionValue::Integer(10),
+            &global,
+        )
+        .expect("global metadata stores");
+        set_group_config_metadata(
+            &mut config,
+            "default",
+            &homes,
+            &PermissionValue::Integer(5),
+            &lobby,
+        )
+        .expect("contextual metadata stores");
+
+        assert_eq!(
+            unset_group_config_metadata(&mut config, "default", &homes, &global),
+            Ok(true)
+        );
+        let default = config.groups.get("default").expect("default group exists");
+        assert_eq!(default.values.len(), 1);
+        assert_eq!(
+            group_config_metadata_value(default, &homes, &lobby),
+            Some(&PermissionValue::Integer(5))
+        );
+    }
+
+    #[test]
     fn group_config_unset_is_context_exact() {
         let mut config = PermissionGroupsConfig::default();
         let permission = key("steel.fly");
@@ -1978,6 +2871,36 @@ mod tests {
                 &TestContext::with_permissions(["steel.permission.manage.steel.*"]),
             )),
             vec!["steel.chat", "steel.fly", "steel.stop"]
+        );
+    }
+
+    #[test]
+    fn group_metadata_suggestions_only_include_manageable_group_values() {
+        let group = PermissionGroupConfig {
+            allow: Vec::new(),
+            deny: Vec::new(),
+            rules: Vec::new(),
+            values: vec![
+                PermissionValueRuleConfig {
+                    key: "plugin:homes".to_owned(),
+                    value: PermissionValue::Integer(10),
+                    context: None,
+                },
+                PermissionValueRuleConfig {
+                    key: "other:homes".to_owned(),
+                    value: PermissionValue::Integer(20),
+                    context: None,
+                },
+            ],
+        };
+
+        assert_eq!(
+            suggestion_texts(group_metadata_suggestions(
+                "",
+                &group,
+                &TestContext::with_permissions(["steel.permission.metadata.plugin.*"]),
+            )),
+            vec!["plugin:homes"]
         );
     }
 }

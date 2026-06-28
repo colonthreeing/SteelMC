@@ -47,7 +47,7 @@
     "permission_value_key": {
       "type": "string",
       "description": "Namespaced permission metadata key.",
-      "pattern": "^[a-z0-9_.-]+:[a-z0-9_.-/]+$"
+      "pattern": "^[a-z0-9_-]+(\\.[a-z0-9_-]+)*:[a-z0-9_-]+([./][a-z0-9_-]+)*$"
     },
     "permission_value": {
       "description": "Typed permission metadata value",

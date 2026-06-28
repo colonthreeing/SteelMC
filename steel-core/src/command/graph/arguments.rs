@@ -24,10 +24,14 @@ pub enum ParsedArgument {
     Anchor(EntityAnchor),
     /// 32-bit signed integer argument.
     I32(i32),
+    /// 64-bit signed integer argument.
+    I64(i64),
     /// 32-bit floating-point argument.
     F32(f32),
     /// String-like argument.
     String(String),
+    /// Namespaced identifier argument.
+    Identifier(Identifier),
     /// Permission key argument.
     PermissionKey(PermissionKey),
     /// Game mode argument.
@@ -173,8 +177,10 @@ impl fmt::Debug for ParsedArgument {
             Self::Bool(value) => f.debug_tuple("Bool").field(value).finish(),
             Self::Anchor(value) => f.debug_tuple("Anchor").field(value).finish(),
             Self::I32(value) => f.debug_tuple("I32").field(value).finish(),
+            Self::I64(value) => f.debug_tuple("I64").field(value).finish(),
             Self::F32(value) => f.debug_tuple("F32").field(value).finish(),
             Self::String(value) => f.debug_tuple("String").field(value).finish(),
+            Self::Identifier(value) => f.debug_tuple("Identifier").field(value).finish(),
             Self::PermissionKey(value) => f.debug_tuple("PermissionKey").field(value).finish(),
             Self::GameMode(value) => f.debug_tuple("GameMode").field(value).finish(),
             Self::Players(value) => f
@@ -253,8 +259,10 @@ impl ParsedArgument {
             Self::Bool(_) => "bool",
             Self::Anchor(_) => "anchor",
             Self::I32(_) => "i32",
+            Self::I64(_) => "i64",
             Self::F32(_) => "f32",
             Self::String(_) => "string",
+            Self::Identifier(_) => "identifier",
             Self::PermissionKey(_) => "permission_key",
             Self::GameMode(_) => "gamemode",
             Self::Players(_) => "players",
@@ -334,6 +342,17 @@ impl FromParsedArgument for i32 {
     }
 }
 
+impl FromParsedArgument for i64 {
+    const TYPE_NAME: &'static str = "i64";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::I64(value) = value else {
+            return None;
+        };
+        Some(*value)
+    }
+}
+
 impl FromParsedArgument for f32 {
     const TYPE_NAME: &'static str = "f32";
 
@@ -350,6 +369,17 @@ impl FromParsedArgument for String {
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
         let ParsedArgument::String(value) = value else {
+            return None;
+        };
+        Some(value.clone())
+    }
+}
+
+impl FromParsedArgument for Identifier {
+    const TYPE_NAME: &'static str = "identifier";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::Identifier(value) = value else {
             return None;
         };
         Some(value.clone())
