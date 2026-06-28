@@ -22,8 +22,8 @@ use crate::entity::{Entity, EntityBase, RemovalReason, SharedEntity, init_entiti
 use crate::chunk_saver::{ChunkStorage, registry::WorldStorageRegistry};
 use crate::level_data::{LevelDataManager, RespawnData, WorldGenerationSettings};
 use crate::permission::{
-    PermissionGroupManager, PermissionGroupManagerError, PermissionGroupsConfig, PermissionSet,
-    PermissionSubjectIndex, PermissionSubjectState,
+    PermissionGroupManager, PermissionGroupManagerError, PermissionGroupUpdateError,
+    PermissionGroupsConfig, PermissionSet, PermissionSubjectIndex, PermissionSubjectState,
 };
 use crate::player::chunk_sender::{ChunkSender, EncodedChunk};
 use crate::player::connection::NetworkConnection;
@@ -890,6 +890,28 @@ impl Server {
         self.permission_groups.update_config(update).await?;
         self.queue_online_permission_group_refresh();
         Ok(())
+    }
+
+    /// Mutates permission group config with caller-side validation and refreshes online players.
+    ///
+    /// The mutation runs under the permission group manager update lock, so
+    /// concurrent runtime edits are applied to the latest config state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a caller edit error, or an error if the updated config is invalid
+    /// or cannot be persisted.
+    pub async fn try_update_permission_groups<T, E>(
+        self: &Arc<Self>,
+        update: impl FnOnce(&mut PermissionGroupsConfig) -> Result<T, E> + Send,
+    ) -> Result<T, PermissionGroupUpdateError<E>>
+    where
+        T: Send,
+        E: Send,
+    {
+        let result = self.permission_groups.try_update_config(update).await?;
+        self.queue_online_permission_group_refresh();
+        Ok(result)
     }
 
     fn set_cached_global_permission_state(

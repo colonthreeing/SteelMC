@@ -1121,6 +1121,32 @@ impl From<PermissionGroupStoreError> for PermissionGroupManagerError {
     }
 }
 
+/// Permission group manager update failure with a caller-provided edit rejection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PermissionGroupUpdateError<E> {
+    /// The caller rejected the edit before persistence.
+    Edit(E),
+    /// The updated config failed validation or persistence.
+    Manager(PermissionGroupManagerError),
+}
+
+impl<E: fmt::Display> fmt::Display for PermissionGroupUpdateError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Edit(error) => write!(f, "{error}"),
+            Self::Manager(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl<E> Error for PermissionGroupUpdateError<E> where E: Error + 'static {}
+
+impl<E> From<PermissionGroupManagerError> for PermissionGroupUpdateError<E> {
+    fn from(value: PermissionGroupManagerError) -> Self {
+        Self::Manager(value)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PermissionGroupManagerState {
     config: PermissionGroupsConfig,
@@ -1233,6 +1259,34 @@ impl PermissionGroupManager {
         let mut config = self.state.read().config.clone();
         update(&mut config);
         self.replace_config_locked(config).await
+    }
+
+    /// Updates the current group config under the manager update lock with a fallible edit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an edit error from the caller, or an error if the updated config
+    /// is invalid or cannot be persisted.
+    pub async fn try_update_config<T, E>(
+        &self,
+        update: impl FnOnce(&mut PermissionGroupsConfig) -> Result<T, E> + Send,
+    ) -> Result<T, PermissionGroupUpdateError<E>>
+    where
+        T: Send,
+        E: Send,
+    {
+        let _guard = self.updates.lock().await;
+        let current = self.state.read().config.clone();
+        let mut config = current.clone();
+        let result = update(&mut config).map_err(PermissionGroupUpdateError::Edit)?;
+        if config == current {
+            return Ok(result);
+        }
+
+        self.replace_config_locked(config)
+            .await
+            .map_err(PermissionGroupUpdateError::Manager)?;
+        Ok(result)
     }
 
     async fn replace_config_locked(
@@ -2045,6 +2099,84 @@ mod tests {
 
         assert!(manager.contains_group("builder"));
         assert!(saved.lock()[0].groups.contains_key("builder"));
+    }
+
+    #[tokio::test]
+    async fn permission_group_manager_try_update_returns_edit_result_after_store() {
+        let saved = Arc::new(SyncMutex::new(Vec::new()));
+        let manager = PermissionGroupManager::new(
+            PermissionGroupsConfig::default(),
+            Some(Arc::new(CapturingGroupStore {
+                saved: Arc::clone(&saved),
+            })),
+        )
+        .expect("default groups config resolves");
+
+        let result = manager
+            .try_update_config(|config| {
+                config.groups.insert(
+                    "builder".to_owned(),
+                    super::PermissionGroupConfig {
+                        allow: vec!["steel.build".to_owned()],
+                        deny: Vec::new(),
+                        rules: Vec::new(),
+                    },
+                );
+                Ok::<_, &'static str>("builder")
+            })
+            .await
+            .expect("config update stores and swaps");
+
+        assert_eq!(result, "builder");
+        assert!(manager.contains_group("builder"));
+        assert!(saved.lock()[0].groups.contains_key("builder"));
+    }
+
+    #[tokio::test]
+    async fn permission_group_manager_try_update_skips_store_when_unchanged() {
+        let saved = Arc::new(SyncMutex::new(Vec::new()));
+        let manager = PermissionGroupManager::new(
+            PermissionGroupsConfig::default(),
+            Some(Arc::new(CapturingGroupStore {
+                saved: Arc::clone(&saved),
+            })),
+        )
+        .expect("default groups config resolves");
+
+        let result = manager
+            .try_update_config(|_config| Ok::<_, &'static str>(false))
+            .await
+            .expect("unchanged update returns result");
+
+        assert!(!result);
+        assert!(saved.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn permission_group_manager_try_update_keeps_state_on_edit_error() {
+        let saved = Arc::new(SyncMutex::new(Vec::new()));
+        let manager = PermissionGroupManager::new(
+            PermissionGroupsConfig::default(),
+            Some(Arc::new(CapturingGroupStore {
+                saved: Arc::clone(&saved),
+            })),
+        )
+        .expect("default groups config resolves");
+
+        let error = manager
+            .try_update_config(|config| {
+                config.groups.insert(
+                    "builder".to_owned(),
+                    super::PermissionGroupConfig::default(),
+                );
+                Err::<(), _>("rejected")
+            })
+            .await
+            .expect_err("edit error rejects update");
+
+        assert_eq!(error, super::PermissionGroupUpdateError::Edit("rejected"));
+        assert!(!manager.contains_group("builder"));
+        assert!(saved.lock().is_empty());
     }
 
     #[tokio::test]

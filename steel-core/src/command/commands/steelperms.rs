@@ -1,6 +1,6 @@
 //! Steel permission management commands.
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::{collections::BTreeSet, fmt, sync::Arc};
 
 use steel_protocol::packets::game::{ArgumentType, SuggestionEntry, SuggestionType};
 use text_components::TextComponent;
@@ -19,8 +19,9 @@ use crate::command::requirement::{CommandInputContext, RequirementContext};
 use crate::command::sender::CommandSender;
 use crate::command::{CommandRegistration, CommandRegistrationError};
 use crate::permission::{
-    PermissionEntry, PermissionExpr, PermissionKey, PermissionKeyError, PermissionRuleContext,
-    PermissionSegment, PermissionSet, PermissionState,
+    PermissionEntry, PermissionExpr, PermissionGroupConfig, PermissionGroupsConfig, PermissionKey,
+    PermissionKeyError, PermissionRuleConfig, PermissionRuleContext, PermissionRuleContextConfig,
+    PermissionRuleStateConfig, PermissionSegment, PermissionSet, PermissionState,
 };
 use crate::server::Server;
 use crate::world::World;
@@ -34,50 +35,93 @@ pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationE
 /// Handler for the "steelperms" command group.
 #[must_use]
 pub fn command() -> CommandNodeBuilder {
-    literal("steelperms").then(
-        literal("user").then(
-            argument("targets", PermissionTargetParser)
-                .then(
-                    literal("info")
-                        .requires_subcommand_permission()
-                        .executes(user_info),
-                )
-                .then(
-                    literal("allow")
+    literal("steelperms")
+        .then(user_command())
+        .then(group_command())
+        .then(groups_command())
+}
+
+fn user_command() -> CommandNodeBuilder {
+    literal("user").then(
+        argument("targets", PermissionTargetParser)
+            .then(
+                literal("info")
+                    .requires_subcommand_permission()
+                    .executes(user_info),
+            )
+            .then(
+                literal("allow")
+                    .requires_additional_subcommand_permission()
+                    .then(permission_key_argument(allow_permission)),
+            )
+            .then(
+                literal("deny")
+                    .requires_additional_subcommand_permission()
+                    .then(permission_key_argument(deny_permission)),
+            )
+            .then(
+                literal("unset")
+                    .requires_additional_subcommand_permission()
+                    .then(permission_override_argument(unset_permission)),
+            )
+            .then(contextual_user_permission_arguments())
+            .then(
+                literal("group").then(
+                    literal("add")
                         .requires_additional_subcommand_permission()
-                        .then(permission_key_argument(allow_permission))
-                        .then(contextual_permission_key_argument(allow_permission)),
-                )
-                .then(
-                    literal("deny")
-                        .requires_additional_subcommand_permission()
-                        .then(permission_key_argument(deny_permission))
-                        .then(contextual_permission_key_argument(deny_permission)),
-                )
-                .then(
-                    literal("unset")
-                        .requires_additional_subcommand_permission()
-                        .then(permission_override_argument(unset_permission))
-                        .then(contextual_permission_override_argument(unset_permission)),
-                )
-                .then(
-                    literal("group").then(
-                        literal("add")
-                            .requires_additional_subcommand_permission()
-                            .then(argument("group", PermissionGroupParser).executes(add_group)),
-                    ),
-                )
-                .then(
-                    literal("group").then(
-                        literal("remove")
-                            .requires_additional_subcommand_permission()
-                            .then(
-                                argument("group", PermissionAssignedGroupParser::new("targets"))
-                                    .executes(remove_group),
-                            ),
-                    ),
+                        .then(argument("group", PermissionGroupParser).executes(add_group)),
                 ),
-        ),
+            )
+            .then(
+                literal("group").then(
+                    literal("remove")
+                        .requires_additional_subcommand_permission()
+                        .then(
+                            argument("group", PermissionAssignedGroupParser::new("targets"))
+                                .executes(remove_group),
+                        ),
+                ),
+            ),
+    )
+}
+
+fn group_command() -> CommandNodeBuilder {
+    literal("group").then(
+        argument("group", PermissionGroupNameParser)
+            .then(
+                literal("create")
+                    .requires_additional_subcommand_permission()
+                    .executes(create_group),
+            )
+            .then(
+                literal("info")
+                    .requires_subcommand_permission()
+                    .executes(group_info),
+            )
+            .then(
+                literal("allow")
+                    .requires_additional_subcommand_permission()
+                    .then(permission_key_argument(allow_group_permission)),
+            )
+            .then(
+                literal("deny")
+                    .requires_additional_subcommand_permission()
+                    .then(permission_key_argument(deny_group_permission)),
+            )
+            .then(
+                literal("unset")
+                    .requires_additional_subcommand_permission()
+                    .then(group_permission_argument(unset_group_permission)),
+            )
+            .then(contextual_group_permission_arguments()),
+    )
+}
+
+fn groups_command() -> CommandNodeBuilder {
+    literal("groups").then(
+        literal("list")
+            .requires_subcommand_permission()
+            .executes(group_list),
     )
 }
 
@@ -93,37 +137,77 @@ fn permission_override_argument(
     argument("permission", PermissionOverrideParser::new("targets")).executes(executor)
 }
 
-fn contextual_permission_key_argument(
+fn group_permission_argument(
     executor: fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>,
 ) -> CommandNodeBuilder {
+    argument("permission", PermissionGroupRuleParser::new("group")).executes(executor)
+}
+
+fn contextual_user_permission_arguments() -> CommandNodeBuilder {
     literal("context")
+        .then(literal("domain").then(user_permission_context_argument(
+            "context_domain",
+            DomainParser,
+        )))
+        .then(literal("world").then(user_permission_context_argument(
+            "context_world",
+            WorldParser,
+        )))
+}
+
+fn user_permission_context_argument(
+    name: &'static str,
+    parser: impl CommandArgumentParser + Clone + 'static,
+) -> CommandNodeBuilder {
+    argument(name, parser)
         .then(
-            literal("domain").then(
-                argument("context_domain", DomainParser)
-                    .then(argument("permission", PermissionKeyParser).executes(executor)),
-            ),
+            literal("allow")
+                .requires_additional_subcommand_permission()
+                .then(permission_key_argument(allow_permission)),
         )
         .then(
-            literal("world").then(
-                argument("context_world", WorldParser)
-                    .then(argument("permission", PermissionKeyParser).executes(executor)),
-            ),
+            literal("deny")
+                .requires_additional_subcommand_permission()
+                .then(permission_key_argument(deny_permission)),
+        )
+        .then(
+            literal("unset")
+                .requires_additional_subcommand_permission()
+                .then(permission_override_argument(unset_permission)),
         )
 }
 
-fn contextual_permission_override_argument(
-    executor: fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>,
-) -> CommandNodeBuilder {
+fn contextual_group_permission_arguments() -> CommandNodeBuilder {
     literal("context")
+        .then(literal("domain").then(group_permission_context_argument(
+            "context_domain",
+            DomainParser,
+        )))
+        .then(literal("world").then(group_permission_context_argument(
+            "context_world",
+            WorldParser,
+        )))
+}
+
+fn group_permission_context_argument(
+    name: &'static str,
+    parser: impl CommandArgumentParser + Clone + 'static,
+) -> CommandNodeBuilder {
+    argument(name, parser)
         .then(
-            literal("domain").then(argument("context_domain", DomainParser).then(
-                argument("permission", PermissionOverrideParser::new("targets")).executes(executor),
-            )),
+            literal("allow")
+                .requires_additional_subcommand_permission()
+                .then(permission_key_argument(allow_group_permission)),
         )
         .then(
-            literal("world").then(argument("context_world", WorldParser).then(
-                argument("permission", PermissionOverrideParser::new("targets")).executes(executor),
-            )),
+            literal("deny")
+                .requires_additional_subcommand_permission()
+                .then(permission_key_argument(deny_group_permission)),
+        )
+        .then(
+            literal("unset")
+                .requires_additional_subcommand_permission()
+                .then(group_permission_argument(unset_group_permission)),
         )
 }
 
@@ -234,6 +318,104 @@ impl CommandArgumentParser for PermissionAssignedGroupParser {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct PermissionGroupNameParser;
+
+impl CommandArgumentParser for PermissionGroupNameParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let value = reader.read_string(StringMode::SingleWord)?;
+        PermissionSegment::parse(value.clone()).map_err(|_| {
+            CommandParseError::new(
+                CommandParseErrorKind::InvalidPermissionGroup(value.clone()),
+                cursor,
+            )
+        })?;
+
+        Ok(ParsedArgument::String(value))
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        PermissionGroupParser.usage()
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        PermissionGroupParser.parsed_type()
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        _arguments: &ParsedArguments,
+        context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        let Some(server) = context.server() else {
+            return Vec::new();
+        };
+
+        server
+            .permission_groups
+            .group_names()
+            .into_iter()
+            .filter(|group| group.starts_with(prefix))
+            .map(SuggestionEntry::new)
+            .collect()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PermissionGroupRuleParser {
+    group_argument: &'static str,
+}
+
+impl PermissionGroupRuleParser {
+    const fn new(group_argument: &'static str) -> Self {
+        Self { group_argument }
+    }
+}
+
+impl CommandArgumentParser for PermissionGroupRuleParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        PermissionKeyParser.parse(reader, context)
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        PermissionKeyParser.usage()
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        PermissionKeyParser.parsed_type()
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        arguments: &ParsedArguments,
+        context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        let Ok(group) = arguments.get::<String>(self.group_argument) else {
+            return Vec::new();
+        };
+        let Some(server) = context.server() else {
+            return Vec::new();
+        };
+        let config = server.permission_groups.config_snapshot();
+        let Some(group_config) = config.groups.get(&group) else {
+            return Vec::new();
+        };
+
+        group_permission_suggestions(prefix, group_config, context)
+    }
+}
+
 fn user_info(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
@@ -261,6 +443,109 @@ fn user_info(
     }
 
     Ok(command_result(reported))
+}
+
+fn group_list(
+    context: &mut CommandContext,
+    _arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let groups = context.server.permission_groups.group_names();
+    context.sender.send_message(&TextComponent::plain(format!(
+        "Permission groups: {}",
+        groups.join(", ")
+    )));
+
+    Ok(command_result(groups.len()))
+}
+
+fn group_info(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let group = group(arguments)?;
+    require_group_management(context, &group)?;
+    let config = context.server.permission_groups.config_snapshot();
+    let Some(group_config) = config.groups.get(&group) else {
+        return Err(CommandError::failure(format!(
+            "Unknown permission group '{group}'"
+        )));
+    };
+
+    context.sender.send_message(&TextComponent::plain(format!(
+        "Group '{group}': allow [{}], deny [{}], contextual [{}]",
+        permission_key_list_text(&group_config.allow),
+        permission_key_list_text(&group_config.deny),
+        group_rule_list_text(&group_config.rules)
+    )));
+
+    Ok(CommandResult::success())
+}
+
+fn create_group(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let group = group(arguments)?;
+    require_group_management(context, &group)?;
+    spawn_create_group(Arc::clone(&context.server), context.sender.clone(), group);
+
+    Ok(CommandResult::success())
+}
+
+fn allow_group_permission(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    set_group_permission(context, arguments, PermissionState::Allow)
+}
+
+fn deny_group_permission(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    set_group_permission(context, arguments, PermissionState::Deny)
+}
+
+fn set_group_permission(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    state: PermissionState,
+) -> Result<CommandResult, CommandError> {
+    let group = group(arguments)?;
+    let permission = permission(arguments)?;
+    let rule_context = permission_rule_context(arguments)?;
+    require_group_management(context, &group)?;
+    require_permission_management(context, &permission)?;
+    spawn_set_group_permission(
+        Arc::clone(&context.server),
+        context.sender.clone(),
+        group,
+        permission,
+        rule_context,
+        state,
+    );
+
+    Ok(CommandResult::success())
+}
+
+fn unset_group_permission(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let group = group(arguments)?;
+    let permission = permission(arguments)?;
+    let rule_context = permission_rule_context(arguments)?;
+    require_group_management(context, &group)?;
+    require_permission_management(context, &permission)?;
+    spawn_unset_group_permission(
+        Arc::clone(&context.server),
+        context.sender.clone(),
+        group,
+        permission,
+        rule_context,
+    );
+
+    Ok(CommandResult::success())
 }
 
 fn add_group(
@@ -466,6 +751,99 @@ fn spawn_user_info(server: Arc<Server>, sender: CommandSender, targets: Vec<Perm
     });
 }
 
+fn spawn_create_group(server: Arc<Server>, sender: CommandSender, group: String) {
+    tokio::spawn(async move {
+        let group_for_update = group.clone();
+        match server
+            .try_update_permission_groups(move |config| {
+                create_group_config(config, &group_for_update)
+            })
+            .await
+        {
+            Ok(()) => sender.send_message(&TextComponent::plain(format!(
+                "Created permission group '{group}'"
+            ))),
+            Err(error) => send_group_update_error(&sender, error),
+        }
+    });
+}
+
+fn spawn_set_group_permission(
+    server: Arc<Server>,
+    sender: CommandSender,
+    group: String,
+    permission: PermissionKey,
+    rule_context: PermissionRuleContext,
+    state: PermissionState,
+) {
+    tokio::spawn(async move {
+        let group_for_update = group.clone();
+        let permission_for_update = permission.clone();
+        let context_for_update = rule_context.clone();
+        match server
+            .try_update_permission_groups(move |config| {
+                set_group_config_permission(
+                    config,
+                    &group_for_update,
+                    &permission_for_update,
+                    &context_for_update,
+                    state,
+                )
+            })
+            .await
+        {
+            Ok(true) => send_set_group_permission_summary(
+                &sender,
+                state,
+                &group,
+                &permission,
+                &rule_context,
+            ),
+            Ok(false) => send_group_permission_unchanged_summary(
+                &sender,
+                state,
+                &group,
+                &permission,
+                &rule_context,
+            ),
+            Err(error) => send_group_update_error(&sender, error),
+        }
+    });
+}
+
+fn spawn_unset_group_permission(
+    server: Arc<Server>,
+    sender: CommandSender,
+    group: String,
+    permission: PermissionKey,
+    rule_context: PermissionRuleContext,
+) {
+    tokio::spawn(async move {
+        let group_for_update = group.clone();
+        let permission_for_update = permission.clone();
+        let context_for_update = rule_context.clone();
+        match server
+            .try_update_permission_groups(move |config| {
+                unset_group_config_permission(
+                    config,
+                    &group_for_update,
+                    &permission_for_update,
+                    &context_for_update,
+                )
+            })
+            .await
+        {
+            Ok(true) => {
+                send_unset_group_permission_summary(&sender, &group, &permission, &rule_context)
+            }
+            Ok(false) => {
+                send_group_permission_not_set_summary(&sender, &group, &permission, &rule_context)
+            }
+            Err(error) => send_group_update_error(&sender, error),
+        }
+    });
+}
+
 fn spawn_add_group(
     server: Arc<Server>,
     sender: CommandSender,
@@ -610,6 +988,222 @@ async fn save_or_report(
         )
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PermissionGroupEditError {
+    AlreadyExists(String),
+    Missing(String),
+    UnsupportedContext(PermissionRuleContext),
+}
+
+impl fmt::Display for PermissionGroupEditError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AlreadyExists(group) => write!(f, "permission group '{group}' already exists"),
+            Self::Missing(group) => write!(f, "unknown permission group '{group}'"),
+            Self::UnsupportedContext(context) => {
+                write!(
+                    f,
+                    "permission group config cannot store context '{context}'"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for PermissionGroupEditError {}
+
+fn create_group_config(
+    config: &mut PermissionGroupsConfig,
+    group: &str,
+) -> Result<(), PermissionGroupEditError> {
+    if config.groups.contains_key(group) {
+        return Err(PermissionGroupEditError::AlreadyExists(group.to_owned()));
+    }
+
+    config
+        .groups
+        .insert(group.to_owned(), PermissionGroupConfig::default());
+    Ok(())
+}
+
+fn set_group_config_permission(
+    config: &mut PermissionGroupsConfig,
+    group: &str,
+    permission: &PermissionKey,
+    rule_context: &PermissionRuleContext,
+    state: PermissionState,
+) -> Result<bool, PermissionGroupEditError> {
+    let Some(group_config) = config.groups.get_mut(group) else {
+        return Err(PermissionGroupEditError::Missing(group.to_owned()));
+    };
+    let states = group_config_permission_states(group_config, permission, rule_context);
+    if states.len() == 1 && states[0] == state {
+        return Ok(false);
+    }
+
+    remove_group_config_permission(group_config, permission, rule_context);
+    push_group_config_permission(group_config, permission, rule_context, state)?;
+    Ok(true)
+}
+
+fn unset_group_config_permission(
+    config: &mut PermissionGroupsConfig,
+    group: &str,
+    permission: &PermissionKey,
+    rule_context: &PermissionRuleContext,
+) -> Result<bool, PermissionGroupEditError> {
+    let Some(group_config) = config.groups.get_mut(group) else {
+        return Err(PermissionGroupEditError::Missing(group.to_owned()));
+    };
+
+    Ok(remove_group_config_permission(
+        group_config,
+        permission,
+        rule_context,
+    ))
+}
+
+fn push_group_config_permission(
+    group_config: &mut PermissionGroupConfig,
+    permission: &PermissionKey,
+    rule_context: &PermissionRuleContext,
+    state: PermissionState,
+) -> Result<(), PermissionGroupEditError> {
+    if rule_context.is_global() {
+        match state {
+            PermissionState::Allow => group_config.allow.push(permission.as_str().to_owned()),
+            PermissionState::Deny => group_config.deny.push(permission.as_str().to_owned()),
+        }
+        return Ok(());
+    }
+
+    group_config.rules.push(PermissionRuleConfig {
+        key: permission.as_str().to_owned(),
+        state: permission_rule_state_config(state),
+        context: Some(permission_rule_context_config(rule_context)?),
+    });
+    Ok(())
+}
+
+fn group_config_permission_states(
+    group_config: &PermissionGroupConfig,
+    permission: &PermissionKey,
+    rule_context: &PermissionRuleContext,
+) -> Vec<PermissionState> {
+    let mut states = Vec::new();
+    if rule_context.is_global() {
+        states.extend(
+            group_config
+                .allow
+                .iter()
+                .filter(|key| key.as_str() == permission.as_str())
+                .map(|_| PermissionState::Allow),
+        );
+        states.extend(
+            group_config
+                .deny
+                .iter()
+                .filter(|key| key.as_str() == permission.as_str())
+                .map(|_| PermissionState::Deny),
+        );
+    }
+    states.extend(
+        group_config
+            .rules
+            .iter()
+            .filter(|rule| {
+                rule.key == permission.as_str()
+                    && permission_rule_config_matches(rule.context.as_ref(), rule_context)
+            })
+            .map(|rule| permission_state_from_rule_config(rule.state)),
+    );
+
+    states
+}
+
+fn remove_group_config_permission(
+    group_config: &mut PermissionGroupConfig,
+    permission: &PermissionKey,
+    rule_context: &PermissionRuleContext,
+) -> bool {
+    let mut changed = false;
+    if rule_context.is_global() {
+        let old_allow_len = group_config.allow.len();
+        group_config
+            .allow
+            .retain(|key| key.as_str() != permission.as_str());
+        changed |= group_config.allow.len() != old_allow_len;
+
+        let old_deny_len = group_config.deny.len();
+        group_config
+            .deny
+            .retain(|key| key.as_str() != permission.as_str());
+        changed |= group_config.deny.len() != old_deny_len;
+    }
+
+    let old_rules_len = group_config.rules.len();
+    group_config.rules.retain(|rule| {
+        rule.key != permission.as_str()
+            || !permission_rule_config_matches(rule.context.as_ref(), rule_context)
+    });
+    changed | (group_config.rules.len() != old_rules_len)
+}
+
+fn permission_rule_context_config(
+    rule_context: &PermissionRuleContext,
+) -> Result<PermissionRuleContextConfig, PermissionGroupEditError> {
+    match rule_context {
+        PermissionRuleContext::Global => Err(PermissionGroupEditError::UnsupportedContext(
+            rule_context.clone(),
+        )),
+        PermissionRuleContext::Domain(domain) => Ok(PermissionRuleContextConfig {
+            domain: Some(domain.clone()),
+            world: None,
+        }),
+        PermissionRuleContext::World(world) => Ok(PermissionRuleContextConfig {
+            domain: None,
+            world: Some(world.to_string()),
+        }),
+        PermissionRuleContext::Custom { .. } => Err(PermissionGroupEditError::UnsupportedContext(
+            rule_context.clone(),
+        )),
+    }
+}
+
+fn permission_rule_config_matches(
+    config: Option<&PermissionRuleContextConfig>,
+    rule_context: &PermissionRuleContext,
+) -> bool {
+    match (config, rule_context) {
+        (None, PermissionRuleContext::Global) => true,
+        (Some(config), PermissionRuleContext::Domain(domain)) => {
+            config.domain.as_deref() == Some(domain.as_str()) && config.world.is_none()
+        }
+        (Some(config), PermissionRuleContext::World(world)) => {
+            config.domain.is_none()
+                && config
+                    .world
+                    .as_ref()
+                    .is_some_and(|configured| configured == &world.to_string())
+        }
+        _ => false,
+    }
+}
+
+fn permission_rule_state_config(state: PermissionState) -> PermissionRuleStateConfig {
+    match state {
+        PermissionState::Allow => PermissionRuleStateConfig::Allow,
+        PermissionState::Deny => PermissionRuleStateConfig::Deny,
+    }
+}
+
+fn permission_state_from_rule_config(state: PermissionRuleStateConfig) -> PermissionState {
+    match state {
+        PermissionRuleStateConfig::Allow => PermissionState::Allow,
+        PermissionRuleStateConfig::Deny => PermissionState::Deny,
+    }
+}
+
 fn send_user_info(
     sender: &CommandSender,
     target: &PermissionTarget,
@@ -656,8 +1250,71 @@ fn send_unset_permission_summary(
     )));
 }
 
+fn send_set_group_permission_summary(
+    sender: &CommandSender,
+    state: PermissionState,
+    group: &str,
+    permission: &PermissionKey,
+    rule_context: &PermissionRuleContext,
+) {
+    sender.send_message(&TextComponent::plain(format!(
+        "{} permission '{}'{} for group '{group}'",
+        permission_action_text(state),
+        permission.as_str(),
+        permission_rule_context_suffix(rule_context)
+    )));
+}
+
+fn send_group_permission_unchanged_summary(
+    sender: &CommandSender,
+    state: PermissionState,
+    group: &str,
+    permission: &PermissionKey,
+    rule_context: &PermissionRuleContext,
+) {
+    sender.send_message(&TextComponent::plain(format!(
+        "Group '{group}' already {} permission '{}'{}",
+        permission_state_text(state),
+        permission.as_str(),
+        permission_rule_context_suffix(rule_context)
+    )));
+}
+
+fn send_unset_group_permission_summary(
+    sender: &CommandSender,
+    group: &str,
+    permission: &PermissionKey,
+    rule_context: &PermissionRuleContext,
+) {
+    sender.send_message(&TextComponent::plain(format!(
+        "Unset permission '{}'{} for group '{group}'",
+        permission.as_str(),
+        permission_rule_context_suffix(rule_context)
+    )));
+}
+
+fn send_group_permission_not_set_summary(
+    sender: &CommandSender,
+    group: &str,
+    permission: &PermissionKey,
+    rule_context: &PermissionRuleContext,
+) {
+    sender.send_message(&TextComponent::plain(format!(
+        "Group '{group}' does not set permission '{}'{}",
+        permission.as_str(),
+        permission_rule_context_suffix(rule_context)
+    )));
+}
+
 fn send_background_error(sender: &CommandSender, command: &str, error: CommandError) {
     sender.send_failure_feedback(error.into_feedback(command));
+}
+
+fn send_group_update_error(
+    sender: &CommandSender,
+    error: crate::permission::PermissionGroupUpdateError<PermissionGroupEditError>,
+) {
+    sender.send_failure(error.to_string());
 }
 
 fn targets(arguments: &ParsedArguments) -> Result<Vec<PermissionTarget>, CommandError> {
@@ -704,6 +1361,33 @@ fn group_list_text(groups: &[String]) -> String {
     groups.join(", ")
 }
 
+fn permission_key_list_text(permissions: &[String]) -> String {
+    if permissions.is_empty() {
+        return "none".to_owned();
+    }
+
+    permissions.join(", ")
+}
+
+fn group_rule_list_text(rules: &[PermissionRuleConfig]) -> String {
+    if rules.is_empty() {
+        return "none".to_owned();
+    }
+
+    rules
+        .iter()
+        .map(|rule| {
+            format!(
+                "{} {}{}",
+                permission_state_text(permission_state_from_rule_config(rule.state)),
+                rule.key,
+                permission_rule_config_suffix(rule.context.as_ref())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn permission_entries_text(entries: &[PermissionEntry]) -> String {
     if entries.is_empty() {
         return "none".to_owned();
@@ -731,6 +1415,21 @@ fn permission_rule_context_suffix(rule_context: &PermissionRuleContext) -> Strin
     }
 }
 
+fn permission_rule_config_suffix(context: Option<&PermissionRuleContextConfig>) -> String {
+    match context {
+        None => String::new(),
+        Some(PermissionRuleContextConfig {
+            domain: Some(domain),
+            world: None,
+        }) => format!(" (domain {domain})"),
+        Some(PermissionRuleContextConfig {
+            domain: None,
+            world: Some(world),
+        }) => format!(" (world {world})"),
+        Some(_) => " (invalid context)".to_owned(),
+    }
+}
+
 fn direct_permission_override_suggestions(
     prefix: &str,
     overrides: impl IntoIterator<Item = PermissionSet>,
@@ -747,6 +1446,42 @@ fn direct_permission_override_suggestions(
     }
 
     permissions.into_iter().map(SuggestionEntry::new).collect()
+}
+
+fn group_permission_suggestions(
+    prefix: &str,
+    group_config: &PermissionGroupConfig,
+    context: &dyn RequirementContext,
+) -> Vec<SuggestionEntry> {
+    let mut permissions = BTreeSet::new();
+    for permission in &group_config.allow {
+        push_managed_group_permission_suggestion(&mut permissions, prefix, permission, context);
+    }
+    for permission in &group_config.deny {
+        push_managed_group_permission_suggestion(&mut permissions, prefix, permission, context);
+    }
+    for rule in &group_config.rules {
+        push_managed_group_permission_suggestion(&mut permissions, prefix, &rule.key, context);
+    }
+
+    permissions.into_iter().map(SuggestionEntry::new).collect()
+}
+
+fn push_managed_group_permission_suggestion(
+    permissions: &mut BTreeSet<String>,
+    prefix: &str,
+    permission: &str,
+    context: &dyn RequirementContext,
+) {
+    if !permission.starts_with(prefix) {
+        return;
+    }
+    let Ok(permission) = PermissionKey::parse(permission) else {
+        return;
+    };
+    if can_manage_permission(context, &permission) {
+        permissions.insert(permission.as_str().to_owned());
+    }
 }
 
 fn require_permission_management(
@@ -844,16 +1579,22 @@ fn command_result(count: usize) -> CommandResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        PermissionAssignedGroupParser, assigned_group_suggestions, can_manage_group,
-        can_manage_permission, direct_permission_override_suggestions,
-        permission_rule_context_suffix,
+        PermissionAssignedGroupParser, PermissionGroupEditError, PermissionGroupNameParser,
+        assigned_group_suggestions, can_manage_group, can_manage_permission,
+        direct_permission_override_suggestions, group_config_permission_states,
+        group_permission_suggestions, permission_rule_context_suffix, set_group_config_permission,
+        unset_group_config_permission,
     };
     use crate::command::graph::{CommandArgumentParser, CommandParseErrorKind, ParsedArgument};
     use crate::command::reader::CommandReader;
     use crate::command::requirement::{
         CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext,
     };
-    use crate::permission::{PermissionEntry, PermissionKey, PermissionRuleContext, PermissionSet};
+    use crate::permission::{
+        PermissionEntry, PermissionGroupConfig, PermissionGroupsConfig, PermissionKey,
+        PermissionRuleConfig, PermissionRuleContext, PermissionRuleContextConfig,
+        PermissionRuleStateConfig, PermissionSet, PermissionState,
+    };
     use steel_utils::Identifier;
 
     struct TestContext {
@@ -989,6 +1730,16 @@ mod tests {
     }
 
     #[test]
+    fn group_name_parser_accepts_unknown_group_names() {
+        let mut reader = CommandReader::new("builder");
+        let parsed = PermissionGroupNameParser
+            .parse(&mut reader, &TestContext::empty())
+            .expect("group name parses");
+
+        assert!(matches!(parsed, ParsedArgument::String(group) if group == "builder"));
+    }
+
+    #[test]
     fn remove_group_suggestions_only_include_assigned_groups() {
         assert_eq!(
             suggestion_texts(assigned_group_suggestions(
@@ -1024,5 +1775,197 @@ mod tests {
 
         assert!(can_manage_group(&context, "op"));
         assert!(!can_manage_group(&context, "admin"));
+    }
+
+    #[test]
+    fn group_config_global_permission_edits_use_allow_and_deny_lists() {
+        let mut config = PermissionGroupsConfig::default();
+        let permission = key("steel.fly");
+
+        assert_eq!(
+            set_group_config_permission(
+                &mut config,
+                "default",
+                &permission,
+                &PermissionRuleContext::Global,
+                PermissionState::Allow,
+            ),
+            Ok(true)
+        );
+        let default = config.groups.get("default").expect("default group exists");
+        assert_eq!(default.allow, vec!["steel.fly"]);
+        assert!(default.deny.is_empty());
+        assert!(default.rules.is_empty());
+
+        assert_eq!(
+            set_group_config_permission(
+                &mut config,
+                "default",
+                &permission,
+                &PermissionRuleContext::Global,
+                PermissionState::Deny,
+            ),
+            Ok(true)
+        );
+        let default = config.groups.get("default").expect("default group exists");
+        assert!(default.allow.is_empty());
+        assert_eq!(default.deny, vec!["steel.fly"]);
+
+        assert_eq!(
+            set_group_config_permission(
+                &mut config,
+                "default",
+                &permission,
+                &PermissionRuleContext::Global,
+                PermissionState::Deny,
+            ),
+            Ok(false)
+        );
+        assert_eq!(
+            unset_group_config_permission(
+                &mut config,
+                "default",
+                &permission,
+                &PermissionRuleContext::Global,
+            ),
+            Ok(true)
+        );
+        assert_eq!(
+            unset_group_config_permission(
+                &mut config,
+                "default",
+                &permission,
+                &PermissionRuleContext::Global,
+            ),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn group_config_contextual_permission_edits_use_structured_rules() {
+        let mut config = PermissionGroupsConfig::default();
+        let permission = key("steel.fly");
+        let lobby = PermissionRuleContext::domain("lobby");
+
+        assert_eq!(
+            set_group_config_permission(
+                &mut config,
+                "default",
+                &permission,
+                &lobby,
+                PermissionState::Allow,
+            ),
+            Ok(true)
+        );
+        let default = config.groups.get("default").expect("default group exists");
+        assert!(default.allow.is_empty());
+        assert!(default.deny.is_empty());
+        assert_eq!(default.rules.len(), 1);
+        assert_eq!(default.rules[0].key, "steel.fly");
+        assert_eq!(default.rules[0].state, PermissionRuleStateConfig::Allow);
+        assert_eq!(
+            default.rules[0].context,
+            Some(PermissionRuleContextConfig {
+                domain: Some("lobby".to_owned()),
+                world: None,
+            })
+        );
+
+        assert_eq!(
+            set_group_config_permission(
+                &mut config,
+                "default",
+                &permission,
+                &lobby,
+                PermissionState::Deny,
+            ),
+            Ok(true)
+        );
+        let default = config.groups.get("default").expect("default group exists");
+        assert_eq!(default.rules.len(), 1);
+        assert_eq!(default.rules[0].state, PermissionRuleStateConfig::Deny);
+
+        assert_eq!(
+            group_config_permission_states(default, &permission, &lobby),
+            vec![PermissionState::Deny]
+        );
+    }
+
+    #[test]
+    fn group_config_unset_is_context_exact() {
+        let mut config = PermissionGroupsConfig::default();
+        let permission = key("steel.fly");
+        let global = PermissionRuleContext::Global;
+        let lobby = PermissionRuleContext::domain("lobby");
+
+        set_group_config_permission(
+            &mut config,
+            "default",
+            &permission,
+            &global,
+            PermissionState::Allow,
+        )
+        .expect("global permission stores");
+        set_group_config_permission(
+            &mut config,
+            "default",
+            &permission,
+            &lobby,
+            PermissionState::Deny,
+        )
+        .expect("contextual permission stores");
+
+        assert_eq!(
+            unset_group_config_permission(&mut config, "default", &permission, &global),
+            Ok(true)
+        );
+        let default = config.groups.get("default").expect("default group exists");
+        assert!(default.allow.is_empty());
+        assert_eq!(default.rules.len(), 1);
+        assert_eq!(default.rules[0].state, PermissionRuleStateConfig::Deny);
+    }
+
+    #[test]
+    fn group_config_edit_reports_missing_group() {
+        let mut config = PermissionGroupsConfig::default();
+
+        assert_eq!(
+            set_group_config_permission(
+                &mut config,
+                "missing",
+                &key("steel.fly"),
+                &PermissionRuleContext::Global,
+                PermissionState::Allow,
+            ),
+            Err(PermissionGroupEditError::Missing("missing".to_owned()))
+        );
+    }
+
+    #[test]
+    fn group_permission_suggestions_only_include_manageable_group_rules() {
+        let group = PermissionGroupConfig {
+            allow: vec![
+                "steel.fly".to_owned(),
+                "minecraft.command.gamemode".to_owned(),
+            ],
+            deny: vec!["steel.stop".to_owned()],
+            rules: vec![PermissionRuleConfig {
+                key: "steel.chat".to_owned(),
+                state: PermissionRuleStateConfig::Allow,
+                context: Some(PermissionRuleContextConfig {
+                    domain: Some("lobby".to_owned()),
+                    world: None,
+                }),
+            }],
+        };
+
+        assert_eq!(
+            suggestion_texts(group_permission_suggestions(
+                "steel.",
+                &group,
+                &TestContext::with_permissions(["steel.permission.manage.steel.*"]),
+            )),
+            vec!["steel.chat", "steel.fly", "steel.stop"]
+        );
     }
 }
