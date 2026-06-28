@@ -20,11 +20,12 @@ use crate::command::requirement::{CommandInputContext, RequirementContext};
 use crate::command::sender::CommandSender;
 use crate::command::{CommandRegistration, CommandRegistrationError};
 use crate::permission::{
-    PermissionEntry, PermissionExpr, PermissionGroupConfig, PermissionGroupsConfig, PermissionKey,
-    PermissionKeyError, PermissionRuleConfig, PermissionRuleContext, PermissionRuleContextConfig,
-    PermissionRuleStateConfig, PermissionSegment, PermissionSet, PermissionState, PermissionValue,
-    PermissionValueEntry, PermissionValueRuleConfig, PermissionValueSet,
-    parse_permission_value_key,
+    PermissionContext, PermissionEntry, PermissionExpr, PermissionGroupConfig,
+    PermissionGroupsConfig, PermissionKey, PermissionKeyError, PermissionResolution,
+    PermissionResolutionSource, PermissionRuleConfig, PermissionRuleContext,
+    PermissionRuleContextConfig, PermissionRuleStateConfig, PermissionSegment, PermissionSet,
+    PermissionState, PermissionValue, PermissionValueEntry, PermissionValueRuleConfig,
+    PermissionValueSet, parse_permission_value_key,
 };
 use crate::server::Server;
 use crate::world::World;
@@ -67,6 +68,11 @@ fn user_command() -> CommandNodeBuilder {
                 literal("unset")
                     .requires_additional_subcommand_permission()
                     .then(permission_override_argument(unset_permission)),
+            )
+            .then(
+                literal("check")
+                    .requires_subcommand_permission()
+                    .then(permission_key_argument(check_permission)),
             )
             .then(user_metadata_arguments())
             .then(contextual_user_permission_arguments())
@@ -246,6 +252,11 @@ fn user_permission_context_argument(
             literal("unset")
                 .requires_additional_subcommand_permission()
                 .then(permission_override_argument(unset_permission)),
+        )
+        .then(
+            literal("check")
+                .requires_subcommand_permission()
+                .then(permission_key_argument(check_permission)),
         )
         .then(user_metadata_arguments())
 }
@@ -647,6 +658,53 @@ fn user_info(
             Arc::clone(&context.server),
             context.sender.clone(),
             offline_targets,
+        );
+    }
+
+    Ok(command_result(reported))
+}
+
+fn check_permission(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let targets = targets(arguments)?;
+    let permission = permission(arguments)?;
+    let rule_context = permission_rule_context(arguments)?;
+    let check_context = permission_context(arguments)?;
+    require_permission_management(context, &permission)?;
+    let mut reported = 0;
+    let mut offline_targets = Vec::new();
+
+    for target in targets {
+        if let Some((_, state)) = permission_targets::online_state(&context.server, &target) {
+            let effective = context
+                .server
+                .permission_groups
+                .effective_permissions(&state.groups, &state.overrides);
+            let resolution = effective.resolve_key_in_detailed(&permission, &check_context);
+            send_permission_check(
+                &context.sender,
+                &target,
+                &permission,
+                &rule_context,
+                resolution.as_ref(),
+            );
+            reported += 1;
+        } else {
+            offline_targets.push(target);
+        }
+    }
+
+    let scheduled = offline_targets.len();
+    if scheduled != 0 {
+        spawn_check_permission(
+            Arc::clone(&context.server),
+            context.sender.clone(),
+            offline_targets,
+            permission,
+            rule_context,
+            check_context,
         );
     }
 
@@ -1085,6 +1143,35 @@ fn spawn_user_info(server: Arc<Server>, sender: CommandSender, targets: Vec<Perm
                 Ok(loaded) => send_user_info(&sender, loaded.target(), loaded.state()),
                 Err(error) => send_background_error(&sender, "steelperms user info", error),
             }
+        }
+    });
+}
+
+fn spawn_check_permission(
+    server: Arc<Server>,
+    sender: CommandSender,
+    targets: Vec<PermissionTarget>,
+    permission: PermissionKey,
+    rule_context: PermissionRuleContext,
+    check_context: PermissionContext,
+) {
+    tokio::spawn(async move {
+        for target in targets {
+            let Ok(loaded) = load_or_report(&server, &sender, target).await else {
+                continue;
+            };
+            let state = loaded.state();
+            let effective = server
+                .permission_groups
+                .effective_permissions(&state.groups, &state.overrides);
+            let resolution = effective.resolve_key_in_detailed(&permission, &check_context);
+            send_permission_check(
+                &sender,
+                loaded.target(),
+                &permission,
+                &rule_context,
+                resolution.as_ref(),
+            );
         }
     });
 }
@@ -1767,6 +1854,24 @@ fn send_user_info(
     )));
 }
 
+fn send_permission_check(
+    sender: &CommandSender,
+    target: &PermissionTarget,
+    permission: &PermissionKey,
+    rule_context: &PermissionRuleContext,
+    resolution: Option<&PermissionResolution>,
+) {
+    let state = resolution.map_or(PermissionState::Deny, PermissionResolution::state);
+    let detail = resolution.map_or_else(|| "unset".to_owned(), permission_resolution_text);
+    sender.send_message(&TextComponent::plain(format!(
+        "{}: permission '{}' in {} is {} ({detail})",
+        target.name(),
+        permission.as_str(),
+        rule_context,
+        permission_check_result_text(state)
+    )));
+}
+
 fn send_set_permission_summary(
     sender: &CommandSender,
     state: PermissionState,
@@ -1998,6 +2103,20 @@ fn permission_rule_context(
     }
 
     Ok(PermissionRuleContext::Global)
+}
+
+fn permission_context(arguments: &ParsedArguments) -> Result<PermissionContext, CommandError> {
+    if let Ok(domain) = arguments.get::<String>("context_domain") {
+        return Ok(PermissionContext::for_domain(domain));
+    }
+    if let Ok(world) = arguments.get::<Arc<World>>("context_world") {
+        return Ok(PermissionContext::for_world(
+            world.domain().to_owned(),
+            world.key.clone(),
+        ));
+    }
+
+    Ok(PermissionContext::global())
 }
 
 fn group_list_text(groups: &[String]) -> String {
@@ -2334,10 +2453,39 @@ fn permission_state_text(state: PermissionState) -> &'static str {
     }
 }
 
+fn permission_check_result_text(state: PermissionState) -> &'static str {
+    match state {
+        PermissionState::Allow => "allowed",
+        PermissionState::Deny => "denied",
+    }
+}
+
 fn permission_action_text(state: PermissionState) -> &'static str {
     match state {
         PermissionState::Allow => "Allowed",
         PermissionState::Deny => "Denied",
+    }
+}
+
+fn permission_resolution_text(resolution: &PermissionResolution) -> String {
+    format!(
+        "{} by {}, rule {} {}{}, key specificity {}, context specificity {}",
+        permission_check_result_text(resolution.state()),
+        permission_resolution_source_text(resolution.source()),
+        permission_state_text(resolution.state()),
+        resolution.key().as_str(),
+        permission_rule_context_suffix(resolution.context()),
+        resolution.key_specificity(),
+        resolution.context_specificity()
+    )
+}
+
+fn permission_resolution_source_text(source: &PermissionResolutionSource) -> String {
+    match source {
+        PermissionResolutionSource::Subject => "direct permission".to_owned(),
+        PermissionResolutionSource::Group { name, priority } => {
+            format!("group '{name}' priority {priority}")
+        }
     }
 }
 
@@ -2361,7 +2509,8 @@ mod tests {
         assigned_group_suggestions, can_manage_group, can_manage_metadata, can_manage_permission,
         direct_metadata_override_suggestions, direct_permission_override_suggestions,
         group_config_metadata_value, group_config_permission_states, group_metadata_suggestions,
-        group_permission_suggestions, metadata_management_key, permission_rule_context_suffix,
+        group_permission_suggestions, metadata_management_key, permission_check_result_text,
+        permission_resolution_source_text, permission_rule_context_suffix,
         set_group_config_metadata, set_group_config_permission, unset_group_config_metadata,
         unset_group_config_permission,
     };
@@ -2372,9 +2521,9 @@ mod tests {
     };
     use crate::permission::{
         PermissionEntry, PermissionGroupConfig, PermissionGroupsConfig, PermissionKey,
-        PermissionRuleConfig, PermissionRuleContext, PermissionRuleContextConfig,
-        PermissionRuleStateConfig, PermissionSet, PermissionState, PermissionValue,
-        PermissionValueEntry, PermissionValueRuleConfig, PermissionValueSet,
+        PermissionResolutionSource, PermissionRuleConfig, PermissionRuleContext,
+        PermissionRuleContextConfig, PermissionRuleStateConfig, PermissionSet, PermissionState,
+        PermissionValue, PermissionValueEntry, PermissionValueRuleConfig, PermissionValueSet,
         parse_permission_value_key,
     };
     use steel_utils::Identifier;
@@ -2489,6 +2638,33 @@ mod tests {
                 "lobby", "spawn"
             ))),
             " (world lobby:spawn)"
+        );
+    }
+
+    #[test]
+    fn permission_check_result_text_uses_command_language() {
+        assert_eq!(
+            permission_check_result_text(PermissionState::Allow),
+            "allowed"
+        );
+        assert_eq!(
+            permission_check_result_text(PermissionState::Deny),
+            "denied"
+        );
+    }
+
+    #[test]
+    fn permission_resolution_source_text_includes_group_priority() {
+        assert_eq!(
+            permission_resolution_source_text(&PermissionResolutionSource::Subject),
+            "direct permission"
+        );
+        assert_eq!(
+            permission_resolution_source_text(&PermissionResolutionSource::Group {
+                name: "admin".to_owned(),
+                priority: 50,
+            }),
+            "group 'admin' priority 50"
         );
     }
 

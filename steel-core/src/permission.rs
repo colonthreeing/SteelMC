@@ -137,6 +137,16 @@ impl PermissionContext {
         Self::default()
     }
 
+    /// Creates a context for one domain without a specific loaded world.
+    #[must_use]
+    pub fn for_domain(domain: impl Into<String>) -> Self {
+        Self {
+            domain: Some(domain.into()),
+            world: None,
+            custom_contexts: Vec::new(),
+        }
+    }
+
     /// Creates a context for one loaded world and its domain.
     #[must_use]
     pub fn for_world(domain: impl Into<String>, world: Identifier) -> Self {
@@ -891,7 +901,7 @@ impl PermissionValueEntry {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PermissionSet {
     entries: Vec<PermissionEntry>,
-    sources: Vec<PermissionEntrySource>,
+    sources: Vec<PermissionResolutionSource>,
 }
 
 impl PermissionSet {
@@ -908,7 +918,7 @@ impl PermissionSet {
     #[must_use]
     pub fn from_entries(entries: impl IntoIterator<Item = PermissionEntry>) -> Self {
         let entries = entries.into_iter().collect::<Vec<_>>();
-        let sources = vec![PermissionEntrySource::Subject; entries.len()];
+        let sources = vec![PermissionResolutionSource::Subject; entries.len()];
         Self { entries, sources }
     }
 
@@ -920,7 +930,7 @@ impl PermissionSet {
 
     /// Adds one permission entry.
     pub fn push(&mut self, entry: PermissionEntry) {
-        self.push_with_source(entry, PermissionEntrySource::Subject);
+        self.push_with_source(entry, PermissionResolutionSource::Subject);
     }
 
     /// Adds one allow entry.
@@ -988,26 +998,29 @@ impl PermissionSet {
         key: &PermissionKey,
         context: &PermissionContext,
     ) -> Option<PermissionState> {
-        let mut best = None;
+        self.best_key_candidate(key, context)
+            .map(|candidate| candidate.state)
+    }
 
-        for (entry, source) in self.entries.iter().zip(&self.sources) {
-            if !entry.context.matches_context(context) {
-                continue;
-            }
-            if !entry.key.matches(key) {
-                continue;
-            }
+    /// Resolves one key in the global context and returns the winning rule.
+    ///
+    /// Unset permissions return `None`.
+    #[must_use]
+    pub fn resolve_key_detailed(&self, key: &PermissionKey) -> Option<PermissionResolution> {
+        self.resolve_key_in_detailed(key, &PermissionContext::global())
+    }
 
-            push_permission_candidate(
-                &mut best,
-                entry.key.specificity(),
-                entry.context.specificity(),
-                *source,
-                entry.state,
-            );
-        }
-
-        best.map(|candidate| candidate.state)
+    /// Resolves one key in a permission context and returns the winning rule.
+    ///
+    /// Unset permissions return `None`.
+    #[must_use]
+    pub fn resolve_key_in_detailed(
+        &self,
+        key: &PermissionKey,
+        context: &PermissionContext,
+    ) -> Option<PermissionResolution> {
+        self.best_key_candidate(key, context)
+            .map(|candidate| self.permission_resolution(candidate))
     }
 
     /// Resolves a child key in the global context while treating `parent` as a broad grant.
@@ -1036,33 +1049,34 @@ impl PermissionSet {
         key: &PermissionKey,
         context: &PermissionContext,
     ) -> Option<PermissionState> {
-        let mut best = None;
-        let parent_scopes_key = parent.scopes(key);
+        self.best_scoped_key_candidate(parent, key, context)
+            .map(|candidate| candidate.state)
+    }
 
-        for (entry, source) in self.entries.iter().zip(&self.sources) {
-            if !entry.context.matches_context(context) {
-                continue;
-            }
-            let matches_parent = parent_scopes_key && entry.key.matches(parent);
-            let matches_key = entry.key.matches(key);
-            if !matches_parent && !matches_key {
-                continue;
-            }
+    /// Resolves a child key in the global context and returns the winning rule.
+    ///
+    /// This treats `parent` as a broad grant. Unset permissions return `None`.
+    #[must_use]
+    pub fn resolve_scoped_key_detailed(
+        &self,
+        parent: &PermissionKey,
+        key: &PermissionKey,
+    ) -> Option<PermissionResolution> {
+        self.resolve_scoped_key_in_detailed(parent, key, &PermissionContext::global())
+    }
 
-            let mut specificity = entry.key.specificity();
-            if matches_key && !matches_parent {
-                specificity += 1;
-            }
-            push_permission_candidate(
-                &mut best,
-                specificity,
-                entry.context.specificity(),
-                *source,
-                entry.state,
-            );
-        }
-
-        best.map(|candidate| candidate.state)
+    /// Resolves a child key in a permission context and returns the winning rule.
+    ///
+    /// This treats `parent` as a broad grant. Unset permissions return `None`.
+    #[must_use]
+    pub fn resolve_scoped_key_in_detailed(
+        &self,
+        parent: &PermissionKey,
+        key: &PermissionKey,
+        context: &PermissionContext,
+    ) -> Option<PermissionResolution> {
+        self.best_scoped_key_candidate(parent, key, context)
+            .map(|candidate| self.permission_resolution(candidate))
     }
 
     /// Returns whether a key is allowed in the global context. Unset defaults to deny.
@@ -1117,11 +1131,17 @@ impl PermissionSet {
         }
     }
 
-    fn push_group(&mut self, entry: PermissionEntry, group_priority: i32) {
-        self.push_with_source(entry, PermissionEntrySource::Group { group_priority });
+    fn push_group(&mut self, entry: PermissionEntry, group: &str, group_priority: i32) {
+        self.push_with_source(
+            entry,
+            PermissionResolutionSource::Group {
+                name: group.to_owned(),
+                priority: group_priority,
+            },
+        );
     }
 
-    fn push_with_source(&mut self, entry: PermissionEntry, source: PermissionEntrySource) {
+    fn push_with_source(&mut self, entry: PermissionEntry, source: PermissionResolutionSource) {
         self.entries.push(entry);
         self.sources.push(source);
     }
@@ -1136,13 +1156,83 @@ impl PermissionSet {
             }
         }
     }
+
+    fn best_key_candidate(
+        &self,
+        key: &PermissionKey,
+        context: &PermissionContext,
+    ) -> Option<PermissionCandidate> {
+        let mut best = None;
+
+        for (index, (entry, source)) in self.entries.iter().zip(&self.sources).enumerate() {
+            if !entry.context.matches_context(context) || !entry.key.matches(key) {
+                continue;
+            }
+
+            push_permission_candidate(
+                &mut best,
+                index,
+                entry.key.specificity(),
+                entry.context.specificity(),
+                source,
+                entry.state,
+            );
+        }
+
+        best
+    }
+
+    fn best_scoped_key_candidate(
+        &self,
+        parent: &PermissionKey,
+        key: &PermissionKey,
+        context: &PermissionContext,
+    ) -> Option<PermissionCandidate> {
+        let mut best = None;
+        let parent_scopes_key = parent.scopes(key);
+
+        for (index, (entry, source)) in self.entries.iter().zip(&self.sources).enumerate() {
+            if !entry.context.matches_context(context) {
+                continue;
+            }
+            let matches_parent = parent_scopes_key && entry.key.matches(parent);
+            let matches_key = entry.key.matches(key);
+            if !matches_parent && !matches_key {
+                continue;
+            }
+
+            let mut specificity = entry.key.specificity();
+            if matches_key && !matches_parent {
+                specificity += 1;
+            }
+            push_permission_candidate(
+                &mut best,
+                index,
+                specificity,
+                entry.context.specificity(),
+                source,
+                entry.state,
+            );
+        }
+
+        best
+    }
+
+    fn permission_resolution(&self, candidate: PermissionCandidate) -> PermissionResolution {
+        PermissionResolution {
+            entry: self.entries[candidate.entry_index].clone(),
+            source: candidate.source,
+            key_specificity: candidate.key_specificity,
+            context_specificity: candidate.context_specificity,
+        }
+    }
 }
 
 /// A flat effective permission value set.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PermissionValueSet {
     entries: Vec<PermissionValueEntry>,
-    sources: Vec<PermissionEntrySource>,
+    sources: Vec<PermissionResolutionSource>,
 }
 
 impl PermissionValueSet {
@@ -1159,7 +1249,7 @@ impl PermissionValueSet {
     #[must_use]
     pub fn from_entries(entries: impl IntoIterator<Item = PermissionValueEntry>) -> Self {
         let entries = entries.into_iter().collect::<Vec<_>>();
-        let sources = vec![PermissionEntrySource::Subject; entries.len()];
+        let sources = vec![PermissionResolutionSource::Subject; entries.len()];
         Self { entries, sources }
     }
 
@@ -1171,7 +1261,7 @@ impl PermissionValueSet {
 
     /// Adds one permission value entry.
     pub fn push(&mut self, entry: PermissionValueEntry) {
-        self.push_with_source(entry, PermissionEntrySource::Subject);
+        self.push_with_source(entry, PermissionResolutionSource::Subject);
     }
 
     /// Sets one exact global permission value, replacing any previous exact value.
@@ -1223,35 +1313,42 @@ impl PermissionValueSet {
         key: &Identifier,
         context: &PermissionContext,
     ) -> Option<&PermissionValue> {
-        let mut best = None;
-
-        for (index, (entry, source)) in self.entries.iter().zip(&self.sources).enumerate() {
-            if entry.key() != key || !entry.context.matches_context(context) {
-                continue;
-            }
-            let specificity = entry.context.specificity();
-            let rank = source.rank();
-            let priority = source.group_priority();
-            match best {
-                None => best = Some((specificity, rank, priority, index)),
-                Some((best_specificity, best_rank, best_priority, best_index))
-                    if (specificity, rank, priority, index)
-                        > (best_specificity, best_rank, best_priority, best_index) =>
-                {
-                    best = Some((specificity, rank, priority, index));
-                }
-                _ => {}
-            }
-        }
-
-        best.map(|(_, _, _, index)| self.entries[index].value())
+        self.best_value_candidate(key, context)
+            .map(|candidate| self.entries[candidate.entry_index].value())
     }
 
-    fn push_group(&mut self, entry: PermissionValueEntry, group_priority: i32) {
-        self.push_with_source(entry, PermissionEntrySource::Group { group_priority });
+    /// Resolves one value in the global context and returns the winning rule.
+    #[must_use]
+    pub fn resolve_detailed(&self, key: &Identifier) -> Option<PermissionValueResolution> {
+        self.resolve_in_detailed(key, &PermissionContext::global())
     }
 
-    fn push_with_source(&mut self, entry: PermissionValueEntry, source: PermissionEntrySource) {
+    /// Resolves one value in a permission context and returns the winning rule.
+    #[must_use]
+    pub fn resolve_in_detailed(
+        &self,
+        key: &Identifier,
+        context: &PermissionContext,
+    ) -> Option<PermissionValueResolution> {
+        self.best_value_candidate(key, context)
+            .map(|candidate| self.value_resolution(candidate))
+    }
+
+    fn push_group(&mut self, entry: PermissionValueEntry, group: &str, group_priority: i32) {
+        self.push_with_source(
+            entry,
+            PermissionResolutionSource::Group {
+                name: group.to_owned(),
+                priority: group_priority,
+            },
+        );
+    }
+
+    fn push_with_source(
+        &mut self,
+        entry: PermissionValueEntry,
+        source: PermissionResolutionSource,
+    ) {
         self.entries.push(entry);
         self.sources.push(source);
     }
@@ -1266,60 +1363,250 @@ impl PermissionValueSet {
             }
         }
     }
+
+    fn best_value_candidate(
+        &self,
+        key: &Identifier,
+        context: &PermissionContext,
+    ) -> Option<PermissionValueCandidate> {
+        let mut best = None;
+
+        for (index, (entry, source)) in self.entries.iter().zip(&self.sources).enumerate() {
+            if entry.key() != key || !entry.context.matches_context(context) {
+                continue;
+            }
+            let specificity = entry.context.specificity();
+            let rank = source.rank();
+            let priority = source.tie_priority();
+            let candidate = PermissionValueCandidate {
+                entry_index: index,
+                context_specificity: specificity,
+                source: source.clone(),
+            };
+            match best {
+                None => best = Some(candidate),
+                Some(current)
+                    if (specificity, rank, priority, index)
+                        > (
+                            current.context_specificity,
+                            current.source.rank(),
+                            current.source.tie_priority(),
+                            current.entry_index,
+                        ) =>
+                {
+                    best = Some(candidate);
+                }
+                _ => {}
+            }
+        }
+
+        best
+    }
+
+    fn value_resolution(&self, candidate: PermissionValueCandidate) -> PermissionValueResolution {
+        PermissionValueResolution {
+            entry: self.entries[candidate.entry_index].clone(),
+            source: candidate.source,
+            context_specificity: candidate.context_specificity,
+            insertion_index: candidate.entry_index,
+        }
+    }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PermissionEntrySource {
-    Group { group_priority: i32 },
+/// Source that contributed the winning permission rule.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PermissionResolutionSource {
+    /// A named permission group contributed the rule.
+    Group {
+        /// Group name.
+        name: String,
+        /// Group conflict priority.
+        priority: i32,
+    },
+    /// A direct player/subject override contributed the rule.
     Subject,
 }
 
-impl PermissionEntrySource {
-    const fn rank(self) -> usize {
+impl PermissionResolutionSource {
+    /// Returns the contributing group name, if this source is a group.
+    #[must_use]
+    pub fn group_name(&self) -> Option<&str> {
+        match self {
+            Self::Group { name, .. } => Some(name),
+            Self::Subject => None,
+        }
+    }
+
+    /// Returns the contributing group priority, if this source is a group.
+    #[must_use]
+    pub const fn group_priority(&self) -> Option<i32> {
+        match self {
+            Self::Group { priority, .. } => Some(*priority),
+            Self::Subject => None,
+        }
+    }
+
+    const fn rank(&self) -> usize {
         match self {
             Self::Group { .. } => 0,
             Self::Subject => 1,
         }
     }
 
-    const fn group_priority(self) -> i32 {
+    const fn tie_priority(&self) -> i32 {
         match self {
-            Self::Group { group_priority } => group_priority,
+            Self::Group { priority, .. } => *priority,
             Self::Subject => 0,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct PermissionCandidate {
+/// Detailed winning permission rule.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PermissionResolution {
+    entry: PermissionEntry,
+    source: PermissionResolutionSource,
     key_specificity: usize,
     context_specificity: usize,
-    source: PermissionEntrySource,
+}
+
+impl PermissionResolution {
+    /// Returns the winning permission entry.
+    #[must_use]
+    pub const fn entry(&self) -> &PermissionEntry {
+        &self.entry
+    }
+
+    /// Returns the source that contributed the winning rule.
+    #[must_use]
+    pub const fn source(&self) -> &PermissionResolutionSource {
+        &self.source
+    }
+
+    /// Returns the winning state.
+    #[must_use]
+    pub const fn state(&self) -> PermissionState {
+        self.entry.state()
+    }
+
+    /// Returns the winning key pattern.
+    #[must_use]
+    pub const fn key(&self) -> &PermissionKey {
+        self.entry.key()
+    }
+
+    /// Returns the winning rule context.
+    #[must_use]
+    pub const fn context(&self) -> &PermissionRuleContext {
+        self.entry.context()
+    }
+
+    /// Returns the key specificity used by resolution.
+    #[must_use]
+    pub const fn key_specificity(&self) -> usize {
+        self.key_specificity
+    }
+
+    /// Returns the context specificity used by resolution.
+    #[must_use]
+    pub const fn context_specificity(&self) -> usize {
+        self.context_specificity
+    }
+}
+
+/// Detailed winning permission value rule.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PermissionValueResolution {
+    entry: PermissionValueEntry,
+    source: PermissionResolutionSource,
+    context_specificity: usize,
+    insertion_index: usize,
+}
+
+impl PermissionValueResolution {
+    /// Returns the winning permission value entry.
+    #[must_use]
+    pub const fn entry(&self) -> &PermissionValueEntry {
+        &self.entry
+    }
+
+    /// Returns the source that contributed the winning value.
+    #[must_use]
+    pub const fn source(&self) -> &PermissionResolutionSource {
+        &self.source
+    }
+
+    /// Returns the configured value.
+    #[must_use]
+    pub const fn value(&self) -> &PermissionValue {
+        self.entry.value()
+    }
+
+    /// Returns the winning metadata key.
+    #[must_use]
+    pub const fn key(&self) -> &Identifier {
+        self.entry.key()
+    }
+
+    /// Returns the winning value context.
+    #[must_use]
+    pub const fn context(&self) -> &PermissionRuleContext {
+        self.entry.context()
+    }
+
+    /// Returns the context specificity used by resolution.
+    #[must_use]
+    pub const fn context_specificity(&self) -> usize {
+        self.context_specificity
+    }
+
+    /// Returns the source insertion index used as final metadata tie-breaker.
+    #[must_use]
+    pub const fn insertion_index(&self) -> usize {
+        self.insertion_index
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PermissionCandidate {
+    entry_index: usize,
+    key_specificity: usize,
+    context_specificity: usize,
+    source: PermissionResolutionSource,
     state: PermissionState,
 }
 
 impl PermissionCandidate {
-    const fn order(self) -> (usize, usize, usize, i32) {
+    fn order(&self) -> (usize, usize, usize, i32) {
         (
             self.key_specificity,
             self.context_specificity,
             self.source.rank(),
-            self.source.group_priority(),
+            self.source.tie_priority(),
         )
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PermissionValueCandidate {
+    entry_index: usize,
+    context_specificity: usize,
+    source: PermissionResolutionSource,
+}
+
 fn push_permission_candidate(
     best: &mut Option<PermissionCandidate>,
+    entry_index: usize,
     key_specificity: usize,
     context_specificity: usize,
-    source: PermissionEntrySource,
+    source: &PermissionResolutionSource,
     state: PermissionState,
 ) {
     let candidate = PermissionCandidate {
+        entry_index,
         key_specificity,
         context_specificity,
-        source,
+        source: source.clone(),
         state,
     };
     match best {
@@ -1977,23 +2264,23 @@ impl PermissionGroups {
         effective
     }
 
-    fn append_group_permissions(&self, group: &str, effective: &mut PermissionSet) {
-        let Some(group) = self.groups.get(group) else {
+    fn append_group_permissions(&self, group_name: &str, effective: &mut PermissionSet) {
+        let Some(group) = self.groups.get(group_name) else {
             return;
         };
 
         for entry in group.permissions.entries() {
-            effective.push_group(entry.clone(), group.priority);
+            effective.push_group(entry.clone(), group_name, group.priority);
         }
     }
 
-    fn append_group_values(&self, group: &str, effective: &mut PermissionValueSet) {
-        let Some(group) = self.groups.get(group) else {
+    fn append_group_values(&self, group_name: &str, effective: &mut PermissionValueSet) {
+        let Some(group) = self.groups.get(group_name) else {
             return;
         };
 
         for entry in group.values.entries() {
-            effective.push_group(entry.clone(), group.priority);
+            effective.push_group(entry.clone(), group_name, group.priority);
         }
     }
 }
@@ -2170,9 +2457,10 @@ mod tests {
     use super::{
         PermissionCatalog, PermissionCatalogSource, PermissionEntry, PermissionExpr,
         PermissionGroupManager, PermissionGroupManagerError, PermissionGroups,
-        PermissionGroupsConfig, PermissionKey, PermissionKeyError, PermissionRuleContext,
-        PermissionSegment, PermissionSet, PermissionState, PermissionValue, PermissionValueEntry,
-        PermissionValueKeyError, PermissionValueSet, parse_permission_value_key,
+        PermissionGroupsConfig, PermissionKey, PermissionKeyError, PermissionResolutionSource,
+        PermissionRuleContext, PermissionSegment, PermissionSet, PermissionState, PermissionValue,
+        PermissionValueEntry, PermissionValueKeyError, PermissionValueSet,
+        parse_permission_value_key,
     };
     use steel_utils::Identifier;
     use steel_utils::locks::SyncMutex;
@@ -2465,6 +2753,11 @@ mod tests {
             permissions.resolve_scoped_key(&parent, &creative),
             Some(PermissionState::Deny)
         );
+        let resolution = permissions
+            .resolve_scoped_key_detailed(&parent, &creative)
+            .expect("scoped permission resolves");
+        assert_eq!(resolution.state(), PermissionState::Deny);
+        assert_eq!(resolution.key(), &creative);
         assert!(!permissions.allows(&PermissionExpr::scoped_key(parent.clone(), creative)));
         assert!(permissions.allows(&PermissionExpr::scoped_key(parent, survival)));
     }
@@ -2976,6 +3269,12 @@ mod tests {
         );
 
         assert!(effective.allows_key(&key("steel.fly")));
+        let resolution = effective
+            .resolve_key_detailed(&key("steel.fly"))
+            .expect("permission resolves");
+        assert_eq!(resolution.state(), PermissionState::Allow);
+        assert_eq!(resolution.source().group_name(), Some("high"));
+        assert_eq!(resolution.source().group_priority(), Some(50));
     }
 
     #[test]
@@ -3065,6 +3364,15 @@ mod tests {
         let effective = groups.effective_permissions(&[], &player_permissions);
 
         assert!(!effective.allows_key_in(&key("steel.fly"), &world_context("lobby", "spawn")));
+        let resolution = effective
+            .resolve_key_in_detailed(&key("steel.fly"), &world_context("lobby", "spawn"))
+            .expect("permission resolves");
+        assert_eq!(resolution.state(), PermissionState::Deny);
+        assert_eq!(resolution.source().group_name(), Some("default"));
+        assert_eq!(
+            resolution.context(),
+            &PermissionRuleContext::domain("lobby")
+        );
     }
 
     #[test]
@@ -3109,6 +3417,12 @@ mod tests {
             effective.resolve(&limit).and_then(PermissionValue::as_i64),
             Some(10)
         );
+        let resolution = effective
+            .resolve_detailed(&limit)
+            .expect("metadata value resolves");
+        assert_eq!(resolution.value().as_i64(), Some(10));
+        assert_eq!(resolution.source().group_name(), Some("high"));
+        assert_eq!(resolution.source().group_priority(), Some(50));
     }
 
     #[test]
@@ -3308,6 +3622,11 @@ mod tests {
 
         assert!(effective.allows_key(&key("steel.admin")));
         assert!(!effective.allows_key(&key("steel.fly")));
+        let resolution = effective
+            .resolve_key_detailed(&key("steel.fly"))
+            .expect("permission resolves");
+        assert_eq!(resolution.state(), PermissionState::Deny);
+        assert_eq!(resolution.source(), &PermissionResolutionSource::Subject);
     }
 
     #[test]
