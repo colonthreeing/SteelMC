@@ -1216,6 +1216,29 @@ impl PermissionGroupManager {
         config: PermissionGroupsConfig,
     ) -> Result<(), PermissionGroupManagerError> {
         let _guard = self.updates.lock().await;
+        self.replace_config_locked(config).await
+    }
+
+    /// Updates the current group config under the manager update lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the updated config is invalid or if the configured
+    /// store rejects the save.
+    pub async fn update_config(
+        &self,
+        update: impl FnOnce(&mut PermissionGroupsConfig) + Send,
+    ) -> Result<(), PermissionGroupManagerError> {
+        let _guard = self.updates.lock().await;
+        let mut config = self.state.read().config.clone();
+        update(&mut config);
+        self.replace_config_locked(config).await
+    }
+
+    async fn replace_config_locked(
+        &self,
+        config: PermissionGroupsConfig,
+    ) -> Result<(), PermissionGroupManagerError> {
         let groups = PermissionGroups::from_config(config.clone())?;
         if let Some(store) = &self.store {
             store.save_groups(config.clone()).await?;
@@ -1993,6 +2016,35 @@ mod tests {
 
         assert!(manager.contains_group("builder"));
         assert_eq!(&*saved.lock(), &vec![config]);
+    }
+
+    #[tokio::test]
+    async fn permission_group_manager_updates_latest_config_under_lock() {
+        let saved = Arc::new(SyncMutex::new(Vec::new()));
+        let manager = PermissionGroupManager::new(
+            PermissionGroupsConfig::default(),
+            Some(Arc::new(CapturingGroupStore {
+                saved: Arc::clone(&saved),
+            })),
+        )
+        .expect("default groups config resolves");
+
+        manager
+            .update_config(|config| {
+                config.groups.insert(
+                    "builder".to_owned(),
+                    super::PermissionGroupConfig {
+                        allow: vec!["steel.build".to_owned()],
+                        deny: Vec::new(),
+                        rules: Vec::new(),
+                    },
+                );
+            })
+            .await
+            .expect("config update stores and swaps");
+
+        assert!(manager.contains_group("builder"));
+        assert!(saved.lock()[0].groups.contains_key("builder"));
     }
 
     #[tokio::test]

@@ -22,7 +22,8 @@ use crate::entity::{Entity, EntityBase, RemovalReason, SharedEntity, init_entiti
 use crate::chunk_saver::{ChunkStorage, registry::WorldStorageRegistry};
 use crate::level_data::{LevelDataManager, RespawnData, WorldGenerationSettings};
 use crate::permission::{
-    PermissionGroupManager, PermissionSet, PermissionSubjectIndex, PermissionSubjectState,
+    PermissionGroupManager, PermissionGroupManagerError, PermissionGroupsConfig, PermissionSet,
+    PermissionSubjectIndex, PermissionSubjectState,
 };
 use crate::player::chunk_sender::{ChunkSender, EncodedChunk};
 use crate::player::connection::NetworkConnection;
@@ -860,6 +861,37 @@ impl Server {
         Ok(())
     }
 
+    /// Replaces the full permission group config and refreshes online players.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the config is invalid or cannot be persisted.
+    pub async fn replace_permission_groups(
+        self: &Arc<Self>,
+        config: PermissionGroupsConfig,
+    ) -> Result<(), PermissionGroupManagerError> {
+        self.permission_groups.replace_config(config).await?;
+        self.queue_online_permission_group_refresh();
+        Ok(())
+    }
+
+    /// Mutates permission group config and refreshes online players after a successful update.
+    ///
+    /// The mutation runs under the permission group manager update lock, so
+    /// concurrent runtime edits are applied to the latest config state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the updated config is invalid or cannot be persisted.
+    pub async fn update_permission_groups(
+        self: &Arc<Self>,
+        update: impl FnOnce(&mut PermissionGroupsConfig) + Send,
+    ) -> Result<(), PermissionGroupManagerError> {
+        self.permission_groups.update_config(update).await?;
+        self.queue_online_permission_group_refresh();
+        Ok(())
+    }
+
     fn set_cached_global_permission_state(
         &self,
         uuid: Uuid,
@@ -886,6 +918,22 @@ impl Server {
             server.resend_player_permission_context(&player);
             server.save_player_global_permissions(player, version);
         }));
+    }
+
+    fn queue_online_permission_group_refresh(self: &Arc<Self>) {
+        let server = Arc::clone(self);
+        self.jobs.spawn(FnServerJob::new(move || {
+            server.refresh_online_permission_groups();
+        }));
+    }
+
+    fn refresh_online_permission_groups(&self) {
+        for player in self.get_players() {
+            let groups = player.permission_groups();
+            let overrides = player.permission_overrides();
+            self.apply_global_permission_state(&player, groups, overrides);
+            self.resend_player_permission_context(&player);
+        }
     }
 
     fn save_player_global_permissions(self: &Arc<Self>, player: Arc<Player>, version: u64) {
