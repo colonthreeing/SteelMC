@@ -3,8 +3,14 @@ use std::{fmt, sync::Arc};
 use glam::DVec3;
 use simdnbt::owned::{NbtCompound, NbtTag};
 use steel_registry::{
-    REGISTRY, RegistryExt, biome::BiomeRef, blocks::BlockRef, data_components::ComponentData,
-    enchantment::EnchantmentRef, entity_type::EntityTypeRef, item_stack::ItemStack, items::ItemRef,
+    REGISTRY, RegistryExt,
+    biome::BiomeRef,
+    blocks::BlockRef,
+    data_components::{ComponentData, vanilla_components},
+    enchantment::EnchantmentRef,
+    entity_type::EntityTypeRef,
+    item_stack::ItemStack,
+    items::ItemRef,
     structure::StructureRef,
 };
 use steel_utils::{BlockPos, BlockStateId, Identifier, nbt::NbtPath, types::GameType};
@@ -217,6 +223,8 @@ pub enum ItemPredicateTerm {
 pub enum ItemPredicateMatchError {
     /// The `minecraft:count` pseudo-component/predicate value is malformed.
     MalformedCountPredicate,
+    /// The data component predicate value is malformed for this predicate type.
+    MalformedComponentPredicate(Identifier),
     /// Steel cannot evaluate an exact value for this component yet.
     UnsupportedComponentValue(Identifier),
     /// Steel cannot evaluate this data component predicate yet.
@@ -552,6 +560,10 @@ fn predicate_value_matches(
         return count_range_matches(value, stack.count());
     }
 
+    if is_damage_predicate_key(key) {
+        return damage_predicate_matches(value, stack);
+    }
+
     if is_empty_compound(value) {
         return Ok(stack.has_component(key));
     }
@@ -565,8 +577,50 @@ fn count_range_matches(value: &NbtTag, count: i32) -> Result<bool, ItemPredicate
     Ok(parse_count_range(value)?.matches(count))
 }
 
+fn damage_predicate_matches(
+    value: &NbtTag,
+    stack: &ItemStack,
+) -> Result<bool, ItemPredicateMatchError> {
+    let NbtTag::Compound(compound) = value else {
+        return Err(malformed_component_predicate("damage"));
+    };
+
+    let Some(damage) = stack.get(vanilla_components::DAMAGE).copied() else {
+        return Ok(false);
+    };
+
+    let damage_range = compound
+        .get("damage")
+        .map(parse_damage_predicate_range)
+        .transpose()?
+        .unwrap_or_else(CountRange::any);
+    let durability_range = compound
+        .get("durability")
+        .map(parse_damage_predicate_range)
+        .transpose()?
+        .unwrap_or_else(CountRange::any);
+    let max_damage = stack
+        .get(vanilla_components::MAX_DAMAGE)
+        .copied()
+        .unwrap_or(0);
+
+    Ok(damage_range.matches(damage) && durability_range.matches(max_damage - damage))
+}
+
+fn parse_damage_predicate_range(value: &NbtTag) -> Result<CountRange, ItemPredicateMatchError> {
+    parse_count_range(value).map_err(|_| malformed_component_predicate("damage"))
+}
+
+fn malformed_component_predicate(path: &'static str) -> ItemPredicateMatchError {
+    ItemPredicateMatchError::MalformedComponentPredicate(Identifier::vanilla_static(path))
+}
+
 fn is_count_key(key: &Identifier) -> bool {
     key.namespace == Identifier::VANILLA_NAMESPACE && key.path == "count"
+}
+
+fn is_damage_predicate_key(key: &Identifier) -> bool {
+    key.namespace == Identifier::VANILLA_NAMESPACE && key.path == "damage"
 }
 
 fn is_empty_compound(value: &NbtTag) -> bool {
@@ -580,6 +634,13 @@ struct CountRange {
 }
 
 impl CountRange {
+    const fn any() -> Self {
+        Self {
+            min: None,
+            max: None,
+        }
+    }
+
     const fn exactly(value: i32) -> Self {
         Self {
             min: Some(value),

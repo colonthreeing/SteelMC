@@ -23,6 +23,9 @@ pub(in crate::command::commands) fn item_predicate_match_error(
         ItemPredicateMatchError::MalformedCountPredicate => {
             "malformed minecraft:count item predicate".to_owned()
         }
+        ItemPredicateMatchError::MalformedComponentPredicate(key) => {
+            format!("malformed item component predicate '{key}'")
+        }
         ItemPredicateMatchError::UnsupportedComponentValue(key) => {
             format!("unsupported item component value predicate '{key}'")
         }

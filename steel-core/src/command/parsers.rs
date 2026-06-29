@@ -880,17 +880,64 @@ mod tests {
     }
 
     #[test]
+    fn item_predicate_matches_damage_component_predicate() {
+        init_test_registry();
+
+        let mut sword = ItemStack::new(&vanilla_items::ITEMS.diamond_sword);
+        sword.set_damage_value(7);
+
+        let predicate = parse_item_predicate_for_test(
+            "diamond_sword[damage~{damage:{min:7,max:7},durability:{min:1}}]",
+        );
+        assert!(
+            predicate
+                .matches_stack(&sword)
+                .expect("predicate evaluates")
+        );
+
+        let predicate = parse_item_predicate_for_test("diamond_sword[damage~{damage:{max:6}}]");
+        assert!(
+            !predicate
+                .matches_stack(&sword)
+                .expect("predicate evaluates")
+        );
+
+        let predicate = parse_item_predicate_for_test("stone[damage~{}]");
+        assert!(
+            !predicate
+                .matches_stack(&ItemStack::new(&vanilla_items::ITEMS.stone))
+                .expect("predicate evaluates")
+        );
+    }
+
+    #[test]
+    fn item_predicate_reports_malformed_component_predicates() {
+        init_test_registry();
+
+        let predicate = parse_item_predicate_for_test("diamond_sword[damage~5]");
+        let error = predicate
+            .matches_stack(&ItemStack::new(&vanilla_items::ITEMS.diamond_sword))
+            .expect_err("malformed predicate reports an error");
+        assert!(matches!(
+            error,
+            ItemPredicateMatchError::MalformedComponentPredicate(key)
+                if key == Identifier::vanilla_static("damage")
+        ));
+    }
+
+    #[test]
     fn item_predicate_reports_unsupported_component_predicates() {
         init_test_registry();
 
-        let predicate = parse_item_predicate_for_test("stone[damage~{min:1}]");
+        let predicate =
+            parse_item_predicate_for_test("potion[potion_contents~{potion:\"minecraft:water\"}]");
         let error = predicate
-            .matches_stack(&ItemStack::new(&vanilla_items::ITEMS.stone))
+            .matches_stack(&ItemStack::new(&vanilla_items::ITEMS.potion))
             .expect_err("unsupported predicate reports an error");
         assert!(matches!(
             error,
             ItemPredicateMatchError::UnsupportedComponentPredicate(key)
-                if key == Identifier::vanilla_static("damage")
+                if key == Identifier::vanilla_static("potion_contents")
         ));
     }
 
