@@ -698,10 +698,7 @@ impl CommandArgumentParser for PermissionMetadataKeyParser {
     }
 
     fn client_parser(&self) -> CommandArgumentClientParser {
-        CommandArgumentClientParser::new(
-            ArgumentType::ResourceLocation,
-            Some(SuggestionType::AskServer),
-        )
+        CommandArgumentClientParser::new(ArgumentType::Identifier, Some(SuggestionType::AskServer))
     }
 
     fn parsed_type(&self) -> &'static str {
@@ -743,10 +740,7 @@ impl CommandArgumentParser for PermissionMetadataOverrideParser {
     }
 
     fn client_parser(&self) -> CommandArgumentClientParser {
-        CommandArgumentClientParser::new(
-            ArgumentType::ResourceLocation,
-            Some(SuggestionType::AskServer),
-        )
+        CommandArgumentClientParser::new(ArgumentType::Identifier, Some(SuggestionType::AskServer))
     }
 
     fn parsed_type(&self) -> &'static str {
@@ -795,10 +789,7 @@ impl CommandArgumentParser for PermissionGroupMetadataParser {
     }
 
     fn client_parser(&self) -> CommandArgumentClientParser {
-        CommandArgumentClientParser::new(
-            ArgumentType::ResourceLocation,
-            Some(SuggestionType::AskServer),
-        )
+        CommandArgumentClientParser::new(ArgumentType::Identifier, Some(SuggestionType::AskServer))
     }
 
     fn parsed_type(&self) -> &'static str {

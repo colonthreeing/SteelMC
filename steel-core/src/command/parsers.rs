@@ -1181,10 +1181,7 @@ impl CommandArgumentParser for DomainParser {
     }
 
     fn client_parser(&self) -> CommandArgumentClientParser {
-        CommandArgumentClientParser::new(
-            ArgumentType::ResourceLocation,
-            Some(SuggestionType::AskServer),
-        )
+        CommandArgumentClientParser::new(ArgumentType::Identifier, Some(SuggestionType::AskServer))
     }
 
     fn parsed_type(&self) -> &'static str {
