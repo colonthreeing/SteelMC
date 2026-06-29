@@ -5,7 +5,7 @@ use crate::command::error::CommandError;
 use crate::command::graph::{CommandNodeBuilder, CommandResult, ParsedArguments, literal};
 use crate::command::requirement::RequirementContext;
 use crate::command::{
-    CommandRegistration, CommandRegistrationError, minecraft_command_permission_key,
+    CommandRegistrationSpec, minecraft_command_permission_key,
 };
 use crate::permission::{PermissionExpr, PermissionKeyError};
 use steel_protocol::packets::game::CChangeDifficulty;
@@ -14,9 +14,7 @@ use steel_utils::types::Difficulty;
 use text_components::TextComponent;
 use text_components::translation::Translation;
 
-pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
-    CommandRegistration::minecraft(command())
-}
+pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::minecraft();
 
 /// Handler for the "difficulty" command
 #[must_use]

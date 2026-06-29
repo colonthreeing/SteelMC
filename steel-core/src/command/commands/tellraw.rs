@@ -6,14 +6,12 @@ use crate::command::graph::{
 };
 use crate::command::parsers::{ComponentParser, PlayerParser};
 use crate::command::sender::CommandSender;
-use crate::command::{CommandRegistration, CommandRegistrationError};
+use crate::command::CommandRegistrationSpec;
 use crate::player::Player;
 use std::sync::Arc;
 use text_components::TextComponent;
 
-pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
-    CommandRegistration::minecraft(command())
-}
+pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::minecraft();
 
 /// Handler for the "tellraw" command.
 #[must_use]

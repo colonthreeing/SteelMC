@@ -10,7 +10,7 @@ use steel_utils::translations;
 use text_components::translation::TranslatedMessage;
 use text_components::{Modifier, TextComponent};
 
-use crate::command::{CommandRegistration, CommandRegistrationError};
+use crate::command::CommandRegistrationSpec;
 use crate::{
     command::{
         context::CommandContext,
@@ -23,9 +23,7 @@ use crate::{
     player::Player,
 };
 
-pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
-    CommandRegistration::minecraft(command())
-}
+pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::minecraft();
 
 /// Handler for the `/enchant` command.
 #[must_use]

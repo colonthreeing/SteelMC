@@ -19,11 +19,9 @@ use crate::command::graph::{
     argument, literal,
 };
 use crate::command::parsers::RotationParser;
-use crate::command::{CommandRegistration, CommandRegistrationError};
+use crate::command::CommandRegistrationSpec;
 
-pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
-    CommandRegistration::minecraft(command())
-}
+pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::minecraft();
 
 /// Handler for the "execute" command.
 #[must_use]

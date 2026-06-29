@@ -1,8 +1,8 @@
 //! Code generation for built-in command registration.
 //!
 //! Scans `src/command/commands/*.rs` for modules exposing
-//! `pub(crate) fn registration()` and generates the built-in command module
-//! declarations plus registration factory list.
+//! `pub(crate) const REGISTRATION` and `pub fn command()`, then generates the
+//! built-in command module declarations plus registration factory list.
 
 use std::{
     env, fs,
@@ -29,9 +29,20 @@ pub fn build() -> String {
         }
         syn::parse_str::<syn::Ident>(module_name)
             .unwrap_or_else(|error| panic!("Invalid command module name '{module_name}': {error}"));
-        if !has_registration_factory(&path) {
+        let metadata = command_module_metadata(&path);
+        if !metadata.has_registration_spec {
+            assert!(
+                !metadata.has_command_builder,
+                "Command module {} exposes command() but has no pub(crate) REGISTRATION spec",
+                path.display()
+            );
             continue;
         }
+        assert!(
+            metadata.has_command_builder,
+            "Command module {} has REGISTRATION but no crate-visible command() builder",
+            path.display()
+        );
 
         commands.push(CommandModule {
             name: module_name.to_owned(),
@@ -57,9 +68,21 @@ pub fn build() -> String {
         .collect::<Vec<_>>()
         .join(", ");
 
+    let registration_functions = commands
+        .iter()
+        .map(|command| {
+            let name = &command.name;
+            let function = format!("register_{name}");
+            format!(
+                "fn {function}() -> Result<CommandRegistration, CommandRegistrationError> {{\n    {name}::REGISTRATION.register({name}::command())\n}}"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
     let registrations = commands
         .iter()
-        .map(|command| format!("{}::registration", command.name))
+        .map(|command| format!("register_{}", command.name))
         .collect::<Vec<_>>()
         .join(",\n    ");
 
@@ -67,6 +90,8 @@ pub fn build() -> String {
         r#"// Generated built-in command registration manifest.
 
 {modules}
+
+{registration_functions}
 
 #[cfg(test)]
 pub(super) const BUILT_IN_COMMAND_MODULES: &[&str] = &[
@@ -85,18 +110,50 @@ struct CommandModule {
     path: String,
 }
 
-fn has_registration_factory(path: &Path) -> bool {
+struct CommandModuleMetadata {
+    has_registration_spec: bool,
+    has_command_builder: bool,
+}
+
+fn command_module_metadata(path: &Path) -> CommandModuleMetadata {
+    let file = parse_file(path);
+
+    let mut metadata = CommandModuleMetadata {
+        has_registration_spec: false,
+        has_command_builder: false,
+    };
+    for item in file.items {
+        match item {
+            syn::Item::Const(registration)
+                if registration.ident == "REGISTRATION"
+                    && matches_crate_visibility(&registration.vis) =>
+            {
+                metadata.has_registration_spec = true;
+            }
+            syn::Item::Fn(function)
+                if function.sig.ident == "command" && is_visible_to_crate(&function.vis) =>
+            {
+                metadata.has_command_builder = true;
+            }
+            _ => {}
+        }
+    }
+    metadata
+}
+
+fn parse_file(path: &Path) -> syn::File {
     let content = fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("Failed to read {}: {error}", path.display()));
-    let file = syn::parse_file(&content)
-        .unwrap_or_else(|error| panic!("Failed to parse {}: {error}", path.display()));
+    syn::parse_file(&content)
+        .unwrap_or_else(|error| panic!("Failed to parse {}: {error}", path.display()))
+}
 
-    file.items.iter().any(|item| {
-        let syn::Item::Fn(function) = item else {
-            return false;
-        };
-        function.sig.ident == "registration" && matches_crate_visibility(&function.vis)
-    })
+fn is_visible_to_crate(visibility: &syn::Visibility) -> bool {
+    match visibility {
+        syn::Visibility::Public(_) => true,
+        syn::Visibility::Restricted(restricted) => restricted.path.is_ident("crate"),
+        syn::Visibility::Inherited => false,
+    }
 }
 
 fn matches_crate_visibility(visibility: &syn::Visibility) -> bool {

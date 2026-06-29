@@ -19,7 +19,7 @@ use crate::command::parsers::{
 use crate::command::reader::{CommandReader, StringMode};
 use crate::command::requirement::{CommandInputContext, RequirementContext};
 use crate::command::sender::CommandSender;
-use crate::command::{CommandRegistration, CommandRegistrationError};
+use crate::command::CommandRegistrationSpec;
 use crate::permission::{
     OP_GROUP, PermissionContext, PermissionContextKey, PermissionEntry, PermissionExpr,
     PermissionGroupConfig, PermissionGroupsConfig, PermissionKey, PermissionKeyError,
@@ -36,9 +36,7 @@ use steel_utils::Identifier;
 
 use super::permission_targets;
 
-pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
-    CommandRegistration::steel(command())?.alias("sp")
-}
+pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::steel().aliases(&["sp"]);
 
 /// Handler for the "steelperms" command group.
 #[must_use]

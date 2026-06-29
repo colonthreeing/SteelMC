@@ -4,7 +4,7 @@ use steel_registry::vanilla_game_rules::ADVANCE_TIME;
 use steel_utils::translations;
 use text_components::TextComponent;
 
-use crate::command::{CommandRegistration, CommandRegistrationError};
+use crate::command::CommandRegistrationSpec;
 use crate::command::{
     context::CommandContext,
     error::CommandError,
@@ -13,9 +13,7 @@ use crate::command::{
 };
 use crate::world::World;
 
-pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
-    CommandRegistration::minecraft(command())
-}
+pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::minecraft();
 
 /// Handler for the `time` command
 #[must_use]

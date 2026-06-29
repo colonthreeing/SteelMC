@@ -5,12 +5,10 @@ use crate::command::graph::{
     CommandNodeBuilder, CommandResult, ParsedArguments, argument, literal,
 };
 use crate::command::parsers::TimeParser;
-use crate::command::{CommandRegistration, CommandRegistrationError};
+use crate::command::CommandRegistrationSpec;
 use steel_utils::translations;
 
-pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
-    CommandRegistration::minecraft(command())
-}
+pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::minecraft();
 
 /// Handler for the "weather" command.
 #[must_use]

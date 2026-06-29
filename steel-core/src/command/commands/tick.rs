@@ -8,11 +8,9 @@ use crate::command::graph::{
     CommandNodeBuilder, CommandResult, FloatParser, ParsedArguments, argument, literal,
 };
 use crate::command::parsers::TimeParser;
-use crate::command::{CommandRegistration, CommandRegistrationError};
+use crate::command::CommandRegistrationSpec;
 
-pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
-    CommandRegistration::minecraft(command())
-}
+pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::minecraft();
 
 /// Handler for the "tick" command.
 #[must_use]

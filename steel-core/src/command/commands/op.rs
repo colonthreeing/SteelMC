@@ -17,15 +17,13 @@ use crate::command::parsers::PermissionTargetParser;
 use crate::command::reader::CommandReader;
 use crate::command::requirement::CommandInputContext;
 use crate::command::sender::CommandSender;
-use crate::command::{CommandRegistration, CommandRegistrationError};
+use crate::command::CommandRegistrationSpec;
 use crate::permission::OP_GROUP;
 use crate::server::Server;
 
 use super::permission_targets;
 
-pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
-    CommandRegistration::minecraft(command())
-}
+pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::minecraft();
 
 /// Creates the `/op` command handler.
 #[must_use]

@@ -10,15 +10,13 @@ use crate::command::graph::{
     CommandNodeBuilder, CommandResult, ParsedArguments, argument, literal,
 };
 use crate::command::parsers::{PlayerParser, WorldParser};
-use crate::command::{CommandRegistration, CommandRegistrationError};
+use crate::command::CommandRegistrationSpec;
 use crate::entity::SharedEntity;
 use crate::player::Player;
 use crate::portal::WorldChangeRequest;
 use crate::world::World;
 
-pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
-    CommandRegistration::steel(command())
-}
+pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::steel();
 
 /// Handler for the "steel" command group.
 #[must_use]

@@ -2,11 +2,9 @@
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{CommandNodeBuilder, CommandResult, ParsedArguments, literal};
-use crate::command::{CommandRegistration, CommandRegistrationError};
+use crate::command::CommandRegistrationSpec;
 
-pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
-    CommandRegistration::minecraft(command())
-}
+pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::minecraft();
 
 /// Handler for the "stop" command.
 #[must_use]

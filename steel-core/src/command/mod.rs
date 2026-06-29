@@ -107,6 +107,81 @@ impl CommandRegistration {
     }
 }
 
+/// Static registration metadata for one built-in command module.
+#[derive(Clone, Copy)]
+pub(crate) struct CommandRegistrationSpec {
+    namespace: CommandRegistrationNamespace,
+    permission: CommandRegistrationSpecPermission,
+    aliases: &'static [&'static str],
+}
+
+impl CommandRegistrationSpec {
+    pub(crate) const fn minecraft() -> Self {
+        Self::new(CommandRegistrationNamespace::Minecraft)
+    }
+
+    pub(crate) const fn steel() -> Self {
+        Self::new(CommandRegistrationNamespace::Steel)
+    }
+
+    const fn new(namespace: CommandRegistrationNamespace) -> Self {
+        Self {
+            namespace,
+            permission: CommandRegistrationSpecPermission::Auto,
+            aliases: &[],
+        }
+    }
+
+    pub(crate) const fn public(mut self) -> Self {
+        self.permission = CommandRegistrationSpecPermission::Public;
+        self
+    }
+
+    pub(crate) const fn permission_base(mut self, command: &'static str) -> Self {
+        self.permission = CommandRegistrationSpecPermission::PermissionBase(command);
+        self
+    }
+
+    pub(crate) const fn aliases(mut self, aliases: &'static [&'static str]) -> Self {
+        self.aliases = aliases;
+        self
+    }
+
+    fn register(
+        self,
+        root: CommandNodeBuilder,
+    ) -> Result<CommandRegistration, CommandRegistrationError> {
+        let registration = match self.namespace {
+            CommandRegistrationNamespace::Minecraft => CommandRegistration::minecraft(root)?,
+            CommandRegistrationNamespace::Steel => CommandRegistration::steel(root)?,
+        };
+        let mut registration = match self.permission {
+            CommandRegistrationSpecPermission::Auto => registration,
+            CommandRegistrationSpecPermission::Public => registration.public(),
+            CommandRegistrationSpecPermission::PermissionBase(command) => {
+                registration.permission_base(command)?
+            }
+        };
+        for alias in self.aliases {
+            registration = registration.alias(alias)?;
+        }
+        Ok(registration)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CommandRegistrationNamespace {
+    Minecraft,
+    Steel,
+}
+
+#[derive(Clone, Copy)]
+enum CommandRegistrationSpecPermission {
+    Auto,
+    Public,
+    PermissionBase(&'static str),
+}
+
 enum CommandPermissionMode {
     Auto,
     Public,

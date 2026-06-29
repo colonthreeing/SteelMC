@@ -5,7 +5,7 @@ use steel_registry::{data_components::vanilla_components, item_stack::ItemStack,
 use steel_utils::translations;
 use text_components::{Modifier, TextComponent, interactivity::HoverEvent};
 
-use crate::command::{CommandRegistration, CommandRegistrationError};
+use crate::command::CommandRegistrationSpec;
 use crate::{
     command::{
         context::CommandContext,
@@ -20,9 +20,7 @@ use crate::{
     player::Player,
 };
 
-pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
-    CommandRegistration::minecraft(command())
-}
+pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::minecraft();
 
 /// Handler for the "give" command.
 #[must_use]

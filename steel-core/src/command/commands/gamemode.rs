@@ -8,7 +8,7 @@ use crate::command::graph::{
 use crate::command::parsers::{GameModeParser, PlayerParser};
 use crate::command::requirement::RequirementContext;
 use crate::command::{
-    CommandRegistration, CommandRegistrationError, minecraft_command_permission_key,
+    CommandRegistrationSpec, minecraft_command_permission_key,
 };
 use crate::entity::Entity;
 use crate::permission::{PermissionExpr, PermissionKey, PermissionKeyError};
@@ -19,9 +19,7 @@ use steel_utils::types::GameType;
 use text_components::TextComponent;
 use text_components::translation::Translation;
 
-pub(crate) fn registration() -> Result<CommandRegistration, CommandRegistrationError> {
-    CommandRegistration::minecraft(command())
-}
+pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::minecraft();
 
 /// Handler for the "gamemode" command.
 #[must_use]
