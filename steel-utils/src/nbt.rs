@@ -5,7 +5,9 @@ mod snbt;
 
 use simdnbt::owned::{NbtCompound, NbtList, NbtTag};
 
-pub use path::{NbtPath, NbtPathError, parse_nbt_path, parse_nbt_path_argument};
+pub use path::{
+    NbtPath, NbtPathError, NbtPathMutationError, parse_nbt_path, parse_nbt_path_argument,
+};
 pub use snbt::{
     SnbtError, parse_snbt, parse_snbt_argument, parse_snbt_compound, parse_snbt_compound_argument,
 };
@@ -59,8 +61,8 @@ fn compare_compounds(
 }
 
 fn compare_lists_partially(expected: &NbtList, actual: &NbtList) -> bool {
-    let expected_tags = expected.as_nbt_tags();
-    let actual_tags = actual.as_nbt_tags();
+    let expected_tags = list_as_tags(expected);
+    let actual_tags = list_as_tags(actual);
     if expected_tags.is_empty() {
         return actual_tags.is_empty();
     }
@@ -73,6 +75,25 @@ fn compare_lists_partially(expected: &NbtList, actual: &NbtList) -> bool {
             .iter()
             .any(|actual_tag| compare_nbt(Some(expected_tag), Some(actual_tag), true))
     })
+}
+
+fn list_as_tags(list: &NbtList) -> Vec<NbtTag> {
+    list.as_nbt_tags()
+        .into_iter()
+        .map(unwrap_list_wrapper)
+        .collect()
+}
+
+fn unwrap_list_wrapper(tag: NbtTag) -> NbtTag {
+    match tag {
+        NbtTag::Compound(mut compound) if compound.len() == 1 && compound.contains("") => {
+            let Some(value) = compound.take("") else {
+                return NbtTag::Compound(compound);
+            };
+            value
+        }
+        tag => tag,
+    }
 }
 
 #[cfg(test)]
@@ -136,6 +157,14 @@ mod tests {
 
         assert!(compare_nbt(Some(&expected), Some(&actual), true));
         assert!(!compare_nbt(Some(&expected), Some(&actual), false));
+    }
+
+    #[test]
+    fn partial_lists_match_vanilla_wrapped_heterogeneous_values() {
+        let expected = list([NbtTag::String("two".into())]);
+        let actual = list([NbtTag::Int(1), NbtTag::String("two".into())]);
+
+        assert!(compare_nbt(Some(&expected), Some(&actual), true));
     }
 
     #[test]
