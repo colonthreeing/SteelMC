@@ -13,17 +13,19 @@ use crate::command::graph::{
     ParsedArguments, PermissionTarget, StringParser, argument, literal,
 };
 use crate::command::parsers::{
-    DomainParser, PermissionGroupParser, PermissionKeyParser, PermissionTargetParser, WorldParser,
+    DomainParser, PermissionGroupParser, PermissionRuleExpressionParser, PermissionTargetParser,
+    WorldParser,
 };
 use crate::command::reader::{CommandReader, StringMode};
 use crate::command::requirement::{CommandInputContext, RequirementContext};
 use crate::command::sender::CommandSender;
 use crate::command::{CommandRegistration, CommandRegistrationError};
 use crate::permission::{
-    OP_GROUP, PermissionContext, PermissionEntry, PermissionExpr, PermissionGroupConfig,
-    PermissionGroupsConfig, PermissionKey, PermissionKeyError, PermissionMetadataCatalog,
-    PermissionResolution, PermissionResolutionSource, PermissionRuleConfig, PermissionRuleContext,
-    PermissionRuleContextConfig, PermissionRuleCustomContextConfig, PermissionRuleStateConfig,
+    OP_GROUP, PermissionContext, PermissionContextKey, PermissionEntry, PermissionExpr,
+    PermissionGroupConfig, PermissionGroupsConfig, PermissionKey, PermissionKeyError,
+    PermissionMetadataCatalog, PermissionResolution, PermissionResolutionSource,
+    PermissionRuleConfig, PermissionRuleContext, PermissionRuleContextConfig,
+    PermissionRuleCustomContextConfig, PermissionRuleExpression, PermissionRuleStateConfig,
     PermissionSegment, PermissionSet, PermissionState, PermissionValue, PermissionValueEntry,
     PermissionValueResolution, PermissionValueRuleConfig, PermissionValueSet,
     parse_permission_value_key,
@@ -167,7 +169,7 @@ fn groups_command() -> CommandNodeBuilder {
 fn permission_key_argument(
     executor: fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>,
 ) -> CommandNodeBuilder {
-    argument("permission", PermissionKeyParser).executes(executor)
+    argument("permission", PermissionRuleExpressionParser).executes(executor)
 }
 
 fn permission_override_argument(
@@ -375,15 +377,15 @@ impl CommandArgumentParser for PermissionOverrideParser {
         reader: &mut CommandReader<'_>,
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
-        PermissionKeyParser.parse(reader, context)
+        PermissionRuleExpressionParser.parse(reader, context)
     }
 
     fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        PermissionKeyParser.usage()
+        PermissionRuleExpressionParser.usage()
     }
 
     fn parsed_type(&self) -> &'static str {
-        PermissionKeyParser.parsed_type()
+        PermissionRuleExpressionParser.parsed_type()
     }
 
     fn suggest(
@@ -531,15 +533,15 @@ impl CommandArgumentParser for PermissionGroupRuleParser {
         reader: &mut CommandReader<'_>,
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
-        PermissionKeyParser.parse(reader, context)
+        PermissionRuleExpressionParser.parse(reader, context)
     }
 
     fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        PermissionKeyParser.usage()
+        PermissionRuleExpressionParser.usage()
     }
 
     fn parsed_type(&self) -> &'static str {
-        PermissionKeyParser.parsed_type()
+        PermissionRuleExpressionParser.parsed_type()
     }
 
     fn suggest(
@@ -574,7 +576,7 @@ impl CommandArgumentParser for PermissionContextKeyParser {
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
         let value = reader.read_string(StringMode::SingleWord)?;
-        PermissionSegment::parse(value.as_str()).map_err(|_| {
+        PermissionContextKey::parse(value.as_str()).map_err(|_| {
             CommandParseError::new(
                 CommandParseErrorKind::InvalidPermissionKey(value.clone()),
                 cursor,
@@ -659,7 +661,7 @@ impl CommandArgumentParser for PermissionContextValueParser {
         let Ok(key) = arguments.get::<String>(self.key_argument) else {
             return Vec::new();
         };
-        let Ok(key) = PermissionSegment::parse(key) else {
+        let Ok(key) = PermissionContextKey::parse(key) else {
             return Vec::new();
         };
         let Some(catalog) = context.permission_context_catalog() else {
@@ -2584,6 +2586,10 @@ fn group_priority(arguments: &ParsedArguments) -> Result<i32, CommandError> {
 }
 
 fn permission(arguments: &ParsedArguments) -> Result<PermissionKey, CommandError> {
+    if let Ok(expression) = arguments.get::<PermissionRuleExpression>("permission") {
+        return Ok(expression.key().clone());
+    }
+
     arguments
         .get::<PermissionKey>("permission")
         .map_err(super::invalid_parsed_argument)
@@ -2613,6 +2619,9 @@ fn permission_rule_context(
     arguments: &ParsedArguments,
 ) -> Result<PermissionRuleContext, CommandError> {
     let mut contexts = Vec::new();
+    if let Ok(expression) = arguments.get::<PermissionRuleExpression>("permission") {
+        contexts.push(expression.context().clone());
+    }
     if let Ok(domain) = arguments.get::<String>("context_domain") {
         contexts.push(PermissionRuleContext::domain(domain));
     }
@@ -2627,20 +2636,43 @@ fn permission_rule_context(
 }
 
 fn permission_context(arguments: &ParsedArguments) -> Result<PermissionContext, CommandError> {
-    let mut context = PermissionContext::global();
-    if let Ok(domain) = arguments.get::<String>("context_domain") {
-        context = PermissionContext::for_domain(domain);
-    }
-    if let Ok(world) = arguments.get::<Arc<World>>("context_world") {
-        context = PermissionContext::for_world(world.domain().to_owned(), world.key.clone());
-    }
-    if let Some((key, value)) = custom_permission_context(arguments)? {
-        context = context
-            .with_custom_context(key, value)
-            .map_err(|error| CommandError::failure(error.to_string()))?;
-    }
+    let rule_context = permission_rule_context(arguments)?;
+    permission_context_from_rule_context(&rule_context)
+}
 
+fn permission_context_from_rule_context(
+    rule_context: &PermissionRuleContext,
+) -> Result<PermissionContext, CommandError> {
+    let mut context = PermissionContext::global();
+    append_permission_context_from_rule_context(&mut context, rule_context)?;
     Ok(context)
+}
+
+fn append_permission_context_from_rule_context(
+    context: &mut PermissionContext,
+    rule_context: &PermissionRuleContext,
+) -> Result<(), CommandError> {
+    match rule_context {
+        PermissionRuleContext::Global => {}
+        PermissionRuleContext::Domain(domain) => {
+            *context = PermissionContext::for_domain(domain.clone());
+        }
+        PermissionRuleContext::World(world) => {
+            *context =
+                PermissionContext::for_world(world.namespace.as_ref().to_owned(), world.clone());
+        }
+        PermissionRuleContext::Custom { key, value } => {
+            context
+                .add_custom_context(key.clone(), value.clone())
+                .map_err(|error| CommandError::failure(error.to_string()))?;
+        }
+        PermissionRuleContext::All(contexts) => {
+            for rule_context in contexts.iter() {
+                append_permission_context_from_rule_context(context, rule_context)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn custom_permission_rule_context(
@@ -2657,14 +2689,14 @@ fn custom_permission_rule_context(
 
 fn custom_permission_context(
     arguments: &ParsedArguments,
-) -> Result<Option<(PermissionSegment, String)>, CommandError> {
+) -> Result<Option<(PermissionContextKey, String)>, CommandError> {
     let Ok(key) = arguments.get::<String>("context_custom_key") else {
         return Ok(None);
     };
     let value = arguments
         .get::<String>("context_custom_value")
         .map_err(super::invalid_parsed_argument)?;
-    let key = PermissionSegment::parse(key)
+    let key = PermissionContextKey::parse(key)
         .map_err(|error| CommandError::failure(format!("Invalid context key: {error}")))?;
     Ok(Some((key, value)))
 }
@@ -2795,9 +2827,11 @@ fn direct_permission_override_suggestions(
     let mut permissions = BTreeSet::new();
     for overrides in overrides {
         for entry in overrides.entries() {
-            let key = entry.key().as_str();
-            if key.starts_with(prefix) && can_manage_permission(context, entry.key()) {
-                permissions.insert(key.to_owned());
+            let expression =
+                PermissionRuleExpression::new(entry.key().clone(), entry.context().clone())
+                    .to_string();
+            if expression.starts_with(prefix) && can_manage_permission(context, entry.key()) {
+                permissions.insert(expression);
             }
         }
     }
@@ -2836,7 +2870,7 @@ fn group_permission_suggestions(
         push_managed_group_permission_suggestion(&mut permissions, prefix, permission, context);
     }
     for rule in &group_config.rules {
-        push_managed_group_permission_suggestion(&mut permissions, prefix, &rule.key, context);
+        push_managed_group_permission_rule_suggestion(&mut permissions, prefix, rule, context);
     }
 
     permissions.into_iter().map(SuggestionEntry::new).collect()
@@ -2894,6 +2928,34 @@ fn push_managed_group_permission_suggestion(
     };
     if can_manage_permission(context, &permission) {
         permissions.insert(permission.as_str().to_owned());
+    }
+}
+
+fn push_managed_group_permission_rule_suggestion(
+    permissions: &mut BTreeSet<String>,
+    prefix: &str,
+    rule: &PermissionRuleConfig,
+    context: &dyn RequirementContext,
+) {
+    let Ok(permission) = PermissionKey::parse(rule.key.clone()) else {
+        return;
+    };
+    if !can_manage_permission(context, &permission) {
+        return;
+    }
+
+    let rule_context = rule
+        .context
+        .clone()
+        .map_or(Ok(PermissionRuleContext::Global), |context| {
+            context.into_rule_context()
+        });
+    let Ok(rule_context) = rule_context else {
+        return;
+    };
+    let expression = PermissionRuleExpression::new(permission, rule_context).to_string();
+    if expression.starts_with(prefix) {
+        permissions.insert(expression);
     }
 }
 
@@ -3093,10 +3155,10 @@ mod tests {
     };
     use crate::permission::{
         PermissionContext, PermissionContextCatalog, PermissionContextCatalogSource,
-        PermissionEntry, PermissionGroupConfig, PermissionGroupsConfig, PermissionKey,
-        PermissionMetadataCatalog, PermissionMetadataCatalogSource, PermissionResolutionSource,
-        PermissionRuleConfig, PermissionRuleContext, PermissionRuleContextConfig,
-        PermissionRuleCustomContextConfig, PermissionRuleStateConfig, PermissionSegment,
+        PermissionContextKey, PermissionEntry, PermissionGroupConfig, PermissionGroupsConfig,
+        PermissionKey, PermissionMetadataCatalog, PermissionMetadataCatalogSource,
+        PermissionResolutionSource, PermissionRuleConfig, PermissionRuleContext,
+        PermissionRuleContextConfig, PermissionRuleCustomContextConfig, PermissionRuleStateConfig,
         PermissionSet, PermissionState, PermissionValue, PermissionValueEntry,
         PermissionValueRuleConfig, PermissionValueSet, parse_permission_value_key,
     };
@@ -3156,12 +3218,12 @@ mod tests {
         parse_permission_value_key(value).expect("metadata key parses")
     }
 
-    fn segment(value: &str) -> PermissionSegment {
-        PermissionSegment::parse(value).expect("segment parses")
+    fn context_key(value: &str) -> PermissionContextKey {
+        PermissionContextKey::parse(value).expect("context key parses")
     }
 
     fn custom_context(key: &str, value: &str) -> PermissionRuleContext {
-        PermissionRuleContext::custom(segment(key), value).expect("custom context parses")
+        PermissionRuleContext::custom(context_key(key), value).expect("custom context parses")
     }
 
     fn suggestion_texts(
@@ -3215,7 +3277,7 @@ mod tests {
                 [overrides],
                 &TestContext::with_permissions(["steel.permission.manage.steel.*"]),
             )),
-            vec!["steel.fly"]
+            vec!["steel.fly{domain=lobby}"]
         );
     }
 
@@ -3290,17 +3352,17 @@ mod tests {
     fn context_catalog_suggestions_include_known_keys_and_values() {
         let mut context = TestContext::empty();
         context.context_catalog.insert_value(
-            segment("region"),
+            context_key("region"),
             "spawn",
             PermissionContextCatalogSource::Config,
         );
         context.context_catalog.insert_value(
-            segment("region"),
+            context_key("region"),
             "market",
             PermissionContextCatalogSource::Config,
         );
         context.context_catalog.insert_value(
-            segment("arena"),
+            context_key("arena"),
             "duel",
             PermissionContextCatalogSource::Config,
         );
@@ -3975,7 +4037,7 @@ mod tests {
                 &group,
                 &TestContext::with_permissions(["steel.permission.manage.steel.*"]),
             )),
-            vec!["steel.chat", "steel.fly", "steel.stop"]
+            vec!["steel.chat{domain=lobby}", "steel.fly", "steel.stop"]
         );
     }
 

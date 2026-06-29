@@ -397,6 +397,9 @@ impl CommandDispatcher {
             CommandParseErrorKind::InvalidPermissionKey(value) => {
                 TextComponent::plain(format!("Invalid permission '{value}'"))
             }
+            CommandParseErrorKind::InvalidPermissionExpression(value) => {
+                TextComponent::plain(format!("Invalid permission expression: {value}"))
+            }
             CommandParseErrorKind::InvalidPermissionMetadataKey(value) => {
                 TextComponent::plain(format!("Invalid permission metadata key '{value}'"))
             }

@@ -49,6 +49,18 @@
       "description": "Namespaced permission metadata key.",
       "pattern": "^[a-z0-9_-]+(\\.[a-z0-9_-]+)*:[a-z0-9_-]+([./][a-z0-9_-]+)*$"
     },
+    "permission_context_key": {
+      "description": "Custom permission context key. Namespaced keys are preferred for plugin-owned contexts.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/group_name"
+        },
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9_-]+(\\.[a-z0-9_-]+)*:[a-z0-9_-]+([./][a-z0-9_-]+)*$"
+        }
+      ]
+    },
     "permission_value": {
       "description": "Typed permission metadata value",
       "anyOf": [
@@ -143,7 +155,7 @@
     },
     "rule_context": {
       "type": "object",
-      "description": "Rule-side context where this permission applies. Declare at most one selector.",
+      "description": "Rule-side context where this permission applies. Multiple selectors are combined with AND.",
       "properties": {
         "domain": {
           "$ref": "#/definitions/domain_name"
@@ -152,11 +164,21 @@
           "$ref": "#/definitions/world_identifier"
         },
         "custom": {
-          "$ref": "#/definitions/custom_context"
+          "oneOf": [
+            {
+              "$ref": "#/definitions/custom_context"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/custom_context"
+              },
+              "minItems": 1
+            }
+          ]
         }
       },
       "minProperties": 1,
-      "maxProperties": 1,
       "additionalProperties": false
     },
     "custom_context": {
@@ -164,7 +186,7 @@
       "description": "Plugin or subsystem-defined permission context",
       "properties": {
         "key": {
-          "$ref": "#/definitions/group_name"
+          "$ref": "#/definitions/permission_context_key"
         },
         "value": {
           "type": "string",

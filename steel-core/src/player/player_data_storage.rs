@@ -19,8 +19,8 @@ use super::player_data::{
 use crate::chunk_saver::PersistentEntity;
 use crate::config::StorageSelection;
 use crate::permission::{
-    PermissionEntry, PermissionKey, PermissionRuleContext, PermissionRuleContextError,
-    PermissionSegment, PermissionSet, PermissionState, PermissionSubjectIndex,
+    PermissionContextKey, PermissionEntry, PermissionKey, PermissionRuleContext,
+    PermissionRuleContextError, PermissionSet, PermissionState, PermissionSubjectIndex,
     PermissionSubjectState, PermissionValue, PermissionValueEntry, PermissionValueSet,
     parse_permission_value_key,
 };
@@ -812,7 +812,7 @@ fn permission_context_from_file(
         contexts.push(permission_world_context_from_file(world)?);
     }
     for custom in context.custom {
-        let key = PermissionSegment::parse(custom.key).map_err(|error| {
+        let key = PermissionContextKey::parse(custom.key).map_err(|error| {
             invalid_permission_context(format!("invalid custom context key: {error}"))
         })?;
         contexts.push(
@@ -1263,7 +1263,7 @@ mod tests {
                     PermissionRuleContext::all([
                         PermissionRuleContext::world(Identifier::new("lobby", "spawn")),
                         PermissionRuleContext::custom(
-                            PermissionSegment::parse("region").expect("context key parses"),
+                            PermissionContextKey::parse("region").expect("context key parses"),
                             "spawn",
                         )
                         .expect("custom context parses"),

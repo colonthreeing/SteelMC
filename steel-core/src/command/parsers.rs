@@ -1,6 +1,6 @@
 //! Graph-native command argument parsers.
 
-use std::{f32::consts::PI, sync::Arc};
+use std::{collections::BTreeSet, f32::consts::PI, sync::Arc};
 
 use glam::DVec3;
 use rand::seq::IteratorRandom;
@@ -28,7 +28,7 @@ use crate::{
         requirement::CommandInputContext,
     },
     entity::{ENTITIES, Entity, LivingEntity},
-    permission::PermissionKey,
+    permission::{PermissionContextKey, PermissionKey, PermissionRuleExpression},
 };
 
 /// Game mode argument parser.
@@ -401,6 +401,219 @@ impl CommandArgumentParser for PermissionKeyParser {
             .map(SuggestionEntry::new)
             .collect()
     }
+}
+
+/// Permission rule expression argument parser.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PermissionRuleExpressionParser;
+
+impl CommandArgumentParser for PermissionRuleExpressionParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let value = reader.read_string(StringMode::SingleWord)?;
+        let expression = PermissionRuleExpression::parse(value).map_err(|error| {
+            CommandParseError::new(
+                CommandParseErrorKind::InvalidPermissionExpression(error.to_string()),
+                cursor,
+            )
+        })?;
+
+        Ok(ParsedArgument::PermissionRuleExpression(expression))
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        (
+            ArgumentType::String {
+                behavior: steel_protocol::packets::game::ArgumentStringTypeBehavior::SingleWord,
+            },
+            Some(SuggestionType::AskServer),
+        )
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "permission_rule_expression"
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        _arguments: &ParsedArguments,
+        context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        permission_rule_expression_suggestions(prefix, context)
+            .into_iter()
+            .map(SuggestionEntry::new)
+            .collect()
+    }
+}
+
+fn permission_rule_expression_suggestions(
+    prefix: &str,
+    context: &dyn CommandInputContext,
+) -> Vec<String> {
+    let Some((permission_key, context_prefix)) = prefix.split_once('{') else {
+        let Some(catalog) = context.permission_catalog() else {
+            return Vec::new();
+        };
+        return catalog.suggestions(prefix);
+    };
+    if context_prefix.contains('}') || PermissionKey::parse(permission_key).is_err() {
+        return Vec::new();
+    }
+
+    let (completed_entries, current_entry) = context_prefix
+        .rsplit_once(',')
+        .map_or(("", context_prefix), |(completed, current)| {
+            (&context_prefix[..completed.len() + 1], current)
+        });
+    let expression_prefix = format!("{permission_key}{{{completed_entries}");
+    let completed_keys = completed_permission_rule_context_keys(completed_entries);
+
+    let Some((context_key, value_prefix)) = current_entry.split_once('=') else {
+        return permission_rule_context_key_suggestions(
+            &expression_prefix,
+            current_entry,
+            &completed_keys,
+            context,
+        );
+    };
+    if completed_keys.contains(context_key) {
+        return Vec::new();
+    }
+
+    permission_rule_context_value_suggestions(
+        &expression_prefix,
+        context_key,
+        value_prefix,
+        context,
+    )
+}
+
+fn completed_permission_rule_context_keys(completed_entries: &str) -> BTreeSet<String> {
+    completed_entries
+        .trim_end_matches(',')
+        .split(',')
+        .filter_map(|entry| {
+            let (key, _) = entry.split_once('=')?;
+            (!key.is_empty()).then(|| key.to_owned())
+        })
+        .collect()
+}
+
+fn permission_rule_context_key_suggestions(
+    expression_prefix: &str,
+    key_prefix: &str,
+    completed_keys: &BTreeSet<String>,
+    context: &dyn CommandInputContext,
+) -> Vec<String> {
+    let mut suggestions = ["domain", "world"]
+        .into_iter()
+        .filter(|key| !completed_keys.contains(*key))
+        .filter(|key| key.starts_with(key_prefix))
+        .map(|key| format!("{expression_prefix}{key}="))
+        .collect::<Vec<_>>();
+
+    if let Some(catalog) = context.permission_context_catalog() {
+        suggestions.extend(
+            catalog
+                .key_suggestions(key_prefix)
+                .into_iter()
+                .filter(|key| !completed_keys.contains(key))
+                .map(|key| format!("{expression_prefix}{key}=")),
+        );
+    }
+    suggestions.sort();
+    suggestions.dedup();
+    suggestions
+}
+
+fn permission_rule_context_value_suggestions(
+    expression_prefix: &str,
+    context_key: &str,
+    value_prefix: &str,
+    context: &dyn CommandInputContext,
+) -> Vec<String> {
+    match context_key {
+        "domain" => permission_rule_domain_value_suggestions(
+            expression_prefix,
+            context_key,
+            value_prefix,
+            context,
+        ),
+        "world" => permission_rule_world_value_suggestions(
+            expression_prefix,
+            context_key,
+            value_prefix,
+            context,
+        ),
+        custom_key => permission_rule_custom_context_value_suggestions(
+            expression_prefix,
+            custom_key,
+            value_prefix,
+            context,
+        ),
+    }
+}
+
+fn permission_rule_domain_value_suggestions(
+    expression_prefix: &str,
+    context_key: &str,
+    value_prefix: &str,
+    context: &dyn CommandInputContext,
+) -> Vec<String> {
+    let Some(server) = context.server() else {
+        return Vec::new();
+    };
+
+    server
+        .worlds
+        .domain_names()
+        .filter(|domain| domain.starts_with(value_prefix))
+        .map(|domain| format!("{expression_prefix}{context_key}={domain}}}"))
+        .collect()
+}
+
+fn permission_rule_world_value_suggestions(
+    expression_prefix: &str,
+    context_key: &str,
+    value_prefix: &str,
+    context: &dyn CommandInputContext,
+) -> Vec<String> {
+    let Some(server) = context.server() else {
+        return Vec::new();
+    };
+
+    server
+        .worlds
+        .keys()
+        .map(ToString::to_string)
+        .filter(|world| world.starts_with(value_prefix))
+        .map(|world| format!("{expression_prefix}{context_key}={world}}}"))
+        .collect()
+}
+
+fn permission_rule_custom_context_value_suggestions(
+    expression_prefix: &str,
+    context_key: &str,
+    value_prefix: &str,
+    context: &dyn CommandInputContext,
+) -> Vec<String> {
+    let Some(catalog) = context.permission_context_catalog() else {
+        return Vec::new();
+    };
+    let Ok(key) = PermissionContextKey::parse(context_key.to_owned()) else {
+        return Vec::new();
+    };
+
+    catalog
+        .value_suggestions(&key, value_prefix)
+        .into_iter()
+        .map(|value| format!("{expression_prefix}{context_key}={value}}}"))
+        .collect()
 }
 
 /// Permission group name argument parser.
@@ -1507,8 +1720,8 @@ mod tests {
             parsers::{
                 BlockPosParser, ComponentParser, DomainParser, EnchantmentParser, EntityParser,
                 EntitySummonParser, GameModeParser, ItemParser, PermissionKeyParser,
-                PermissionTargetParser, PlayerParser, RotationParser, StructureParser, TimeParser,
-                Vec3Parser, WorldParser,
+                PermissionRuleExpressionParser, PermissionTargetParser, PlayerParser,
+                RotationParser, StructureParser, TimeParser, Vec3Parser, WorldParser,
             },
             reader::CommandReader,
             requirement::{
@@ -1516,7 +1729,10 @@ mod tests {
             },
         },
         entity::init_test_entities,
-        permission::{PermissionCatalog, PermissionCatalogSource, PermissionKey},
+        permission::{
+            PermissionCatalog, PermissionCatalogSource, PermissionContextCatalog,
+            PermissionContextCatalogSource, PermissionContextKey, PermissionKey,
+        },
     };
     use steel_utils::types::GameType;
 
@@ -1536,6 +1752,7 @@ mod tests {
 
     struct CatalogContext {
         catalog: PermissionCatalog,
+        context_catalog: PermissionContextCatalog,
     }
 
     impl RequirementContext for CatalogContext {
@@ -1551,6 +1768,10 @@ mod tests {
     impl CommandInputContext for CatalogContext {
         fn permission_catalog(&self) -> Option<&PermissionCatalog> {
             Some(&self.catalog)
+        }
+
+        fn permission_context_catalog(&self) -> Option<&PermissionContextCatalog> {
+            Some(&self.context_catalog)
         }
     }
 
@@ -1662,7 +1883,10 @@ mod tests {
                 .expect("permission key parses"),
             PermissionCatalogSource::Command,
         );
-        let context = CatalogContext { catalog };
+        let context = CatalogContext {
+            catalog,
+            context_catalog: PermissionContextCatalog::new(),
+        };
 
         let suggestions =
             PermissionKeyParser.suggest("steel.command", &ParsedArguments::default(), &context);
@@ -1672,6 +1896,105 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(texts, vec!["steel.command.steelperms.user.allow"]);
+    }
+
+    #[test]
+    fn permission_rule_expression_parser_accepts_context_selectors() {
+        let mut reader =
+            CommandReader::new("minecraft.command.gamemode{world=lobby:spawn,plugin:region=spawn}");
+        let value = PermissionRuleExpressionParser
+            .parse(&mut reader, &TestContext)
+            .expect("permission expression parses");
+
+        assert!(
+            matches!(value, ParsedArgument::PermissionRuleExpression(expression)
+                if expression.key().as_str() == "minecraft.command.gamemode"
+                    && expression.to_string()
+                        == "minecraft.command.gamemode{world=lobby:spawn,plugin:region=spawn}")
+        );
+    }
+
+    #[test]
+    fn permission_rule_expression_parser_reports_expression_errors() {
+        let mut reader = CommandReader::new("steel.fly{plugin:region=spawn=bad}");
+        let error = PermissionRuleExpressionParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("invalid expression should fail");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidPermissionExpression(value)
+                if value.contains("invalid permission context value")
+        ));
+    }
+
+    #[test]
+    fn permission_rule_expression_parser_suggests_catalog_keys_and_contexts() {
+        let mut catalog = PermissionCatalog::new();
+        catalog.insert(
+            PermissionKey::parse("minecraft.command.gamemode").expect("permission key parses"),
+            PermissionCatalogSource::Command,
+        );
+        let mut context_catalog = PermissionContextCatalog::new();
+        context_catalog.insert_value(
+            PermissionContextKey::parse("plugin:region").expect("context key parses"),
+            "spawn",
+            PermissionContextCatalogSource::Config,
+        );
+        let context = CatalogContext {
+            catalog,
+            context_catalog,
+        };
+
+        let key_suggestions = PermissionRuleExpressionParser
+            .suggest("minecraft.command", &ParsedArguments::default(), &context)
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+        let context_key_suggestions = PermissionRuleExpressionParser
+            .suggest(
+                "minecraft.command.gamemode{p",
+                &ParsedArguments::default(),
+                &context,
+            )
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+        let context_value_suggestions = PermissionRuleExpressionParser
+            .suggest(
+                "minecraft.command.gamemode{plugin:region=s",
+                &ParsedArguments::default(),
+                &context,
+            )
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+        let next_context_key_suggestions = PermissionRuleExpressionParser
+            .suggest(
+                "minecraft.command.gamemode{domain=lobby,",
+                &ParsedArguments::default(),
+                &context,
+            )
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+
+        assert_eq!(key_suggestions, vec!["minecraft.command.gamemode"]);
+        assert_eq!(
+            context_key_suggestions,
+            vec!["minecraft.command.gamemode{plugin:region="]
+        );
+        assert_eq!(
+            context_value_suggestions,
+            vec!["minecraft.command.gamemode{plugin:region=spawn}"]
+        );
+        assert_eq!(
+            next_context_key_suggestions,
+            vec![
+                "minecraft.command.gamemode{domain=lobby,plugin:region=",
+                "minecraft.command.gamemode{domain=lobby,world=",
+            ]
+        );
     }
 
     #[test]

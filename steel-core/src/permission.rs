@@ -29,8 +29,8 @@ pub enum PermissionRuleContext {
     World(Identifier),
     /// Permission applies when a plugin or subsystem provides the same custom context.
     Custom {
-        /// Context key, such as `region`.
-        key: PermissionSegment,
+        /// Context key, such as `plugin:region`.
+        key: PermissionContextKey,
         /// Context value owned by the provider.
         value: String,
     },
@@ -84,7 +84,7 @@ impl PermissionRuleContext {
     ///
     /// Returns an error when the value is empty.
     pub fn custom(
-        key: PermissionSegment,
+        key: PermissionContextKey,
         value: impl Into<String>,
     ) -> Result<Self, PermissionRuleContextError> {
         let value = value.into();
@@ -244,7 +244,7 @@ pub enum PermissionRuleContextError {
     /// Context value is empty.
     EmptyValue,
     /// One chained context tried to bind the same custom key to multiple values.
-    DuplicateCustomKey(PermissionSegment),
+    DuplicateCustomKey(PermissionContextKey),
 }
 
 impl fmt::Display for PermissionRuleContextError {
@@ -261,6 +261,279 @@ impl fmt::Display for PermissionRuleContextError {
 }
 
 impl Error for PermissionRuleContextError {}
+
+/// A permission key plus the rule context embedded in command/config syntax.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PermissionRuleExpression {
+    key: PermissionKey,
+    context: PermissionRuleContext,
+}
+
+impl PermissionRuleExpression {
+    /// Creates a permission rule expression.
+    #[must_use]
+    pub const fn new(key: PermissionKey, context: PermissionRuleContext) -> Self {
+        Self { key, context }
+    }
+
+    /// Parses `permission` or `permission{context=value,...}` syntax.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the permission key or context selector is invalid.
+    pub fn parse(value: impl Into<String>) -> Result<Self, PermissionRuleExpressionError> {
+        let value = value.into();
+        let Some(context_start) = value.find('{') else {
+            let key = PermissionKey::parse(value.clone()).map_err(|source| {
+                PermissionRuleExpressionError::InvalidPermissionKey { value, source }
+            })?;
+            return Ok(Self::new(key, PermissionRuleContext::Global));
+        };
+
+        if !value.ends_with('}') {
+            return Err(PermissionRuleExpressionError::UnclosedContext);
+        }
+
+        let key_value = &value[..context_start];
+        let key = PermissionKey::parse(key_value.to_owned()).map_err(|source| {
+            PermissionRuleExpressionError::InvalidPermissionKey {
+                value: key_value.to_owned(),
+                source,
+            }
+        })?;
+
+        let context_value = &value[context_start + 1..value.len() - 1];
+        let context = parse_permission_rule_expression_context(context_value)?;
+        Ok(Self::new(key, context))
+    }
+
+    /// Returns the permission key.
+    #[must_use]
+    pub const fn key(&self) -> &PermissionKey {
+        &self.key
+    }
+
+    /// Returns the rule context.
+    #[must_use]
+    pub const fn context(&self) -> &PermissionRuleContext {
+        &self.context
+    }
+
+    /// Splits this expression into its key and context.
+    #[must_use]
+    pub fn into_parts(self) -> (PermissionKey, PermissionRuleContext) {
+        (self.key, self.context)
+    }
+}
+
+impl fmt::Display for PermissionRuleExpression {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.key.as_str())?;
+        write_permission_expression_context(f, &self.context)
+    }
+}
+
+fn parse_permission_rule_expression_context(
+    value: &str,
+) -> Result<PermissionRuleContext, PermissionRuleExpressionError> {
+    if value.is_empty() {
+        return Err(PermissionRuleExpressionError::EmptyContext);
+    }
+
+    let mut contexts = Vec::new();
+    let mut seen_keys = BTreeSet::new();
+    for entry in value.split(',') {
+        let Some((key, context_value)) = entry.split_once('=') else {
+            return Err(PermissionRuleExpressionError::InvalidContextEntry(
+                entry.to_owned(),
+            ));
+        };
+        if key.is_empty() || context_value.is_empty() {
+            return Err(PermissionRuleExpressionError::InvalidContextEntry(
+                entry.to_owned(),
+            ));
+        }
+        if context_value
+            .chars()
+            .any(|ch| ch.is_whitespace() || matches!(ch, '{' | '}' | ',' | '='))
+        {
+            return Err(PermissionRuleExpressionError::InvalidContextValue {
+                key: key.to_owned(),
+                value: context_value.to_owned(),
+            });
+        }
+        if !seen_keys.insert(key.to_owned()) {
+            return Err(PermissionRuleExpressionError::DuplicateContextKey(
+                key.to_owned(),
+            ));
+        }
+
+        match key {
+            "domain" => contexts.push(parse_rule_expression_domain(context_value)?),
+            "world" => contexts.push(parse_rule_expression_world(context_value)?),
+            custom_key => contexts.push(parse_rule_expression_custom(custom_key, context_value)?),
+        }
+    }
+
+    PermissionRuleContext::all(contexts).map_err(PermissionRuleExpressionError::InvalidRuleContext)
+}
+
+fn parse_rule_expression_domain(
+    value: &str,
+) -> Result<PermissionRuleContext, PermissionRuleExpressionError> {
+    if value.is_empty() || !Identifier::validate_namespace(value) {
+        return Err(PermissionRuleExpressionError::InvalidDomain(
+            value.to_owned(),
+        ));
+    }
+    Ok(PermissionRuleContext::domain(value.to_owned()))
+}
+
+fn parse_rule_expression_world(
+    value: &str,
+) -> Result<PermissionRuleContext, PermissionRuleExpressionError> {
+    let Some(world) = parse_loaded_world_identifier(value) else {
+        return Err(PermissionRuleExpressionError::InvalidWorld(
+            value.to_owned(),
+        ));
+    };
+    Ok(PermissionRuleContext::world(world))
+}
+
+fn parse_rule_expression_custom(
+    key: &str,
+    value: &str,
+) -> Result<PermissionRuleContext, PermissionRuleExpressionError> {
+    let key = PermissionContextKey::parse(key.to_owned()).map_err(|source| {
+        PermissionRuleExpressionError::InvalidContextKey {
+            key: key.to_owned(),
+            source,
+        }
+    })?;
+    PermissionRuleContext::custom(key, value.to_owned())
+        .map_err(PermissionRuleExpressionError::InvalidRuleContext)
+}
+
+fn write_permission_expression_context(
+    f: &mut fmt::Formatter<'_>,
+    context: &PermissionRuleContext,
+) -> fmt::Result {
+    if context.is_global() {
+        return Ok(());
+    }
+
+    write!(f, "{{")?;
+    write_permission_expression_context_entries(f, context, &mut true)?;
+    write!(f, "}}")
+}
+
+fn write_permission_expression_context_entries(
+    f: &mut fmt::Formatter<'_>,
+    context: &PermissionRuleContext,
+    first: &mut bool,
+) -> fmt::Result {
+    match context {
+        PermissionRuleContext::Global => {}
+        PermissionRuleContext::Domain(domain) => {
+            write_permission_expression_context_entry(f, first, "domain", domain)?;
+        }
+        PermissionRuleContext::World(world) => {
+            write_permission_expression_context_entry(f, first, "world", &world.to_string())?;
+        }
+        PermissionRuleContext::Custom { key, value } => {
+            write_permission_expression_context_entry(f, first, key.as_str(), value)?;
+        }
+        PermissionRuleContext::All(contexts) => {
+            for context in contexts.iter() {
+                write_permission_expression_context_entries(f, context, first)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_permission_expression_context_entry(
+    f: &mut fmt::Formatter<'_>,
+    first: &mut bool,
+    key: &str,
+    value: &str,
+) -> fmt::Result {
+    if *first {
+        *first = false;
+    } else {
+        write!(f, ",")?;
+    }
+    write!(f, "{key}={value}")
+}
+
+/// Invalid permission rule expression syntax.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PermissionRuleExpressionError {
+    /// The permission key is invalid.
+    InvalidPermissionKey {
+        /// Invalid permission key text.
+        value: String,
+        /// Parse error.
+        source: PermissionKeyError,
+    },
+    /// A context selector started with `{` but did not end with `}`.
+    UnclosedContext,
+    /// The context selector was empty.
+    EmptyContext,
+    /// A context entry was not `key=value`.
+    InvalidContextEntry(String),
+    /// A context entry used an invalid value.
+    InvalidContextValue {
+        /// Context key.
+        key: String,
+        /// Invalid context value.
+        value: String,
+    },
+    /// The same context key appeared more than once.
+    DuplicateContextKey(String),
+    /// The domain context value is invalid.
+    InvalidDomain(String),
+    /// The world context value is invalid.
+    InvalidWorld(String),
+    /// A custom context key is invalid.
+    InvalidContextKey {
+        /// Invalid context key text.
+        key: String,
+        /// Parse error.
+        source: PermissionContextKeyError,
+    },
+    /// The resulting rule context is invalid.
+    InvalidRuleContext(PermissionRuleContextError),
+}
+
+impl fmt::Display for PermissionRuleExpressionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidPermissionKey { value, source } => {
+                write!(f, "invalid permission key '{value}': {source}")
+            }
+            Self::UnclosedContext => write!(f, "permission context selector is not closed"),
+            Self::EmptyContext => write!(f, "permission context selector is empty"),
+            Self::InvalidContextEntry(entry) => {
+                write!(f, "invalid permission context entry '{entry}'")
+            }
+            Self::InvalidContextValue { key, value } => {
+                write!(f, "invalid permission context value '{value}' for '{key}'")
+            }
+            Self::DuplicateContextKey(key) => {
+                write!(f, "permission context key '{key}' appears more than once")
+            }
+            Self::InvalidDomain(domain) => write!(f, "invalid domain context '{domain}'"),
+            Self::InvalidWorld(world) => write!(f, "invalid world context '{world}'"),
+            Self::InvalidContextKey { key, source } => {
+                write!(f, "invalid permission context key '{key}': {source}")
+            }
+            Self::InvalidRuleContext(source) => write!(f, "{source}"),
+        }
+    }
+}
+
+impl Error for PermissionRuleExpressionError {}
 
 /// Context used when evaluating a permission expression.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -305,9 +578,24 @@ impl PermissionContext {
     /// has a different value for the same custom key.
     pub fn with_custom_context(
         mut self,
-        key: PermissionSegment,
+        key: PermissionContextKey,
         value: impl Into<String>,
     ) -> Result<Self, PermissionRuleContextError> {
+        self.add_custom_context(key, value)?;
+        Ok(self)
+    }
+
+    /// Adds a custom active rule context in place.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the value is empty, or when this context already
+    /// has a different value for the same custom key.
+    pub fn add_custom_context(
+        &mut self,
+        key: PermissionContextKey,
+        value: impl Into<String>,
+    ) -> Result<(), PermissionRuleContextError> {
         let context = PermissionRuleContext::custom(key, value)?;
         if let PermissionRuleContext::Custom { key, value } = &context {
             for existing in &self.custom_contexts {
@@ -322,13 +610,13 @@ impl PermissionContext {
                     continue;
                 }
                 if existing_value == value {
-                    return Ok(self);
+                    return Ok(());
                 }
                 return Err(PermissionRuleContextError::DuplicateCustomKey(key.clone()));
             }
         }
         self.custom_contexts.push(context);
-        Ok(self)
+        Ok(())
     }
 }
 
@@ -474,6 +762,101 @@ impl PermissionSegment {
         &self.0
     }
 }
+
+/// One custom permission context key.
+///
+/// Namespaced keys like `plugin:region` are preferred for plugin-owned
+/// contexts. Unqualified keys remain valid for local/server-owned contexts and
+/// existing configuration.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PermissionContextKey(String);
+
+impl PermissionContextKey {
+    /// Parses a custom permission context key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the key is empty or contains invalid characters.
+    pub fn parse(value: impl Into<String>) -> Result<Self, PermissionContextKeyError> {
+        let value = value.into();
+        if value.contains(':') {
+            validate_namespaced_context_key(&value)?;
+            return Ok(Self(value));
+        }
+
+        PermissionSegment::parse(value.clone())
+            .map_err(PermissionContextKeyError::InvalidUnqualified)?;
+        Ok(Self(value))
+    }
+
+    /// Returns this key as a string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+fn validate_namespaced_context_key(value: &str) -> Result<(), PermissionContextKeyError> {
+    let Some((namespace, path)) = value.split_once(':') else {
+        return Err(PermissionContextKeyError::InvalidFormat);
+    };
+    if namespace.is_empty() {
+        return Err(PermissionContextKeyError::EmptyNamespace);
+    }
+    if path.is_empty() {
+        return Err(PermissionContextKeyError::EmptyPath);
+    }
+    if path.contains(':') {
+        return Err(PermissionContextKeyError::InvalidFormat);
+    }
+    if namespace.split('.').any(str::is_empty) {
+        return Err(PermissionContextKeyError::InvalidNamespace);
+    }
+    if path.split(['.', '/']).any(str::is_empty) {
+        return Err(PermissionContextKeyError::InvalidPath);
+    }
+    if !Identifier::validate_namespace(namespace) {
+        return Err(PermissionContextKeyError::InvalidNamespace);
+    }
+    if !Identifier::validate_path(path) {
+        return Err(PermissionContextKeyError::InvalidPath);
+    }
+    Ok(())
+}
+
+/// Invalid custom permission context key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PermissionContextKeyError {
+    /// A namespaced key did not use `namespace:path` syntax.
+    InvalidFormat,
+    /// The namespace was empty.
+    EmptyNamespace,
+    /// The path was empty.
+    EmptyPath,
+    /// The namespace contains invalid characters.
+    InvalidNamespace,
+    /// The path contains invalid characters.
+    InvalidPath,
+    /// An unqualified key was not a valid permission segment.
+    InvalidUnqualified(PermissionKeyError),
+}
+
+impl fmt::Display for PermissionContextKeyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidFormat => write!(f, "context key must be a name or namespaced id"),
+            Self::EmptyNamespace => write!(f, "context key namespace is empty"),
+            Self::EmptyPath => write!(f, "context key path is empty"),
+            Self::InvalidNamespace => {
+                write!(f, "context key namespace contains invalid characters")
+            }
+            Self::InvalidPath => write!(f, "context key path contains invalid characters"),
+            Self::InvalidUnqualified(source) => write!(f, "{source}"),
+        }
+    }
+}
+
+impl Error for PermissionContextKeyError {}
 
 fn validate_permission_segment(segment: &str) -> Result<(), PermissionKeyError> {
     if segment.bytes().all(|byte| {
@@ -712,13 +1095,13 @@ pub enum PermissionContextCatalogSource {
 /// One discoverable custom permission context key and its known values.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PermissionContextCatalogEntry {
-    key: PermissionSegment,
+    key: PermissionContextKey,
     sources: BTreeSet<PermissionContextCatalogSource>,
     values: BTreeMap<String, BTreeSet<PermissionContextCatalogSource>>,
 }
 
 impl PermissionContextCatalogEntry {
-    fn new(key: PermissionSegment, source: PermissionContextCatalogSource) -> Self {
+    fn new(key: PermissionContextKey, source: PermissionContextCatalogSource) -> Self {
         let mut sources = BTreeSet::new();
         sources.insert(source);
         Self {
@@ -730,7 +1113,7 @@ impl PermissionContextCatalogEntry {
 
     /// Returns the custom context key.
     #[must_use]
-    pub const fn key(&self) -> &PermissionSegment {
+    pub const fn key(&self) -> &PermissionContextKey {
         &self.key
     }
 
@@ -770,7 +1153,11 @@ impl PermissionContextCatalog {
     }
 
     /// Registers one custom context key for discovery.
-    pub fn insert_key(&mut self, key: PermissionSegment, source: PermissionContextCatalogSource) {
+    pub fn insert_key(
+        &mut self,
+        key: PermissionContextKey,
+        source: PermissionContextCatalogSource,
+    ) {
         self.entries
             .entry(key.as_str().to_owned())
             .and_modify(|entry| {
@@ -782,7 +1169,7 @@ impl PermissionContextCatalog {
     /// Registers one custom context value for discovery.
     pub fn insert_value(
         &mut self,
-        key: PermissionSegment,
+        key: PermissionContextKey,
         value: impl Into<String>,
         source: PermissionContextCatalogSource,
     ) {
@@ -828,7 +1215,7 @@ impl PermissionContextCatalog {
 
     /// Returns suggestion text for values of `key` matching `prefix`.
     #[must_use]
-    pub fn value_suggestions(&self, key: &PermissionSegment, prefix: &str) -> Vec<String> {
+    pub fn value_suggestions(&self, key: &PermissionContextKey, prefix: &str) -> Vec<String> {
         self.entries
             .get(key.as_str())
             .map(|entry| {
@@ -2154,7 +2541,7 @@ pub struct PermissionRuleCustomContextConfig {
 
 impl PermissionRuleCustomContextConfig {
     fn into_rule_context(self) -> Result<PermissionRuleContext, PermissionRuleContextConfigError> {
-        let key = PermissionSegment::parse(self.key.clone()).map_err(|source| {
+        let key = PermissionContextKey::parse(self.key.clone()).map_err(|source| {
             PermissionRuleContextConfigError::InvalidCustomKey {
                 key: self.key,
                 source,
@@ -2201,9 +2588,12 @@ where
 fn parse_loaded_world_context(
     world: String,
 ) -> Result<Identifier, PermissionRuleContextConfigError> {
-    let Some((domain, name)) = world.split_once(':') else {
-        return Err(PermissionRuleContextConfigError::InvalidWorld(world));
-    };
+    parse_loaded_world_identifier(&world)
+        .ok_or(PermissionRuleContextConfigError::InvalidWorld(world))
+}
+
+fn parse_loaded_world_identifier(value: &str) -> Option<Identifier> {
+    let (domain, name) = value.split_once(':')?;
     if domain.is_empty()
         || name.is_empty()
         || name.contains(':')
@@ -2211,10 +2601,10 @@ fn parse_loaded_world_context(
         || !Identifier::validate_namespace(domain)
         || !Identifier::validate_path(name)
     {
-        return Err(PermissionRuleContextConfigError::InvalidWorld(world));
+        return None;
     }
 
-    Ok(Identifier::new(domain.to_owned(), name.to_owned()))
+    Some(Identifier::new(domain.to_owned(), name.to_owned()))
 }
 
 /// Persists permission group configuration owned outside `steel-core`.
@@ -2870,7 +3260,7 @@ pub enum PermissionRuleContextConfigError {
         /// Invalid custom context key.
         key: String,
         /// Parse error.
-        source: PermissionKeyError,
+        source: PermissionContextKeyError,
     },
     /// Custom context value is empty.
     InvalidCustomValue,
@@ -2945,10 +3335,11 @@ mod tests {
 
     use super::{
         PermissionCatalog, PermissionCatalogSource, PermissionContextCatalog,
-        PermissionContextCatalogSource, PermissionEntry, PermissionExpr, PermissionGroupManager,
-        PermissionGroupManagerError, PermissionGroups, PermissionGroupsConfig, PermissionKey,
-        PermissionKeyError, PermissionMetadataCatalog, PermissionMetadataCatalogSource,
-        PermissionResolutionSource, PermissionRuleContext, PermissionSegment, PermissionSet,
+        PermissionContextCatalogSource, PermissionContextKey, PermissionEntry, PermissionExpr,
+        PermissionGroupManager, PermissionGroupManagerError, PermissionGroups,
+        PermissionGroupsConfig, PermissionKey, PermissionKeyError, PermissionMetadataCatalog,
+        PermissionMetadataCatalogSource, PermissionResolutionSource, PermissionRuleContext,
+        PermissionRuleExpression, PermissionRuleExpressionError, PermissionSegment, PermissionSet,
         PermissionState, PermissionValue, PermissionValueEntry, PermissionValueKeyError,
         PermissionValueSet, parse_permission_value_key,
     };
@@ -2999,8 +3390,8 @@ mod tests {
         parse_permission_value_key(value).expect("metadata key parses")
     }
 
-    fn segment(value: &str) -> PermissionSegment {
-        PermissionSegment::parse(value).expect("segment parses")
+    fn context_key(value: &str) -> PermissionContextKey {
+        PermissionContextKey::parse(value).expect("context key parses")
     }
 
     fn world_context(domain: &str, world: &str) -> super::PermissionContext {
@@ -3011,11 +3402,7 @@ mod tests {
     }
 
     fn rule_custom_context(key: &str, value: &str) -> PermissionRuleContext {
-        PermissionRuleContext::custom(
-            PermissionSegment::parse(key).expect("context key parses"),
-            value,
-        )
-        .expect("custom context parses")
+        PermissionRuleContext::custom(context_key(key), value).expect("custom context parses")
     }
 
     fn config_with_builder_group() -> PermissionGroupsConfig {
@@ -3158,6 +3545,61 @@ mod tests {
     }
 
     #[test]
+    fn permission_rule_expression_parses_plain_permission_keys() {
+        let expression =
+            PermissionRuleExpression::parse("minecraft.command.gamemode").expect("key parses");
+
+        assert_eq!(expression.key(), &key("minecraft.command.gamemode"));
+        assert_eq!(expression.context(), &PermissionRuleContext::Global);
+        assert_eq!(expression.to_string(), "minecraft.command.gamemode");
+    }
+
+    #[test]
+    fn permission_rule_expression_parses_chained_contexts() {
+        let expression = PermissionRuleExpression::parse(
+            "minecraft.command.gamemode{plugin:region=spawn,world=lobby:spawn,domain=lobby}",
+        )
+        .expect("expression parses");
+        let expected_context = PermissionRuleContext::all([
+            PermissionRuleContext::domain("lobby"),
+            PermissionRuleContext::world(Identifier::new("lobby", "spawn")),
+            rule_custom_context("plugin:region", "spawn"),
+        ])
+        .expect("context chain is valid");
+
+        assert_eq!(expression.key(), &key("minecraft.command.gamemode"));
+        assert_eq!(expression.context(), &expected_context);
+        assert_eq!(
+            expression.to_string(),
+            "minecraft.command.gamemode{domain=lobby,world=lobby:spawn,plugin:region=spawn}"
+        );
+    }
+
+    #[test]
+    fn permission_rule_expression_rejects_duplicate_context_keys() {
+        let error =
+            PermissionRuleExpression::parse("steel.fly{plugin:region=spawn,plugin:region=market}")
+                .expect_err("duplicate context key is rejected");
+
+        assert!(matches!(
+            error,
+            PermissionRuleExpressionError::DuplicateContextKey(key) if key == "plugin:region"
+        ));
+    }
+
+    #[test]
+    fn permission_rule_expression_rejects_invalid_context_values() {
+        let error = PermissionRuleExpression::parse("steel.fly{plugin:region=spawn=bad}")
+            .expect_err("separator in context value is rejected");
+
+        assert!(matches!(
+            error,
+            PermissionRuleExpressionError::InvalidContextValue { key, value }
+                if key == "plugin:region" && value == "spawn=bad"
+        ));
+    }
+
+    #[test]
     fn trailing_wildcard_matches_descendants() {
         let wildcard = key("minecraft.command.*");
         let give = key("minecraft.command.give");
@@ -3225,10 +3667,7 @@ mod tests {
             ),
         ]);
         let matching_context = world_context("lobby", "spawn")
-            .with_custom_context(
-                PermissionSegment::parse("region").expect("context key parses"),
-                "spawn",
-            )
+            .with_custom_context(context_key("region"), "spawn")
             .expect("custom context is valid");
 
         assert!(!permissions.allows_key_in(&fly, &matching_context));
@@ -3276,13 +3715,13 @@ mod tests {
     #[test]
     fn active_permission_contexts_reject_conflicting_custom_keys() {
         let context = super::PermissionContext::global()
-            .with_custom_context(segment("region"), "spawn")
+            .with_custom_context(context_key("region"), "spawn")
             .expect("custom context is valid")
-            .with_custom_context(segment("region"), "spawn")
+            .with_custom_context(context_key("region"), "spawn")
             .expect("same custom context is idempotent");
 
         let error = context
-            .with_custom_context(segment("region"), "market")
+            .with_custom_context(context_key("region"), "market")
             .expect_err("custom context key cannot have multiple values");
 
         assert!(matches!(
@@ -3587,24 +4026,24 @@ mod tests {
     fn permission_context_catalog_suggests_keys_and_values() {
         let mut catalog = PermissionContextCatalog::new();
         catalog.insert_value(
-            segment("region"),
+            context_key("region"),
             "spawn",
             PermissionContextCatalogSource::Config,
         );
         catalog.insert_value(
-            segment("region"),
+            context_key("region"),
             "market",
             PermissionContextCatalogSource::Config,
         );
         catalog.insert_value(
-            segment("arena"),
+            context_key("arena"),
             "duel",
             PermissionContextCatalogSource::Config,
         );
 
         assert_eq!(catalog.key_suggestions("r"), vec!["region"]);
         assert_eq!(
-            catalog.value_suggestions(&segment("region"), ""),
+            catalog.value_suggestions(&context_key("region"), ""),
             vec!["market", "spawn"]
         );
         let entry = catalog
@@ -3740,7 +4179,7 @@ mod tests {
 
         assert_eq!(catalog.key_suggestions("r"), vec!["region"]);
         assert_eq!(
-            catalog.value_suggestions(&segment("region"), ""),
+            catalog.value_suggestions(&context_key("region"), ""),
             vec!["market", "spawn"]
         );
         assert!(catalog.entries().all(|entry| {
@@ -4218,16 +4657,10 @@ mod tests {
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
         let effective = groups.effective_permissions(&[], &PermissionSet::new());
         let matching_context = world_context("lobby", "spawn")
-            .with_custom_context(
-                PermissionSegment::parse("region").expect("context key parses"),
-                "spawn",
-            )
+            .with_custom_context(context_key("region"), "spawn")
             .expect("custom context is valid");
         let wrong_region = world_context("lobby", "spawn")
-            .with_custom_context(
-                PermissionSegment::parse("region").expect("context key parses"),
-                "market",
-            )
+            .with_custom_context(context_key("region"), "market")
             .expect("custom context is valid");
 
         assert!(effective.allows_key_in(&key("steel.fly"), &matching_context));
@@ -4258,10 +4691,7 @@ mod tests {
         let effective = groups.effective_values(&[], &PermissionValueSet::new());
         let homes = value_key("steel:homes");
         let matching_context = world_context("lobby", "spawn")
-            .with_custom_context(
-                PermissionSegment::parse("region").expect("context key parses"),
-                "spawn",
-            )
+            .with_custom_context(context_key("region"), "spawn")
             .expect("custom context is valid");
 
         assert_eq!(
@@ -4380,10 +4810,7 @@ mod tests {
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
         let effective = groups.effective_permissions(&[], &PermissionSet::new());
         let context = super::PermissionContext::global()
-            .with_custom_context(
-                PermissionSegment::parse("region").expect("context key parses"),
-                "spawn",
-            )
+            .with_custom_context(context_key("region"), "spawn")
             .expect("custom context is valid");
 
         assert!(effective.allows_key_in(&key("steel.region.build"), &context));
