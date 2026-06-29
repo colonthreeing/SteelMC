@@ -10,7 +10,7 @@ mod world;
 
 pub use game::GameModeParser;
 pub use permission::{PermissionGroupParser, PermissionKeyParser, PermissionRuleExpressionParser};
-pub use position::{BlockPosParser, RotationParser, Vec3Parser};
+pub use position::{BlockPosParser, HeightmapParser, RotationParser, Vec3Parser};
 pub use resource::{
     BiomeParser, EnchantmentParser, EntitySummonParser, ItemParser, StructureParser,
 };
@@ -28,15 +28,16 @@ mod tests {
     };
 
     use crate::{
+        chunk::heightmap::HeightmapType,
         command::{
             graph::{
                 CommandArgumentParser, CommandParseErrorKind, ParsedArgument, ParsedArguments,
             },
             parsers::{
                 BiomeParser, BlockPosParser, ComponentParser, DomainParser, EnchantmentParser,
-                EntityParser, EntitySummonParser, GameModeParser, ItemParser, PermissionKeyParser,
-                PermissionRuleExpressionParser, PermissionTargetParser, PlayerParser,
-                RotationParser, StructureParser, TimeParser, Vec3Parser, WorldParser,
+                EntityParser, EntitySummonParser, GameModeParser, HeightmapParser, ItemParser,
+                PermissionKeyParser, PermissionRuleExpressionParser, PermissionTargetParser,
+                PlayerParser, RotationParser, StructureParser, TimeParser, Vec3Parser, WorldParser,
             },
             reader::CommandReader,
             requirement::{
@@ -537,6 +538,31 @@ mod tests {
             CommandParseErrorKind::InvalidBlockPos(value) if value == "1 2"
         ));
         assert_eq!(error.cursor(), 0);
+    }
+
+    #[test]
+    fn heightmap_parser_accepts_vanilla_names_case_insensitively() {
+        let mut reader = CommandReader::new("MOTION_BLOCKING_NO_LEAVES");
+        let value = HeightmapParser
+            .parse(&mut reader, &TestContext)
+            .expect("heightmap parses");
+
+        assert!(matches!(
+            value,
+            ParsedArgument::Heightmap(HeightmapType::MotionBlockingNoLeaves)
+        ));
+    }
+
+    #[test]
+    fn heightmap_parser_suggests_kept_after_worldgen_types() {
+        let suggestions =
+            HeightmapParser.suggest("motion", &ParsedArguments::default(), &TestContext);
+        let texts = suggestions
+            .iter()
+            .map(|suggestion| suggestion.text.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(texts, vec!["motion_blocking", "motion_blocking_no_leaves"]);
     }
 
     #[test]

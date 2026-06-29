@@ -9,6 +9,7 @@ use steel_utils::{BlockPos, Identifier, types::GameType};
 use text_components::TextComponent;
 use uuid::Uuid;
 
+use crate::chunk::heightmap::HeightmapType;
 use crate::command::context::EntityAnchor;
 use crate::entity::SharedEntity;
 use crate::permission::{
@@ -65,6 +66,8 @@ pub enum ParsedArgument {
     Vec3(DVec3),
     /// Block position argument.
     BlockPos(BlockPos),
+    /// Heightmap type argument.
+    Heightmap(HeightmapType),
     /// Rotation argument.
     Rotation((f32, f32)),
     /// Text component argument.
@@ -245,6 +248,7 @@ impl fmt::Debug for ParsedArgument {
             Self::World(value) => f.debug_tuple("World").field(&value.key).finish(),
             Self::Vec3(value) => f.debug_tuple("Vec3").field(value).finish(),
             Self::BlockPos(value) => f.debug_tuple("BlockPos").field(value).finish(),
+            Self::Heightmap(value) => f.debug_tuple("Heightmap").field(value).finish(),
             Self::Rotation(value) => f.debug_tuple("Rotation").field(value).finish(),
             Self::Component(_) => f.debug_tuple("Component").finish(),
         }
@@ -321,6 +325,7 @@ impl ParsedArgument {
             Self::World(_) => "world",
             Self::Vec3(_) => "vec3",
             Self::BlockPos(_) => "block_pos",
+            Self::Heightmap(_) => "heightmap",
             Self::Rotation(_) => "rotation",
             Self::Component(_) => "component",
         }
@@ -601,6 +606,17 @@ impl FromParsedArgument for BlockPos {
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
         let ParsedArgument::BlockPos(value) = value else {
+            return None;
+        };
+        Some(*value)
+    }
+}
+
+impl FromParsedArgument for HeightmapType {
+    const TYPE_NAME: &'static str = "heightmap";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::Heightmap(value) = value else {
             return None;
         };
         Some(*value)

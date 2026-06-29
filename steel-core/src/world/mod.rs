@@ -1038,6 +1038,15 @@ impl World {
             .is_full_chunk_loaded(Self::chunk_pos_for_block(pos))
     }
 
+    pub(crate) fn heightmap_first_available(
+        &self,
+        heightmap_type: HeightmapType,
+        x: i32,
+        z: i32,
+    ) -> Option<i32> {
+        self.height_at(heightmap_type, x, z)
+    }
+
     pub(crate) fn queue_light_change_after_block_set(
         &self,
         pos: BlockPos,

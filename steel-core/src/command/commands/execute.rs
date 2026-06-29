@@ -1,9 +1,9 @@
 //! Handler for the "execute" command.
 //!
 //! Store callbacks, scoreboards, data/NBT paths, predicates, functions, item
-//! predicates, block predicates, region comparisons, stopwatch predicates, and
-//! heightmap positioning are not registered here yet because their backing
-//! foundations are not implemented in Steel's command/runtime layer.
+//! predicates, block predicates, region comparisons, and stopwatch predicates
+//! are not registered here yet because their backing foundations are not
+//! implemented in Steel's command/runtime layer.
 
 use std::{borrow::Cow, sync::Arc};
 
@@ -14,6 +14,7 @@ use steel_utils::{BlockPos, translations};
 use text_components::TextComponent;
 use text_components::translation::TranslatedMessage;
 
+use crate::chunk::heightmap::HeightmapType;
 use crate::command::CommandRegistrationSpec;
 use crate::command::context::{CommandContext, EntityAnchor, anchored_position};
 use crate::command::error::CommandError;
@@ -23,8 +24,8 @@ use crate::command::graph::{
     CommandResult, ParsedArgument, ParsedArguments, argument, literal,
 };
 use crate::command::parsers::{
-    BiomeParser, BlockPosParser, EntityParser, EntitySummonParser, RotationParser, Vec3Parser,
-    WorldParser,
+    BiomeParser, BlockPosParser, EntityParser, EntitySummonParser, HeightmapParser,
+    RotationParser, Vec3Parser, WorldParser,
 };
 use crate::command::reader::CommandReader;
 use crate::command::requirement::CommandInputContext;
@@ -66,6 +67,12 @@ pub(crate) fn command() -> CommandNodeBuilder {
                     literal("as").then(argument("targets", EntityParser::multiple()).forks(
                         CommandRedirectTarget::Current,
                         fork_positioned_as,
+                    )),
+                )
+                .then(
+                    literal("over").then(argument("heightmap", HeightmapParser).redirects(
+                        CommandRedirectTarget::Current,
+                        set_position_over,
                     )),
                 ),
         )
@@ -251,6 +258,29 @@ fn set_position(
         .clone()
         .with_position(position(arguments)?)
         .with_anchor(EntityAnchor::Feet);
+    Ok(CommandResult::success())
+}
+
+fn set_position_over(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let heightmap_type = heightmap(arguments)?;
+    let x = context.position.x.floor() as i32;
+    let z = context.position.z.floor() as i32;
+    if !context
+        .world
+        .is_full_chunk_loaded_at(BlockPos::new(x, 0, z))
+    {
+        return Err(position_error("argument.pos.unloaded"));
+    }
+    let Some(height) = context.world.heightmap_first_available(heightmap_type, x, z) else {
+        return Err(position_error("argument.pos.unloaded"));
+    };
+
+    *context = context
+        .clone()
+        .with_position(DVec3::new(context.position.x, f64::from(height), context.position.z));
     Ok(CommandResult::success())
 }
 
@@ -588,6 +618,12 @@ fn biome_value(arguments: &ParsedArguments) -> Result<BiomeArgumentValue, Comman
         .map_err(super::invalid_parsed_argument)
 }
 
+fn heightmap(arguments: &ParsedArguments) -> Result<HeightmapType, CommandError> {
+    arguments
+        .get::<HeightmapType>("heightmap")
+        .map_err(super::invalid_parsed_argument)
+}
+
 fn rotation(arguments: &ParsedArguments) -> Result<(f32, f32), CommandError> {
     arguments
         .get::<(f32, f32)>("rot")
@@ -773,5 +809,16 @@ mod tests {
             redirected.path(),
             ["execute", "unless", "biome", "pos", "biome"]
         );
+    }
+
+    #[test]
+    fn positioned_over_parses_redirect_form() {
+        let graph = graph();
+        let context = TestContext;
+
+        let parsed = graph
+            .parse("execute positioned over motion_blocking run seed", &context)
+            .expect("positioned over parses");
+        assert_eq!(parsed.path(), ["execute", "positioned", "over", "heightmap"]);
     }
 }

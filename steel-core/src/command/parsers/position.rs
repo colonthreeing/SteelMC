@@ -3,14 +3,15 @@
 use std::f32::consts::PI;
 
 use glam::DVec3;
-use steel_protocol::packets::game::ArgumentType;
+use steel_protocol::packets::game::{ArgumentType, SuggestionEntry};
 use steel_utils::BlockPos;
 
+use crate::chunk::heightmap::HeightmapType;
 use crate::command::{
     context::anchored_position,
     graph::{
         CommandArgumentClientParser, CommandArgumentParser, CommandParseError,
-        CommandParseErrorKind, ParsedArgument,
+        CommandParseErrorKind, ParsedArgument, ParsedArguments,
     },
     reader::CommandReader,
     requirement::CommandInputContext,
@@ -169,6 +170,63 @@ impl CommandArgumentParser for BlockPosParser {
 
     fn parsed_type(&self) -> &'static str {
         "block_pos"
+    }
+}
+
+/// Heightmap type argument parser.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HeightmapParser;
+
+impl CommandArgumentParser for HeightmapParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let raw = reader.read_token()?;
+        let Some(heightmap) = heightmap_type_from_name(&raw) else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidHeightmap(raw),
+                cursor,
+            ));
+        };
+
+        Ok(ParsedArgument::Heightmap(heightmap))
+    }
+
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(ArgumentType::Heightmap, None)
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "heightmap"
+    }
+
+    fn examples(&self) -> &'static [&'static str] {
+        &["world_surface", "motion_blocking"]
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        _arguments: &ParsedArguments,
+        _context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        const HEIGHTMAP_NAMES: &[&str] = &[
+            "world_surface",
+            "motion_blocking",
+            "motion_blocking_no_leaves",
+            "ocean_floor",
+        ];
+
+        let prefix = prefix.to_ascii_lowercase();
+        HEIGHTMAP_NAMES
+            .iter()
+            .copied()
+            .filter(|heightmap| heightmap.starts_with(&prefix))
+            .map(SuggestionEntry::new)
+            .collect()
     }
 }
 
@@ -362,6 +420,16 @@ fn anchor_position(context: &dyn CommandInputContext) -> Option<DVec3> {
         context.entity().map(AsRef::as_ref),
         context.anchor(),
     ))
+}
+
+fn heightmap_type_from_name(value: &str) -> Option<HeightmapType> {
+    match value.to_ascii_lowercase().as_str() {
+        "world_surface" => Some(HeightmapType::WorldSurface),
+        "motion_blocking" => Some(HeightmapType::MotionBlocking),
+        "motion_blocking_no_leaves" => Some(HeightmapType::MotionBlockingNoLeaves),
+        "ocean_floor" => Some(HeightmapType::OceanFloor),
+        _ => None,
+    }
 }
 
 fn parse_rotation_coordinate(value: &str, origin: f32) -> Option<f32> {

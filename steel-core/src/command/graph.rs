@@ -159,6 +159,8 @@ pub enum CommandParseErrorKind {
     InvalidVec3(String),
     /// A block position argument was invalid.
     InvalidBlockPos(String),
+    /// A heightmap argument was invalid.
+    InvalidHeightmap(String),
     /// A rotation argument was invalid.
     InvalidRotation(String),
     /// A swizzle argument was invalid.
@@ -215,6 +217,7 @@ impl CommandParseErrorKind {
             | Self::InvalidWorld(_)
             | Self::InvalidVec3(_)
             | Self::InvalidBlockPos(_)
+            | Self::InvalidHeightmap(_)
             | Self::InvalidRotation(_)
             | Self::InvalidSwizzle(_)
             | Self::InvalidComponent(_)

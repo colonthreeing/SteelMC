@@ -534,6 +534,9 @@ impl CommandDispatcher {
             CommandParseErrorKind::InvalidBlockPos(value) => {
                 TextComponent::plain(format!("Invalid block position '{value}'"))
             }
+            CommandParseErrorKind::InvalidHeightmap(value) => {
+                TextComponent::plain(format!("Invalid heightmap '{value}'"))
+            }
             CommandParseErrorKind::InvalidRotation(value) => {
                 TextComponent::plain(format!("Invalid rotation '{value}'"))
             }
