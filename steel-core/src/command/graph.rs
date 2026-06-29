@@ -20,8 +20,9 @@ mod traversal;
 
 pub use arguments::{
     BiomeArgumentValue, BlockPredicateArgumentValue, CommandPermissionArgument, FromParsedArgument,
-    IntRangeArgumentValue, ParsedArgument, ParsedArgumentError, ParsedArguments, PermissionTarget,
-    ScoreHolderArgumentValue, ScoreboardObjectiveName, StructureArgumentValue,
+    IntRangeArgumentValue, ItemSlotRangeArgumentValue, ParsedArgument, ParsedArgumentError,
+    ParsedArguments, PermissionTarget, ScoreHolderArgumentValue, ScoreboardObjectiveName,
+    StructureArgumentValue,
 };
 pub use builder::{CommandNodeBuilder, argument, literal};
 use node::{CommandNode, CommandNodeKind, collect_ambiguities, merge_or_push_node};
@@ -162,6 +163,8 @@ pub enum CommandParseErrorKind {
     InvalidEntityType(String),
     /// An item argument was invalid.
     InvalidItem(String),
+    /// An item slot range argument was invalid.
+    InvalidItemSlot(String),
     /// An enchantment argument was invalid.
     InvalidEnchantment(String),
     /// A biome argument was invalid.
@@ -240,6 +243,7 @@ impl CommandParseErrorKind {
             | Self::InvalidEntity(_)
             | Self::InvalidEntityType(_)
             | Self::InvalidItem(_)
+            | Self::InvalidItemSlot(_)
             | Self::InvalidEnchantment(_)
             | Self::InvalidBiome(_)
             | Self::InvalidBlockPredicate(_)

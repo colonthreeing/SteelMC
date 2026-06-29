@@ -574,6 +574,9 @@ impl CommandDispatcher {
             CommandParseErrorKind::InvalidItem(value) => translations::ARGUMENT_ITEM_ID_INVALID
                 .message([TextComponent::from(value.clone())])
                 .into(),
+            CommandParseErrorKind::InvalidItemSlot(value) => {
+                TextComponent::plain(format!("Invalid item slot '{value}'"))
+            }
             CommandParseErrorKind::InvalidWorld(value) => translations::ARGUMENT_DIMENSION_INVALID
                 .message([TextComponent::from(value.clone())])
                 .into(),

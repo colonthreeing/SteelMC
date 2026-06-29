@@ -58,6 +58,8 @@ pub enum ParsedArgument {
     EntityType(EntityTypeRef),
     /// Item argument.
     Item(ItemRef),
+    /// Item slot range argument.
+    ItemSlots(ItemSlotRangeArgumentValue),
     /// Enchantment argument.
     Enchantment(EnchantmentRef),
     /// Biome or biome tag argument.
@@ -141,6 +143,13 @@ pub enum StructureArgumentValue {
         /// Structures in the tag.
         structures: Vec<StructureRef>,
     },
+}
+
+/// Item slot range command argument value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ItemSlotRangeArgumentValue {
+    name: String,
+    slots: Vec<i32>,
 }
 
 /// Player target for permission-management commands.
@@ -322,6 +331,29 @@ impl StructureArgumentValue {
     }
 }
 
+impl ItemSlotRangeArgumentValue {
+    /// Creates an item slot range value.
+    #[must_use]
+    pub fn new(name: impl Into<String>, slots: Vec<i32>) -> Self {
+        Self {
+            name: name.into(),
+            slots,
+        }
+    }
+
+    /// Returns the vanilla slot range name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the vanilla slot IDs in this range.
+    #[must_use]
+    pub fn slots(&self) -> &[i32] {
+        &self.slots
+    }
+}
+
 impl BiomeArgumentValue {
     /// Returns whether this value matches `biome`.
     #[must_use]
@@ -415,6 +447,7 @@ impl fmt::Debug for ParsedArgument {
                 .finish(),
             Self::EntityType(value) => f.debug_tuple("EntityType").field(&value.key).finish(),
             Self::Item(value) => f.debug_tuple("Item").field(&value.key).finish(),
+            Self::ItemSlots(value) => f.debug_tuple("ItemSlots").field(value).finish(),
             Self::Enchantment(value) => f.debug_tuple("Enchantment").field(&value.key).finish(),
             Self::Biome(value) => f.debug_tuple("Biome").field(value).finish(),
             Self::BlockPredicate(value) => f.debug_tuple("BlockPredicate").field(value).finish(),
@@ -500,6 +533,7 @@ impl ParsedArgument {
             Self::Entities(_) => "entities",
             Self::EntityType(_) => "entity_type",
             Self::Item(_) => "item",
+            Self::ItemSlots(_) => "item_slots",
             Self::Enchantment(_) => "enchantment",
             Self::Biome(_) => "biome",
             Self::BlockPredicate(_) => "block_predicate",
@@ -773,6 +807,17 @@ impl FromParsedArgument for ItemRef {
             return None;
         };
         Some(*value)
+    }
+}
+
+impl FromParsedArgument for ItemSlotRangeArgumentValue {
+    const TYPE_NAME: &'static str = "item_slots";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::ItemSlots(value) = value else {
+            return None;
+        };
+        Some(value.clone())
     }
 }
 

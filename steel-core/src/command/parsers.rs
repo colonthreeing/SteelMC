@@ -7,6 +7,7 @@ mod permission;
 mod position;
 mod resource;
 mod scoreboard;
+mod slot;
 mod target;
 mod text;
 mod world;
@@ -21,6 +22,7 @@ pub use resource::{
     BiomeParser, EnchantmentParser, EntitySummonParser, ItemParser, StructureParser,
 };
 pub use scoreboard::{IntRangeParser, ObjectiveParser, ScoreHolderParser};
+pub use slot::ItemSlotsParser;
 pub use target::{EntityParser, PermissionTargetParser, PlayerParser};
 pub use text::{ComponentParser, TimeParser};
 pub use world::{DomainParser, WorldParser};
@@ -43,10 +45,10 @@ mod tests {
             parsers::{
                 BiomeParser, BlockPosParser, BlockPredicateParser, ComponentParser, DomainParser,
                 EnchantmentParser, EntityParser, EntitySummonParser, GameModeParser,
-                HeightmapParser, IntRangeParser, ItemParser, NbtPathParser, ObjectiveParser,
-                PermissionKeyParser, PermissionRuleExpressionParser, PermissionTargetParser,
-                PlayerParser, RotationParser, ScoreHolderParser, StructureParser, TimeParser,
-                Vec3Parser, WorldParser,
+                HeightmapParser, IntRangeParser, ItemParser, ItemSlotsParser, NbtPathParser,
+                ObjectiveParser, PermissionKeyParser, PermissionRuleExpressionParser,
+                PermissionTargetParser, PlayerParser, RotationParser, ScoreHolderParser,
+                StructureParser, TimeParser, Vec3Parser, WorldParser,
             },
             reader::CommandReader,
             requirement::{
@@ -543,6 +545,75 @@ mod tests {
                 .iter()
                 .any(|suggestion| suggestion.text == "minecraft:oak_planks")
         );
+    }
+
+    #[test]
+    fn item_slots_parser_matches_vanilla_slot_ranges() {
+        for (input, expected_slots) in [
+            ("contents", vec![0]),
+            ("container.5", vec![5]),
+            ("container.*", (0..54).collect()),
+            ("hotbar.*", (0..9).collect()),
+            ("inventory.0", vec![9]),
+            ("enderchest.26", vec![226]),
+            ("mob.inventory.*", (300..308).collect()),
+            ("horse.14", vec![514]),
+            ("weapon", vec![98]),
+            ("weapon.offhand", vec![99]),
+            ("weapon.*", vec![98, 99]),
+            ("armor.head", vec![103]),
+            ("armor.*", vec![103, 102, 101, 100, 105]),
+            ("saddle", vec![106]),
+            ("horse.chest", vec![499]),
+            ("player.cursor", vec![499]),
+            ("player.crafting.3", vec![503]),
+        ] {
+            let mut reader = CommandReader::new(input);
+            let ParsedArgument::ItemSlots(range) = ItemSlotsParser
+                .parse(&mut reader, &TestContext)
+                .expect("item slots parse")
+            else {
+                panic!("expected item slots");
+            };
+
+            assert_eq!(range.name(), input);
+            assert_eq!(range.slots(), expected_slots.as_slice());
+        }
+    }
+
+    #[test]
+    fn item_slots_parser_rejects_unknown_names() {
+        let mut reader = CommandReader::new("container.54");
+        let error = ItemSlotsParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("unknown slot range is rejected");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidItemSlot(value) if value == "container.54"
+        ));
+    }
+
+    #[test]
+    fn item_slots_parser_uses_native_client_type() {
+        let (argument_type, suggestion_type) =
+            ItemSlotsParser.client_parser().into_protocol_argument();
+        assert!(matches!(argument_type, ArgumentType::ItemSlots));
+        assert!(suggestion_type.is_none());
+    }
+
+    #[test]
+    fn item_slots_parser_suggests_vanilla_slot_names() {
+        let suggestions =
+            ItemSlotsParser.suggest("weapon.", &ParsedArguments::default(), &TestContext);
+        let texts = suggestions
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+
+        assert!(texts.contains(&"weapon.mainhand".to_owned()));
+        assert!(texts.contains(&"weapon.offhand".to_owned()));
+        assert!(texts.contains(&"weapon.*".to_owned()));
     }
 
     #[test]
