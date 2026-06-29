@@ -15,7 +15,10 @@ use crate::chunk::{
     chunk_access::ChunkStatus,
     chunk_request::{ChunkRequestHandle, ChunkRequestState, ChunkTicketKind},
 };
-use crate::command::{CommandDispatcher, CommandQueue, commands::gamemode, sender::CommandSender};
+use crate::command::{
+    CommandDispatcher, CommandQueue, commands::gamemode, sender::CommandSender,
+    storage::CommandStorage,
+};
 use crate::config::{ResolvedWorldConfig, RuntimeConfig, WorldsConfig};
 use crate::entity::{Entity, EntityBase, RemovalReason, SharedEntity, init_entities};
 
@@ -469,6 +472,8 @@ pub struct Server {
     pub tick_rate_manager: SyncRwLock<TickRateManager>,
     /// Server-level scoreboard state.
     pub scoreboard: Scoreboard,
+    /// Server-level command storage used by `/data storage` and `/execute ... storage`.
+    pub command_storage: CommandStorage,
     /// Parses and dispatches commands.
     pub command_dispatcher: SyncRwLock<CommandDispatcher>,
     /// Serializes async command execution outside packet handling.
@@ -633,6 +638,7 @@ impl Server {
             registry_cache,
             tick_rate_manager: SyncRwLock::new(TickRateManager::new()),
             scoreboard: Scoreboard::new(),
+            command_storage: CommandStorage::new(),
             command_dispatcher: SyncRwLock::new(
                 CommandDispatcher::new()
                     .map_err(|e| format!("failed to register commands: {e}"))?,

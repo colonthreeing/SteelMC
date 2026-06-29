@@ -176,6 +176,8 @@ pub enum CommandParseErrorKind {
     InvalidDomain(String),
     /// A world argument was invalid.
     InvalidWorld(String),
+    /// An identifier argument was invalid.
+    InvalidIdentifier(String),
     /// A 3D vector argument was invalid.
     InvalidVec3(String),
     /// A block position argument was invalid.
@@ -245,6 +247,7 @@ impl CommandParseErrorKind {
             | Self::InvalidStructure(_)
             | Self::InvalidDomain(_)
             | Self::InvalidWorld(_)
+            | Self::InvalidIdentifier(_)
             | Self::InvalidVec3(_)
             | Self::InvalidBlockPos(_)
             | Self::InvalidHeightmap(_)

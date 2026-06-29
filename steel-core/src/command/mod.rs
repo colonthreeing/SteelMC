@@ -8,6 +8,7 @@ pub mod parsers;
 pub mod reader;
 pub mod requirement;
 pub mod sender;
+pub mod storage;
 pub(crate) mod suggestions;
 
 use steel_protocol::packets::game::{CCommandSuggestions, CCommands, CommandNode, SuggestionEntry};
@@ -576,6 +577,9 @@ impl CommandDispatcher {
             CommandParseErrorKind::InvalidWorld(value) => translations::ARGUMENT_DIMENSION_INVALID
                 .message([TextComponent::from(value.clone())])
                 .into(),
+            CommandParseErrorKind::InvalidIdentifier(value) => {
+                TextComponent::plain(format!("Invalid identifier '{value}'"))
+            }
             CommandParseErrorKind::InvalidComponent(value) => {
                 translations::ARGUMENT_COMPONENT_INVALID
                     .message([TextComponent::from(value.clone())])

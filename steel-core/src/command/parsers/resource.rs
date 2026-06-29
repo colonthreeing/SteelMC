@@ -76,11 +76,12 @@ impl CommandArgumentParser for EntitySummonParser {
     }
 }
 
-fn parse_resource_identifier(input: &str) -> Option<Identifier> {
-    let (namespace, path) = input.split_once(':').map_or(
-        (Identifier::VANILLA_NAMESPACE, input),
-        |(namespace, path)| (namespace, path),
-    );
+pub(crate) fn parse_resource_identifier(input: &str) -> Option<Identifier> {
+    let (namespace, path) = match input.split_once(':') {
+        Some(("", path)) => (Identifier::VANILLA_NAMESPACE, path),
+        Some((namespace, path)) => (namespace, path),
+        None => (Identifier::VANILLA_NAMESPACE, input),
+    };
 
     Identifier::validate(namespace, path)
         .then(|| Identifier::new(namespace.to_owned(), path.to_owned()))

@@ -16,6 +16,7 @@ pub use game::GameModeParser;
 pub use nbt::NbtPathParser;
 pub use permission::{PermissionGroupParser, PermissionKeyParser, PermissionRuleExpressionParser};
 pub use position::{BlockPosParser, HeightmapParser, RotationParser, Vec3Parser};
+pub(crate) use resource::parse_resource_identifier;
 pub use resource::{
     BiomeParser, EnchantmentParser, EntitySummonParser, ItemParser, StructureParser,
 };
@@ -58,7 +59,7 @@ mod tests {
             PermissionContextCatalogSource, PermissionContextKey, PermissionKey,
         },
     };
-    use steel_utils::types::GameType;
+    use steel_utils::{Identifier, types::GameType};
 
     struct TestContext;
 
@@ -497,6 +498,23 @@ mod tests {
             value,
             ParsedArgument::EntityType(entity_type) if entity_type == &vanilla_entities::PIG
         ));
+    }
+
+    #[test]
+    fn resource_identifier_helper_uses_vanilla_default_namespace() {
+        assert_eq!(
+            super::parse_resource_identifier("stone"),
+            Some(Identifier::vanilla_static("stone"))
+        );
+        assert_eq!(
+            super::parse_resource_identifier(":stone"),
+            Some(Identifier::vanilla_static("stone"))
+        );
+        assert_eq!(
+            super::parse_resource_identifier("steel:data"),
+            Some(Identifier::new_static("steel", "data"))
+        );
+        assert!(super::parse_resource_identifier("Steel:data").is_none());
     }
 
     #[test]
