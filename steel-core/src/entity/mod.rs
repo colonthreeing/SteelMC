@@ -52,8 +52,10 @@ use steel_utils::random::Random as _;
 use steel_utils::types::{Difficulty, InteractionHand};
 use steel_utils::{
     BlockPos, BlockStateId, ChunkPos, Direction, Identifier, UuidExt, WorldAabb, axis::Axis,
+    text::DisplayResolutor,
 };
 use text_components::TextComponent;
+use text_components::resolving::TextResolutor as _;
 use uuid::Uuid;
 
 use crate::behavior::{
@@ -1149,6 +1151,16 @@ impl<'a> EntityCapabilities<'a> {
     }
 }
 
+fn entity_type_plain_text_name(entity_type: EntityTypeRef) -> String {
+    let description_id = format!(
+        "entity.{}.{}",
+        entity_type.key.namespace, entity_type.key.path
+    );
+    DisplayResolutor
+        .translate(&description_id)
+        .unwrap_or(description_id)
+}
+
 /// A trait for entities.
 ///
 /// This trait provides the core functionality for entities.
@@ -1210,6 +1222,18 @@ pub trait Entity: EntityEventSource + Send + Sync {
     /// their game profile name.
     fn scoreboard_name(&self) -> String {
         self.uuid().to_string()
+    }
+
+    /// Returns this entity's plain vanilla display name.
+    ///
+    /// Mirrors vanilla `Nameable.getPlainTextName()`: custom names are resolved
+    /// as text components, otherwise entities use their type description.
+    /// Players override this with their game profile name.
+    fn plain_text_name(&self) -> String {
+        if let Some(custom_name) = self.custom_name() {
+            return custom_name.to_plain(&DisplayResolutor);
+        }
+        entity_type_plain_text_name(self.entity_type())
     }
 
     /// Gets the entity's current position.

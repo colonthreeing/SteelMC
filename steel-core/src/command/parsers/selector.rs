@@ -51,7 +51,6 @@ pub(super) struct EntitySelector {
     x_rotation: Option<FloatRange>,
     y_rotation: Option<FloatRange>,
     filters: Vec<SelectorFilter>,
-    has_name_filter: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -602,12 +601,7 @@ impl SelectorFilter {
     fn matches(&self, entity: &dyn Entity, server: &Server) -> bool {
         match self {
             Self::Alive => entity.is_alive(),
-            Self::Name { value, inverted } => {
-                let matches = entity
-                    .as_player()
-                    .is_some_and(|player| player.gameprofile.name == *value);
-                matches != *inverted
-            }
+            Self::Name { value, inverted } => entity_name_filter_matches(value, *inverted, entity),
             Self::GameMode { value, inverted } => {
                 let matches = entity
                     .as_player()
@@ -643,6 +637,10 @@ impl SelectorFilter {
 fn entity_nbt_filter_matches(expected: &NbtCompound, inverted: bool, entity: &dyn Entity) -> bool {
     let actual = entity.nbt_for_data_compare();
     compare_nbt_compounds(expected, &actual, true) != inverted
+}
+
+fn entity_name_filter_matches(value: &str, inverted: bool, entity: &dyn Entity) -> bool {
+    (entity.plain_text_name() == value) != inverted
 }
 
 fn score_filter_matches(
@@ -812,7 +810,6 @@ fn parse_name_or_uuid(
             x_rotation: None,
             y_rotation: None,
             filters: Vec::new(),
-            has_name_filter: false,
         });
     }
     if !is_valid_player_name(&name) {
@@ -836,7 +833,6 @@ fn parse_name_or_uuid(
         x_rotation: None,
         y_rotation: None,
         filters: Vec::new(),
-        has_name_filter: false,
     })
 }
 
@@ -867,7 +863,6 @@ fn parse_selector_type(
             x_rotation: None,
             y_rotation: None,
             filters: Vec::new(),
-            has_name_filter: false,
         },
         'e' => EntitySelector {
             raw: String::new(),
@@ -884,7 +879,6 @@ fn parse_selector_type(
             x_rotation: None,
             y_rotation: None,
             filters: vec![SelectorFilter::Alive],
-            has_name_filter: false,
         },
         'n' => EntitySelector {
             raw: String::new(),
@@ -901,7 +895,6 @@ fn parse_selector_type(
             x_rotation: None,
             y_rotation: None,
             filters: vec![SelectorFilter::Alive],
-            has_name_filter: false,
         },
         'p' => EntitySelector {
             raw: String::new(),
@@ -918,7 +911,6 @@ fn parse_selector_type(
             x_rotation: None,
             y_rotation: None,
             filters: Vec::new(),
-            has_name_filter: false,
         },
         'r' => EntitySelector {
             raw: String::new(),
@@ -935,7 +927,6 @@ fn parse_selector_type(
             x_rotation: None,
             y_rotation: None,
             filters: Vec::new(),
-            has_name_filter: false,
         },
         's' => EntitySelector {
             raw: String::new(),
@@ -952,7 +943,6 @@ fn parse_selector_type(
             x_rotation: None,
             y_rotation: None,
             filters: Vec::new(),
-            has_name_filter: false,
         },
         other => {
             return Err(SelectorParseError::invalid_at(
@@ -970,12 +960,6 @@ fn parse_selector_type(
         return Err(SelectorParseError::invalid_at(
             "unexpected trailing selector data",
             reader.cursor(),
-        ));
-    }
-    if selector.has_name_filter && selector.includes_entities {
-        return Err(SelectorParseError::unsupported(
-            "name requires a player-limited selector until entity plain names are implemented",
-            0,
         ));
     }
     Ok(selector)
@@ -1125,7 +1109,6 @@ fn parse_name_option(
             )
         })?;
     let value = reader.read_string_value()?;
-    selector.has_name_filter = true;
     selector
         .filters
         .push(SelectorFilter::Name { value, inverted });
@@ -1705,6 +1688,7 @@ mod tests {
     use steel_registry::{
         entity_type::EntityTypeRef, test_support::init_test_registry, vanilla_entities,
     };
+    use text_components::TextComponent;
 
     use crate::{
         command::reader::CommandReader,
@@ -1713,8 +1697,9 @@ mod tests {
     };
 
     use super::{
-        IntRange, SelectorFilter, SelectorParseErrorKind, SelectorType, entity_nbt_filter_matches,
-        parse_selector_plan, read_selector_argument, score_filter_matches,
+        IntRange, SelectorFilter, SelectorParseErrorKind, SelectorType, entity_name_filter_matches,
+        entity_nbt_filter_matches, parse_selector_plan, read_selector_argument,
+        score_filter_matches,
     };
 
     struct SelectorNbtTestEntity {
@@ -1780,10 +1765,32 @@ mod tests {
     }
 
     #[test]
-    fn selector_rejects_name_on_broad_entity_selector() {
-        let error = parse_selector_plan("@e[name=Steve]".to_owned(), true)
-            .expect_err("name filter is unsupported for broad entities");
-        assert!(matches!(error.kind, SelectorParseErrorKind::Unsupported(_)));
+    fn selector_parses_name_on_broad_entity_selector() {
+        let selector =
+            parse_selector_plan("@e[name=Steve]".to_owned(), true).expect("selector parses");
+
+        assert!(selector.includes_entities);
+        assert!(selector.filters.iter().any(
+            |filter| matches!(filter, SelectorFilter::Name { value, .. } if value == "Steve")
+        ));
+    }
+
+    #[test]
+    fn selector_name_filter_matches_custom_entity_names() {
+        let entity = SelectorNbtTestEntity::new();
+        entity.set_custom_name(Some(TextComponent::plain("Named item")));
+
+        assert!(entity_name_filter_matches("Named item", false, &entity));
+        assert!(!entity_name_filter_matches("Item", false, &entity));
+        assert!(entity_name_filter_matches("Other", true, &entity));
+    }
+
+    #[test]
+    fn selector_name_filter_uses_entity_type_plain_name() {
+        let entity = SelectorNbtTestEntity::new();
+
+        assert_eq!(entity.plain_text_name(), "Item");
+        assert!(entity_name_filter_matches("Item", false, &entity));
     }
 
     #[test]

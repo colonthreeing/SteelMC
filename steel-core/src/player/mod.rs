@@ -1617,6 +1617,10 @@ impl Entity for Player {
         self.gameprofile.name.to_owned()
     }
 
+    fn plain_text_name(&self) -> String {
+        self.gameprofile.name.to_owned()
+    }
+
     fn is_always_ticking(&self) -> bool {
         true
     }
