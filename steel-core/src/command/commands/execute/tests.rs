@@ -1,0 +1,452 @@
+use std::sync::{Arc, Weak};
+
+use glam::DVec3;
+use simdnbt::owned::NbtTag;
+use steel_registry::{entity_type::EntityTypeRef, test_support::init_test_registry, vanilla_entities};
+use steel_utils::{Identifier, nbt::parse_nbt_path};
+
+use crate::command::graph::CommandGraph;
+use crate::command::requirement::{
+    CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext,
+};
+use crate::command::storage::CommandStorage;
+use crate::entity::{Entity, EntityBase};
+use crate::scoreboard::{ScoreHolder, Scoreboard};
+
+struct TestContext;
+
+struct StoreTestEntity {
+    base: EntityBase,
+}
+
+impl StoreTestEntity {
+    fn shared(id: i32, position: DVec3) -> Arc<Self> {
+        Arc::new(Self {
+            base: EntityBase::new(id, position, vanilla_entities::ITEM.dimensions, Weak::new()),
+        })
+    }
+}
+
+impl Entity for StoreTestEntity {
+    fn base(&self) -> &EntityBase {
+        &self.base
+    }
+
+    fn entity_type(&self) -> EntityTypeRef {
+        &vanilla_entities::ITEM
+    }
+}
+
+impl RequirementContext for TestContext {
+    fn source_kind(&self) -> CommandSourceKind {
+        CommandSourceKind::Player
+    }
+
+    fn has_permission(&self, _permission: &PermissionExpr) -> bool {
+        false
+    }
+}
+
+impl CommandInputContext for TestContext {
+    fn position(&self) -> Option<DVec3> {
+        Some(DVec3::ZERO)
+    }
+}
+
+fn graph() -> CommandGraph {
+    CommandGraph::new()
+        .with_root(super::command())
+        .expect("execute command registers")
+}
+
+#[test]
+fn loaded_condition_parses_direct_and_redirect_forms() {
+    let graph = graph();
+    let context = TestContext;
+
+    let direct = graph
+        .parse("execute if loaded 0 64 0", &context)
+        .expect("direct loaded conditional parses");
+    assert_eq!(direct.path(), ["execute", "if", "loaded", "pos"]);
+
+    let redirected = graph
+        .parse("execute unless loaded 0 64 0 run seed", &context)
+        .expect("redirected loaded conditional parses");
+    assert_eq!(redirected.path(), ["execute", "unless", "loaded", "pos"]);
+}
+
+#[test]
+fn biome_condition_parses_direct_and_redirect_forms() {
+    init_test_registry();
+    let graph = graph();
+    let context = TestContext;
+
+    let direct = graph
+        .parse("execute if biome 0 64 0 plains", &context)
+        .expect("direct biome conditional parses");
+    assert_eq!(direct.path(), ["execute", "if", "biome", "pos", "biome"]);
+
+    let redirected = graph
+        .parse("execute unless biome 0 64 0 #is_overworld run seed", &context)
+        .expect("redirected biome conditional parses");
+    assert_eq!(
+        redirected.path(),
+        ["execute", "unless", "biome", "pos", "biome"]
+    );
+}
+
+#[test]
+fn block_condition_parses_direct_and_redirect_forms() {
+    init_test_registry();
+    let graph = graph();
+    let context = TestContext;
+
+    let direct = graph
+        .parse("execute if block 0 64 0 stone", &context)
+        .expect("direct block conditional parses");
+    assert_eq!(direct.path(), ["execute", "if", "block", "pos", "block"]);
+
+    let redirected = graph
+        .parse(
+            "execute unless block 0 64 0 oak_log[axis=y]{id:'minecraft:barrel'} run seed",
+            &context,
+        )
+        .expect("redirected block conditional parses");
+    assert_eq!(
+        redirected.path(),
+        ["execute", "unless", "block", "pos", "block"]
+    );
+}
+
+#[test]
+fn data_block_condition_parses_direct_and_redirect_forms() {
+    let graph = graph();
+    let context = TestContext;
+
+    let direct = graph
+        .parse(
+            "execute if data block 0 64 0 Items[{id:\"minecraft:stone\"}].Count",
+            &context,
+        )
+        .expect("direct data block conditional parses");
+    assert_eq!(
+        direct.path(),
+        ["execute", "if", "data", "block", "pos", "path"]
+    );
+
+    let redirected = graph
+        .parse("execute unless data block 0 64 0 Items[] run seed", &context)
+        .expect("redirected data block conditional parses");
+    assert_eq!(
+        redirected.path(),
+        ["execute", "unless", "data", "block", "pos", "path"]
+    );
+}
+
+#[test]
+fn data_storage_condition_parses_direct_and_redirect_forms() {
+    let graph = graph();
+    let context = TestContext;
+
+    let direct = graph
+        .parse("execute if data storage steel:data value", &context)
+        .expect("direct data storage conditional parses");
+    assert_eq!(
+        direct.path(),
+        ["execute", "if", "data", "storage", "source", "path"]
+    );
+
+    let redirected = graph
+        .parse("execute unless data storage steel:data value run seed", &context)
+        .expect("redirected data storage conditional parses");
+    assert_eq!(
+        redirected.path(),
+        ["execute", "unless", "data", "storage", "source", "path"]
+    );
+}
+
+#[test]
+fn data_condition_suggests_entity_accessor() {
+    let graph = graph();
+    let context = TestContext;
+
+    let suggestions = graph
+        .suggest("execute if data ", &context)
+        .expect("data condition suggestions");
+    let suggestions = suggestions
+        .suggestions
+        .iter()
+        .map(|suggestion| suggestion.text.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(suggestions.contains(&"entity"));
+}
+
+#[test]
+fn score_condition_parses_comparison_and_range_forms() {
+    let graph = graph();
+    let context = TestContext;
+
+    let comparison = graph
+        .parse("execute if score Steve kills = Alex kills", &context)
+        .expect("score comparison conditional parses");
+    assert_eq!(
+        comparison.path(),
+        [
+            "execute",
+            "if",
+            "score",
+            "target",
+            "targetObjective",
+            "=",
+            "source",
+            "sourceObjective"
+        ]
+    );
+
+    let range = graph
+        .parse("execute unless score Steve kills matches 1.. run seed", &context)
+        .expect("score range conditional parses");
+    assert_eq!(
+        range.path(),
+        [
+            "execute",
+            "unless",
+            "score",
+            "target",
+            "targetObjective",
+            "matches",
+            "range"
+        ]
+    );
+}
+
+#[test]
+fn store_score_parses_redirect_form() {
+    let graph = graph();
+    let context = TestContext;
+
+    let parsed = graph
+        .parse("execute store result score Steve kills run seed", &context)
+        .expect("store score parses");
+    assert_eq!(
+        parsed.path(),
+        ["execute", "store", "result", "score", "targets", "objective"]
+    );
+}
+
+#[test]
+fn store_block_data_parses_redirect_form() {
+    let graph = graph();
+    let context = TestContext;
+
+    let parsed = graph
+        .parse(
+            "execute store result block 0 64 0 Items[0].Count int 1 run seed",
+            &context,
+        )
+        .expect("store block data parses");
+    assert_eq!(
+        parsed.path(),
+        [
+            "execute",
+            "store",
+            "result",
+            "block",
+            "targetPos",
+            "path",
+            "int",
+            "scale"
+        ]
+    );
+}
+
+#[test]
+fn store_storage_data_parses_redirect_form() {
+    let graph = graph();
+    let context = TestContext;
+
+    let parsed = graph
+        .parse(
+            "execute store result storage steel:data value int 1 run seed",
+            &context,
+        )
+        .expect("store storage data parses");
+    assert_eq!(
+        parsed.path(),
+        [
+            "execute", "store", "result", "storage", "target", "path", "int", "scale"
+        ]
+    );
+}
+
+#[test]
+fn store_data_type_converts_scaled_value() {
+    assert_eq!(super::store::StoreDataType::Int.tag(3, 2.5), NbtTag::Int(7));
+    assert_eq!(
+        super::store::StoreDataType::Long.tag(-3, 2.5),
+        NbtTag::Long(-7)
+    );
+    assert_eq!(
+        super::store::StoreDataType::Byte.tag(258, 1.0),
+        NbtTag::Byte(2)
+    );
+    assert_eq!(
+        super::store::StoreDataType::Short.tag(65_538, 1.0),
+        NbtTag::Short(2)
+    );
+    assert_eq!(
+        super::store::StoreDataType::Float.tag(3, 0.5),
+        NbtTag::Float(1.5)
+    );
+    assert_eq!(
+        super::store::StoreDataType::Double.tag(3, 0.5),
+        NbtTag::Double(1.5)
+    );
+}
+
+#[test]
+fn store_storage_data_value_updates_command_storage() {
+    let storage = CommandStorage::new();
+    let key = Identifier::new_static("steel", "data");
+    let path = parse_nbt_path("value").expect("path parses");
+
+    super::store::store_storage_data_value(&storage, &key, &path, NbtTag::Int(7))
+        .expect("storage write succeeds");
+
+    let data = storage.get(&key);
+    assert_eq!(data.get("value"), Some(&NbtTag::Int(7)));
+}
+
+#[test]
+fn store_entity_data_value_updates_entity_data() {
+    init_test_registry();
+
+    let entity = StoreTestEntity::shared(1, DVec3::ZERO);
+    let path = parse_nbt_path("Air").expect("path parses");
+
+    super::store::store_entity_data_value(entity.as_ref(), &path, NbtTag::Int(123))
+        .expect("entity data updates");
+
+    assert_eq!(entity.air_supply(), 123);
+}
+
+#[test]
+fn score_comparison_requires_both_scores() {
+    let scoreboard = Scoreboard::new();
+    let kills = scoreboard
+        .add_objective("kills")
+        .expect("objective should be added");
+    let steve = ScoreHolder::new("Steve");
+    let alex = ScoreHolder::new("Alex");
+
+    scoreboard
+        .set_score(&steve, &kills, 3)
+        .expect("score should be writable");
+    assert!(!super::condition::compare_scores(
+        &scoreboard,
+        &steve,
+        &kills,
+        &alex,
+        &kills,
+        super::condition::ScoreComparison::Greater,
+    ));
+
+    scoreboard
+        .set_score(&alex, &kills, 2)
+        .expect("score should be writable");
+    assert!(super::condition::compare_scores(
+        &scoreboard,
+        &steve,
+        &kills,
+        &alex,
+        &kills,
+        super::condition::ScoreComparison::Greater,
+    ));
+}
+
+#[test]
+fn store_score_value_writes_all_holders() {
+    let scoreboard = Scoreboard::new();
+    let objective = scoreboard
+        .add_objective("result")
+        .expect("objective should be added");
+    let holders = [ScoreHolder::new("Steve"), ScoreHolder::new("Alex")];
+
+    super::store::store_score_value(&scoreboard, &holders, &objective, 11)
+        .expect("store should write scores");
+
+    assert_eq!(scoreboard.score(&holders[0], &objective), Some(11));
+    assert_eq!(scoreboard.score(&holders[1], &objective), Some(11));
+}
+
+#[test]
+fn positioned_over_parses_redirect_form() {
+    let graph = graph();
+    let context = TestContext;
+
+    let parsed = graph
+        .parse("execute positioned over motion_blocking run seed", &context)
+        .expect("positioned over parses");
+    assert_eq!(parsed.path(), ["execute", "positioned", "over", "heightmap"]);
+}
+
+#[test]
+fn blocks_condition_parses_direct_and_redirect_forms() {
+    let graph = graph();
+    let context = TestContext;
+
+    let direct = graph
+        .parse("execute if blocks 0 64 0 1 64 1 10 64 10 all", &context)
+        .expect("direct blocks conditional parses");
+    assert_eq!(
+        direct.path(),
+        [
+            "execute",
+            "if",
+            "blocks",
+            "start",
+            "end",
+            "destination",
+            "all"
+        ]
+    );
+
+    let redirected = graph
+        .parse("execute unless blocks 0 64 0 1 64 1 10 64 10 masked run seed", &context)
+        .expect("redirected blocks conditional parses");
+    assert_eq!(
+        redirected.path(),
+        [
+            "execute",
+            "unless",
+            "blocks",
+            "start",
+            "end",
+            "destination",
+            "masked"
+        ]
+    );
+}
+
+#[test]
+fn on_relations_parse_vanilla_relation_names() {
+    let graph = graph();
+    let context = TestContext;
+
+    for relation in [
+        "owner",
+        "leasher",
+        "target",
+        "attacker",
+        "vehicle",
+        "controller",
+        "origin",
+        "passengers",
+    ] {
+        let parsed = graph
+            .parse(&format!("execute on {relation} run seed"), &context)
+            .expect("relation redirect parses");
+        assert_eq!(parsed.path(), ["execute", "on", relation]);
+    }
+}
