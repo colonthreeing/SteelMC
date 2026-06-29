@@ -10,7 +10,7 @@ use crate::command::{
         AnchorParser, BoolParser, CommandArgumentClientParser, CommandArgumentParser, CommandGraph,
         CommandGraphAmbiguity, CommandGraphError, CommandNodeBuilder, CommandNodeNameError,
         CommandParseError, CommandParseErrorKind, CommandRedirectTarget, CommandResult,
-        FloatParser, IntegerParser, LongParser, ParsedArgument, ParsedCommandAction,
+        DoubleParser, FloatParser, IntegerParser, LongParser, ParsedArgument, ParsedCommandAction,
         ParsedRedirectModifier, StringParser, SuggestionResult, argument, literal,
     },
     reader::{CommandReader, StringMode},
@@ -735,6 +735,33 @@ fn parses_bounded_float_argument() {
     assert_eq!(
         error.kind(),
         &CommandParseErrorKind::FloatTooHigh {
+            value: 31.0,
+            max: 30.0
+        }
+    );
+}
+
+#[test]
+fn parses_bounded_double_argument() {
+    let graph = graph_with_root(
+        literal("scale").then(
+            argument("value", DoubleParser::bounded(Some(0.0), Some(30.0)))
+                .executes(|_, _| Ok(CommandResult::success())),
+        ),
+    );
+
+    let result = graph
+        .parse("scale 1.5", &player_context())
+        .expect("command parses");
+
+    assert_eq!(result.arguments().get::<f64>("value"), Ok(1.5));
+
+    let error = graph
+        .parse("scale 31.0", &player_context())
+        .expect_err("out-of-range double should fail");
+    assert_eq!(
+        error.kind(),
+        &CommandParseErrorKind::DoubleTooHigh {
             value: 31.0,
             max: 30.0
         }

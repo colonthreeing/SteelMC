@@ -26,8 +26,8 @@ pub use arguments::{
 pub use builder::{CommandNodeBuilder, argument, literal};
 use node::{CommandNode, CommandNodeKind, collect_ambiguities, merge_or_push_node};
 pub use primitive_parsers::{
-    AnchorParser, BoolParser, CommandArgumentClientParser, CommandArgumentParser, FloatParser,
-    IntegerParser, LongParser, StringParser,
+    AnchorParser, BoolParser, CommandArgumentClientParser, CommandArgumentParser, DoubleParser,
+    FloatParser, IntegerParser, LongParser, StringParser,
 };
 use traversal::{parse_children, suggest_children};
 
@@ -136,6 +136,22 @@ pub enum CommandParseErrorKind {
         /// Maximum accepted value.
         max: f32,
     },
+    /// A double argument was invalid.
+    InvalidDouble(String),
+    /// A double argument was below its minimum.
+    DoubleTooLow {
+        /// Parsed value.
+        value: f64,
+        /// Minimum accepted value.
+        min: f64,
+    },
+    /// A double argument was above its maximum.
+    DoubleTooHigh {
+        /// Parsed value.
+        value: f64,
+        /// Maximum accepted value.
+        max: f64,
+    },
     /// A game mode argument was invalid.
     InvalidGameMode(String),
     /// A player argument was invalid.
@@ -214,6 +230,9 @@ impl CommandParseErrorKind {
             | Self::InvalidFloat(_)
             | Self::FloatTooLow { .. }
             | Self::FloatTooHigh { .. }
+            | Self::InvalidDouble(_)
+            | Self::DoubleTooLow { .. }
+            | Self::DoubleTooHigh { .. }
             | Self::InvalidGameMode(_)
             | Self::InvalidPlayer(_)
             | Self::InvalidEntity(_)

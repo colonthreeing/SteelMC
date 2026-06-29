@@ -550,6 +550,15 @@ impl CommandDispatcher {
                     TextComponent::from(value.to_string()),
                 ])
                 .into(),
+            CommandParseErrorKind::InvalidDouble(value) => {
+                TextComponent::plain(format!("Invalid double '{value}'"))
+            }
+            CommandParseErrorKind::DoubleTooLow { value, min } => {
+                TextComponent::plain(format!("Double {value} must not be less than {min}"))
+            }
+            CommandParseErrorKind::DoubleTooHigh { value, max } => {
+                TextComponent::plain(format!("Double {value} must not be greater than {max}"))
+            }
             CommandParseErrorKind::InvalidGameMode(value) => {
                 translations::ARGUMENT_GAMEMODE_INVALID
                     .message([TextComponent::from(value.clone())])

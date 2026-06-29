@@ -442,6 +442,82 @@ impl CommandArgumentParser for FloatParser {
     }
 }
 
+/// 64-bit floating-point command argument parser.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DoubleParser {
+    min: Option<f64>,
+    max: Option<f64>,
+}
+
+impl DoubleParser {
+    /// Creates an unbounded double parser.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            min: None,
+            max: None,
+        }
+    }
+
+    /// Creates a bounded double parser.
+    #[must_use]
+    pub const fn bounded(min: Option<f64>, max: Option<f64>) -> Self {
+        Self { min, max }
+    }
+}
+
+impl CommandArgumentParser for DoubleParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let raw = reader.read_string(StringMode::SingleWord)?;
+        let value = raw.parse::<f64>().map_err(|_| {
+            CommandParseError::new(CommandParseErrorKind::InvalidDouble(raw), cursor)
+        })?;
+
+        if let Some(min) = self.min
+            && value < min
+        {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::DoubleTooLow { value, min },
+                cursor,
+            ));
+        }
+
+        if let Some(max) = self.max
+            && value > max
+        {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::DoubleTooHigh { value, max },
+                cursor,
+            ));
+        }
+
+        Ok(ParsedArgument::F64(value))
+    }
+
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(
+            ArgumentType::Double {
+                min: self.min,
+                max: self.max,
+            },
+            None,
+        )
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "f64"
+    }
+
+    fn examples(&self) -> &'static [&'static str] {
+        &["0", "1.0", "-1.0"]
+    }
+}
+
 /// String command argument parser.
 #[derive(Clone, Copy, Debug)]
 pub struct StringParser {

@@ -34,6 +34,8 @@ pub enum ParsedArgument {
     I64(i64),
     /// 32-bit floating-point argument.
     F32(f32),
+    /// 64-bit floating-point argument.
+    F64(f64),
     /// String-like argument.
     String(String),
     /// Namespaced identifier argument.
@@ -386,6 +388,7 @@ impl fmt::Debug for ParsedArgument {
             Self::I32(value) => f.debug_tuple("I32").field(value).finish(),
             Self::I64(value) => f.debug_tuple("I64").field(value).finish(),
             Self::F32(value) => f.debug_tuple("F32").field(value).finish(),
+            Self::F64(value) => f.debug_tuple("F64").field(value).finish(),
             Self::String(value) => f.debug_tuple("String").field(value).finish(),
             Self::Identifier(value) => f.debug_tuple("Identifier").field(value).finish(),
             Self::PermissionKey(value) => f.debug_tuple("PermissionKey").field(value).finish(),
@@ -485,6 +488,7 @@ impl ParsedArgument {
             Self::I32(_) => "i32",
             Self::I64(_) => "i64",
             Self::F32(_) => "f32",
+            Self::F64(_) => "f64",
             Self::String(_) => "string",
             Self::Identifier(_) => "identifier",
             Self::PermissionKey(_) => "permission_key",
@@ -591,6 +595,17 @@ impl FromParsedArgument for f32 {
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
         let ParsedArgument::F32(value) = value else {
+            return None;
+        };
+        Some(*value)
+    }
+}
+
+impl FromParsedArgument for f64 {
+    const TYPE_NAME: &'static str = "f64";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::F64(value) = value else {
             return None;
         };
         Some(*value)
