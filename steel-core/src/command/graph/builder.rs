@@ -19,10 +19,17 @@ pub struct CommandNodeBuilder {
     children: Vec<CommandNodeBuilder>,
     executor: Option<CommandExecutor>,
     redirect: Option<CommandRedirect>,
+    permission_path_mode: PermissionPathMode,
     derived_subcommand_permission: Option<DerivedSubcommandPermissionMode>,
     dynamic_permissions: Vec<UnresolvedDynamicPermission>,
     resolved_dynamic_permissions: Vec<DynamicPermission>,
     catalog_permissions: Vec<PermissionKey>,
+}
+
+#[derive(Clone, Copy)]
+enum PermissionPathMode {
+    AppendLiteral,
+    InheritParent,
 }
 
 #[derive(Clone, Copy)]
@@ -89,6 +96,16 @@ impl CommandNodeBuilder {
     pub const fn requires_additional_subcommand_permission(mut self) -> Self {
         self.derived_subcommand_permission =
             Some(DerivedSubcommandPermissionMode::AdditionalToRoot);
+        self
+    }
+
+    /// Keeps this literal out of derived command permission paths.
+    ///
+    /// Use this for syntax-only literals such as operators. Descendants inherit
+    /// the nearest non-transparent permission path.
+    #[must_use]
+    pub const fn permission_path_passthrough(mut self) -> Self {
+        self.permission_path_mode = PermissionPathMode::InheritParent;
         self
     }
 
@@ -251,6 +268,7 @@ impl CommandNodeBuilder {
             children,
             executor,
             redirect,
+            permission_path_mode,
             derived_subcommand_permission,
             dynamic_permissions,
             resolved_dynamic_permissions,
@@ -259,8 +277,11 @@ impl CommandNodeBuilder {
 
         let child_permission;
         let mut available_arguments = available_arguments;
+        let inherits_parent_permission_path =
+            matches!(permission_path_mode, PermissionPathMode::InheritParent);
         let current_permission = match &kind {
             CommandNodeKind::Literal(_) if is_root => parent_permission,
+            CommandNodeKind::Literal(_) if inherits_parent_permission_path => parent_permission,
             CommandNodeKind::Literal(name) => {
                 let segment = PermissionSegment::parse(name.as_str())?;
                 child_permission = parent_permission.child(&segment)?;
@@ -278,6 +299,11 @@ impl CommandNodeBuilder {
         if let Some(permission_mode) = derived_subcommand_permission {
             if is_root || !matches!(kind, CommandNodeKind::Literal(_)) {
                 return Err(CommandGraphError::DerivedPermissionRequiresLiteral {
+                    name: kind.display_name().to_owned(),
+                });
+            }
+            if inherits_parent_permission_path {
+                return Err(CommandGraphError::DerivedPermissionRequiresPermissionPath {
                     name: kind.display_name().to_owned(),
                 });
             }
@@ -338,6 +364,7 @@ impl CommandNodeBuilder {
                 .collect::<Result<Vec<_>, _>>()?,
             executor,
             redirect,
+            permission_path_mode,
             derived_subcommand_permission: None,
             dynamic_permissions: Vec::new(),
             resolved_dynamic_permissions,
@@ -469,6 +496,7 @@ pub fn literal(name: impl Into<String>) -> CommandNodeBuilder {
         children: Vec::new(),
         executor: None,
         redirect: None,
+        permission_path_mode: PermissionPathMode::AppendLiteral,
         derived_subcommand_permission: None,
         dynamic_permissions: Vec::new(),
         resolved_dynamic_permissions: Vec::new(),
@@ -491,6 +519,7 @@ pub fn argument(
         children: Vec::new(),
         executor: None,
         redirect: None,
+        permission_path_mode: PermissionPathMode::AppendLiteral,
         derived_subcommand_permission: None,
         dynamic_permissions: Vec::new(),
         resolved_dynamic_permissions: Vec::new(),

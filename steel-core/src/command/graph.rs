@@ -20,7 +20,8 @@ mod traversal;
 
 pub use arguments::{
     BiomeArgumentValue, BlockPredicateArgumentValue, CommandPermissionArgument, FromParsedArgument,
-    ParsedArgument, ParsedArgumentError, ParsedArguments, PermissionTarget, StructureArgumentValue,
+    IntRangeArgumentValue, ParsedArgument, ParsedArgumentError, ParsedArguments, PermissionTarget,
+    ScoreHolderArgumentValue, ScoreboardObjectiveName, StructureArgumentValue,
 };
 pub use builder::{CommandNodeBuilder, argument, literal};
 use node::{CommandNode, CommandNodeKind, collect_ambiguities, merge_or_push_node};
@@ -171,6 +172,10 @@ pub enum CommandParseErrorKind {
     InvalidSwizzle(String),
     /// A text component argument was invalid.
     InvalidComponent(String),
+    /// An integer range argument was invalid.
+    InvalidIntegerRange(String),
+    /// An integer range had a minimum larger than its maximum.
+    SwappedIntegerRange,
     /// A time argument was invalid.
     InvalidTime(String),
     /// A permission key argument was invalid.
@@ -227,6 +232,8 @@ impl CommandParseErrorKind {
             | Self::InvalidRotation(_)
             | Self::InvalidSwizzle(_)
             | Self::InvalidComponent(_)
+            | Self::InvalidIntegerRange(_)
+            | Self::SwappedIntegerRange
             | Self::InvalidTime(_)
             | Self::InvalidPermissionKey(_)
             | Self::InvalidPermissionExpression(_)
@@ -271,6 +278,11 @@ pub enum CommandGraphError {
     },
     /// A derived subcommand permission was requested on a non-literal node.
     DerivedPermissionRequiresLiteral {
+        /// Node name.
+        name: String,
+    },
+    /// A derived subcommand permission was requested on a permission-path passthrough node.
+    DerivedPermissionRequiresPermissionPath {
         /// Node name.
         name: String,
     },
@@ -330,6 +342,12 @@ impl fmt::Display for CommandGraphError {
                 write!(
                     f,
                     "derived subcommand permission requires a literal node, got '{name}'"
+                )
+            }
+            Self::DerivedPermissionRequiresPermissionPath { name } => {
+                write!(
+                    f,
+                    "derived subcommand permission requires a permission path segment, got passthrough node '{name}'"
                 )
             }
             Self::InvalidDerivedPermissionKey(error) => write!(f, "{error}"),

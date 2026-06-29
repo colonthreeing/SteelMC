@@ -34,6 +34,7 @@ use crate::player::player_data_storage::{GlobalPlayerData, PlayerDataStorage};
 use crate::player::profile_lookup::{ProfileLookupError, lookup_online_profile};
 use crate::player::{GameProfile, Player, ResetReason, is_valid_player_name, offline_uuid};
 use crate::portal::{TeleportTransition, WorldChangeRequest};
+use crate::scoreboard::Scoreboard;
 use crate::server::jobs::{FnServerJob, JobPoll, ServerJob, ServerJobContext, ServerJobQueue};
 use crate::server::registry_cache::RegistryCache;
 use crate::server::worlds::WorldMap;
@@ -466,6 +467,8 @@ pub struct Server {
     pub worlds: WorldMap,
     /// The tick rate manager for the server.
     pub tick_rate_manager: SyncRwLock<TickRateManager>,
+    /// Server-level scoreboard state.
+    pub scoreboard: Scoreboard,
     /// Parses and dispatches commands.
     pub command_dispatcher: SyncRwLock<CommandDispatcher>,
     /// Serializes async command execution outside packet handling.
@@ -629,6 +632,7 @@ impl Server {
             worlds,
             registry_cache,
             tick_rate_manager: SyncRwLock::new(TickRateManager::new()),
+            scoreboard: Scoreboard::new(),
             command_dispatcher: SyncRwLock::new(
                 CommandDispatcher::new()
                     .map_err(|e| format!("failed to register commands: {e}"))?,

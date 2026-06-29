@@ -1,9 +1,9 @@
 //! Handler for the "execute" command.
 //!
-//! Store target nodes, scoreboards, storage data accessors, predicates, functions,
-//! item predicates, and stopwatch predicates are not registered here yet because
-//! their backing foundations are not implemented in Steel's command/runtime
-//! layer.
+//! Bossbar and storage store targets, storage data accessors, predicates,
+//! functions, item predicates, and stopwatch predicates are not registered here
+//! yet because their backing foundations are not implemented in Steel's
+//! command/runtime layer.
 
 use std::{borrow::Cow, sync::Arc};
 
@@ -22,20 +22,25 @@ use text_components::translation::TranslatedMessage;
 
 use crate::chunk::heightmap::HeightmapType;
 use crate::command::CommandRegistrationSpec;
-use crate::command::context::{CommandContext, EntityAnchor, anchored_position};
+use crate::command::context::{
+    CommandContext, CommandResultCallback, EntityAnchor, anchored_position,
+};
 use crate::command::error::CommandError;
 use crate::command::graph::{
     AnchorParser, BiomeArgumentValue, BlockPredicateArgumentValue, CommandArgumentClientParser,
     CommandArgumentParser, CommandNodeBuilder, CommandParseError, CommandParseErrorKind,
-    CommandRedirectTarget, CommandResult, ParsedArgument, ParsedArguments, argument, literal,
+    CommandRedirectTarget, CommandResult, IntRangeArgumentValue, ParsedArgument, ParsedArguments,
+    ScoreHolderArgumentValue, ScoreboardObjectiveName, argument, literal,
 };
 use crate::command::parsers::{
     BiomeParser, BlockPosParser, BlockPredicateParser, EntityParser, EntitySummonParser,
-    HeightmapParser, NbtPathParser, RotationParser, Vec3Parser, WorldParser,
+    HeightmapParser, IntRangeParser, NbtPathParser, ObjectiveParser, RotationParser,
+    ScoreHolderParser, Vec3Parser, WorldParser,
 };
 use crate::command::reader::CommandReader;
 use crate::command::requirement::CommandInputContext;
 use crate::entity::{Mob, SharedEntity};
+use crate::scoreboard::{ScoreHolder, Scoreboard, ScoreboardError, ScoreboardObjective};
 use crate::world::World;
 
 pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::minecraft();
@@ -62,6 +67,11 @@ pub(crate) fn command() -> CommandNodeBuilder {
                     CommandRedirectTarget::Current,
                     fork_at,
                 )),
+        )
+        .then(
+            literal("store")
+                .then(store_target("result", true))
+                .then(store_target("success", false)),
         )
         .then(
             literal("positioned")
@@ -192,6 +202,25 @@ fn conditionals(name: &'static str, expected: bool) -> CommandNodeBuilder {
                     fork_loaded_condition(context, arguments, expected)
                 }),
         ))
+        .then(literal("score").then(
+            argument("target", ScoreHolderParser::one()).then(
+                argument("targetObjective", ObjectiveParser)
+                    .then(score_comparison("=", ScoreComparison::Equal, expected))
+                    .then(score_comparison("<", ScoreComparison::Less, expected))
+                    .then(score_comparison("<=", ScoreComparison::LessOrEqual, expected))
+                    .then(score_comparison(">", ScoreComparison::Greater, expected))
+                    .then(score_comparison(">=", ScoreComparison::GreaterOrEqual, expected))
+                    .then(literal("matches").then(
+                        argument("range", IntRangeParser)
+                            .executes(move |context, arguments| {
+                                execute_score_range_condition(context, arguments, expected)
+                            })
+                            .forks(CommandRedirectTarget::Current, move |context, arguments| {
+                                fork_score_range_condition(context, arguments, expected)
+                            }),
+                    )),
+            ),
+        ))
         .then(
             literal("data")
                 .then(literal("block").then(
@@ -228,6 +257,17 @@ fn conditionals(name: &'static str, expected: bool) -> CommandNodeBuilder {
         ))
 }
 
+fn store_target(name: &'static str, store_result: bool) -> CommandNodeBuilder {
+    literal(name).then(literal("score").then(
+        argument("targets", ScoreHolderParser::multiple()).then(
+            argument("objective", ObjectiveParser).redirects(
+                CommandRedirectTarget::Current,
+                move |context, arguments| store_score(context, arguments, store_result),
+            ),
+        ),
+    ))
+}
+
 fn blocks_conditional(name: &'static str, expected: bool, skip_air: bool) -> CommandNodeBuilder {
     literal(name)
         .executes(move |context, arguments| {
@@ -248,6 +288,24 @@ fn on_relations() -> CommandNodeBuilder {
         .then(literal("controller").forks(CommandRedirectTarget::Current, fork_on_controller))
         .then(literal("origin").forks(CommandRedirectTarget::Current, fork_on_origin))
         .then(literal("passengers").forks(CommandRedirectTarget::Current, fork_on_passengers))
+}
+
+fn score_comparison(
+    name: &'static str,
+    comparison: ScoreComparison,
+    expected: bool,
+) -> CommandNodeBuilder {
+    literal(name).permission_path_passthrough().then(
+        argument("source", ScoreHolderParser::one()).then(
+            argument("sourceObjective", ObjectiveParser)
+                .executes(move |context, arguments| {
+                    execute_score_comparison_condition(context, arguments, expected, comparison)
+                })
+                .forks(CommandRedirectTarget::Current, move |context, arguments| {
+                    fork_score_comparison_condition(context, arguments, expected, comparison)
+                }),
+        ),
+    )
 }
 
 fn fork_as(
@@ -409,6 +467,40 @@ fn summon_and_redirect(
     Ok(CommandResult::success())
 }
 
+fn store_score(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    store_result: bool,
+) -> Result<CommandResult, CommandError> {
+    let objective = scoreboard_objective(context, arguments, "objective")?;
+    let holders = score_holders_or_tracked(context, arguments, "targets")?;
+    let server = Arc::clone(&context.server);
+    let callback = CommandResultCallback::new(move |result| {
+        let value = if store_result {
+            result.result
+        } else {
+            i32::from(result.success)
+        };
+        if let Err(error) = store_score_value(&server.scoreboard, &holders, &objective, value) {
+            log::warn!("Failed to store execute command result in scoreboard: {error}");
+        }
+    });
+    context.chain_result_callback(callback);
+    Ok(CommandResult::success())
+}
+
+fn store_score_value(
+    scoreboard: &Scoreboard,
+    holders: &[ScoreHolder],
+    objective: &ScoreboardObjective,
+    value: i32,
+) -> Result<(), ScoreboardError> {
+    for holder in holders {
+        scoreboard.set_score(holder, objective, value)?;
+    }
+    Ok(())
+}
+
 fn execute_entity_condition(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
@@ -444,6 +536,137 @@ fn fork_entity_condition(
     } else {
         Vec::new()
     })
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ScoreComparison {
+    Equal,
+    Less,
+    LessOrEqual,
+    Greater,
+    GreaterOrEqual,
+}
+
+impl ScoreComparison {
+    fn test(self, left: i32, right: i32) -> bool {
+        match self {
+            Self::Equal => left == right,
+            Self::Less => left < right,
+            Self::LessOrEqual => left <= right,
+            Self::Greater => left > right,
+            Self::GreaterOrEqual => left >= right,
+        }
+    }
+}
+
+fn execute_score_comparison_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+    comparison: ScoreComparison,
+) -> Result<CommandResult, CommandError> {
+    let matches = score_comparison_matches(context, arguments, comparison)?;
+    execute_simple_condition(context, matches, expected)
+}
+
+fn fork_score_comparison_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+    comparison: ScoreComparison,
+) -> Result<Vec<CommandContext>, CommandError> {
+    let matches = score_comparison_matches(context, arguments, comparison)?;
+    Ok(if matches == expected {
+        vec![context.clone()]
+    } else {
+        Vec::new()
+    })
+}
+
+fn score_comparison_matches(
+    context: &CommandContext,
+    arguments: &ParsedArguments,
+    comparison: ScoreComparison,
+) -> Result<bool, CommandError> {
+    let target = single_score_holder(arguments, "target")?;
+    let target_objective = scoreboard_objective(context, arguments, "targetObjective")?;
+    let source = single_score_holder(arguments, "source")?;
+    let source_objective = scoreboard_objective(context, arguments, "sourceObjective")?;
+
+    Ok(compare_scores(
+        &context.server.scoreboard,
+        &target,
+        &target_objective,
+        &source,
+        &source_objective,
+        comparison,
+    ))
+}
+
+fn compare_scores(
+    scoreboard: &Scoreboard,
+    target: &ScoreHolder,
+    target_objective: &ScoreboardObjective,
+    source: &ScoreHolder,
+    source_objective: &ScoreboardObjective,
+    comparison: ScoreComparison,
+) -> bool {
+    let Some(left) = scoreboard.score(target, target_objective) else {
+        return false;
+    };
+    let Some(right) = scoreboard.score(source, source_objective) else {
+        return false;
+    };
+    comparison.test(left, right)
+}
+
+fn execute_score_range_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+) -> Result<CommandResult, CommandError> {
+    let matches = score_range_matches(context, arguments)?;
+    execute_simple_condition(context, matches, expected)
+}
+
+fn fork_score_range_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+) -> Result<Vec<CommandContext>, CommandError> {
+    let matches = score_range_matches(context, arguments)?;
+    Ok(if matches == expected {
+        vec![context.clone()]
+    } else {
+        Vec::new()
+    })
+}
+
+fn score_range_matches(
+    context: &CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<bool, CommandError> {
+    let target = single_score_holder(arguments, "target")?;
+    let objective = scoreboard_objective(context, arguments, "targetObjective")?;
+    let range = int_range(arguments)?;
+
+    Ok(score_matches_range(
+        &context.server.scoreboard,
+        &target,
+        &objective,
+        range,
+    ))
+}
+
+fn score_matches_range(
+    scoreboard: &Scoreboard,
+    target: &ScoreHolder,
+    objective: &ScoreboardObjective,
+    range: IntRangeArgumentValue,
+) -> bool {
+    scoreboard
+        .score(target, objective)
+        .is_some_and(|score| range.matches(score))
 }
 
 fn execute_dimension_condition(
@@ -1018,6 +1241,82 @@ fn nbt_path(arguments: &ParsedArguments) -> Result<NbtPath, CommandError> {
         .map_err(super::invalid_parsed_argument)
 }
 
+fn scoreboard_objective(
+    context: &CommandContext,
+    arguments: &ParsedArguments,
+    name: &str,
+) -> Result<ScoreboardObjective, CommandError> {
+    let objective_name = arguments
+        .get::<ScoreboardObjectiveName>(name)
+        .map_err(super::invalid_parsed_argument)?;
+    context
+        .server
+        .scoreboard
+        .objective(objective_name.as_str())
+        .ok_or_else(|| {
+            CommandError::failure(
+                translations::ARGUMENTS_OBJECTIVE_NOT_FOUND
+                    .message([TextComponent::from(objective_name.as_str().to_owned())]),
+            )
+        })
+}
+
+fn score_holders(
+    arguments: &ParsedArguments,
+    name: &str,
+) -> Result<ScoreHolderArgumentValue, CommandError> {
+    arguments
+        .get::<ScoreHolderArgumentValue>(name)
+        .map_err(super::invalid_parsed_argument)
+}
+
+fn single_score_holder(
+    arguments: &ParsedArguments,
+    name: &str,
+) -> Result<ScoreHolder, CommandError> {
+    let holders = score_holders(arguments, name)?;
+    let Some(holders) = holders.holders() else {
+        return Err(no_score_holders());
+    };
+    let [holder] = holders else {
+        return Err(no_score_holders());
+    };
+    Ok(holder.to_owned())
+}
+
+fn score_holders_or_tracked(
+    context: &CommandContext,
+    arguments: &ParsedArguments,
+    name: &str,
+) -> Result<Vec<ScoreHolder>, CommandError> {
+    match score_holders(arguments, name)? {
+        ScoreHolderArgumentValue::Holders(holders) if holders.is_empty() => {
+            Err(no_score_holders())
+        }
+        ScoreHolderArgumentValue::Holders(holders) => Ok(holders),
+        ScoreHolderArgumentValue::Wildcard => {
+            let holders = context.server.scoreboard.tracked_holders();
+            if holders.is_empty() {
+                Err(no_score_holders())
+            } else {
+                Ok(holders)
+            }
+        }
+    }
+}
+
+fn no_score_holders() -> CommandError {
+    CommandError::failure(TextComponent::from(
+        &translations::ARGUMENT_ENTITY_NOTFOUND_ENTITY,
+    ))
+}
+
+fn int_range(arguments: &ParsedArguments) -> Result<IntRangeArgumentValue, CommandError> {
+    arguments
+        .get::<IntRangeArgumentValue>("range")
+        .map_err(super::invalid_parsed_argument)
+}
+
 fn source_entity(arguments: &ParsedArguments) -> Result<SharedEntity, CommandError> {
     let mut entities = arguments
         .get::<Vec<SharedEntity>>("source")
@@ -1075,6 +1374,19 @@ fn conditional_failed(count: usize) -> CommandError {
         translations::COMMANDS_EXECUTE_CONDITIONAL_FAIL_COUNT
             .message([TextComponent::from(success_count(count).to_string())]),
     )
+}
+
+fn execute_simple_condition(
+    context: &CommandContext,
+    matches: bool,
+    expected: bool,
+) -> Result<CommandResult, CommandError> {
+    if matches == expected {
+        send_condition_pass(context);
+        Ok(CommandResult::success())
+    } else {
+        Err(conditional_failed(0))
+    }
 }
 
 fn send_condition_pass(context: &CommandContext) {
@@ -1188,6 +1500,7 @@ mod tests {
     use crate::command::requirement::{
         CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext,
     };
+    use crate::scoreboard::{ScoreHolder, Scoreboard};
 
     struct TestContext;
 
@@ -1312,6 +1625,108 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(suggestions.contains(&"entity"));
+    }
+
+    #[test]
+    fn score_condition_parses_comparison_and_range_forms() {
+        let graph = graph();
+        let context = TestContext;
+
+        let comparison = graph
+            .parse("execute if score Steve kills = Alex kills", &context)
+            .expect("score comparison conditional parses");
+        assert_eq!(
+            comparison.path(),
+            [
+                "execute",
+                "if",
+                "score",
+                "target",
+                "targetObjective",
+                "=",
+                "source",
+                "sourceObjective"
+            ]
+        );
+
+        let range = graph
+            .parse("execute unless score Steve kills matches 1.. run seed", &context)
+            .expect("score range conditional parses");
+        assert_eq!(
+            range.path(),
+            [
+                "execute",
+                "unless",
+                "score",
+                "target",
+                "targetObjective",
+                "matches",
+                "range"
+            ]
+        );
+    }
+
+    #[test]
+    fn store_score_parses_redirect_form() {
+        let graph = graph();
+        let context = TestContext;
+
+        let parsed = graph
+            .parse("execute store result score Steve kills run seed", &context)
+            .expect("store score parses");
+        assert_eq!(
+            parsed.path(),
+            ["execute", "store", "result", "score", "targets", "objective"]
+        );
+    }
+
+    #[test]
+    fn score_comparison_requires_both_scores() {
+        let scoreboard = Scoreboard::new();
+        let kills = scoreboard
+            .add_objective("kills")
+            .expect("objective should be added");
+        let steve = ScoreHolder::new("Steve");
+        let alex = ScoreHolder::new("Alex");
+
+        scoreboard
+            .set_score(&steve, &kills, 3)
+            .expect("score should be writable");
+        assert!(!super::compare_scores(
+            &scoreboard,
+            &steve,
+            &kills,
+            &alex,
+            &kills,
+            super::ScoreComparison::Greater,
+        ));
+
+        scoreboard
+            .set_score(&alex, &kills, 2)
+            .expect("score should be writable");
+        assert!(super::compare_scores(
+            &scoreboard,
+            &steve,
+            &kills,
+            &alex,
+            &kills,
+            super::ScoreComparison::Greater,
+        ));
+    }
+
+    #[test]
+    fn store_score_value_writes_all_holders() {
+        let scoreboard = Scoreboard::new();
+        let objective = scoreboard
+            .add_objective("result")
+            .expect("objective should be added");
+        let holders = [ScoreHolder::new("Steve"), ScoreHolder::new("Alex")];
+
+        super::store_score_value(&scoreboard, &holders, &objective, 11)
+            .expect("store should write scores");
+
+        assert_eq!(scoreboard.score(&holders[0], &objective), Some(11));
+        assert_eq!(scoreboard.score(&holders[1], &objective), Some(11));
     }
 
     #[test]

@@ -239,6 +239,61 @@ fn derived_subcommand_permission_requires_literal_node() {
 }
 
 #[test]
+fn permission_path_passthrough_skips_syntax_literals() {
+    let root_permission =
+        PermissionKey::parse("minecraft.command.root").expect("permission key parses");
+    let mut catalog = PermissionCatalog::new();
+    let root = literal("root")
+        .then(
+            literal("<").permission_path_passthrough().then(
+                literal("child")
+                    .requires_subcommand_permission()
+                    .executes(|_, _| Ok(CommandResult::success())),
+            ),
+        )
+        .resolve_subcommand_permissions(&root_permission, &mut catalog)
+        .expect("permissions resolve");
+
+    assert_eq!(
+        catalog.suggestions("minecraft.command.root"),
+        vec!["minecraft.command.root.child".to_owned()]
+    );
+
+    let graph = graph_with_root(root);
+    let child_permission =
+        PermissionKey::parse("minecraft.command.root.child").expect("child permission key parses");
+    assert!(
+        graph
+            .parse("root < child", &player_context_with(child_permission))
+            .is_ok()
+    );
+}
+
+#[test]
+fn permission_path_passthrough_rejects_own_derived_permission() {
+    let root_permission =
+        PermissionKey::parse("minecraft.command.root").expect("permission key parses");
+    let mut catalog = PermissionCatalog::new();
+    let Err(error) = literal("root")
+        .then(
+            literal("<")
+                .permission_path_passthrough()
+                .requires_subcommand_permission(),
+        )
+        .resolve_subcommand_permissions(&root_permission, &mut catalog)
+    else {
+        panic!("passthrough derived permission marker should reject registration");
+    };
+
+    assert_eq!(
+        error,
+        CommandGraphError::DerivedPermissionRequiresPermissionPath {
+            name: "<".to_owned()
+        }
+    );
+}
+
+#[test]
 fn dynamic_argument_permission_requires_registration_resolution() {
     let error = graph_registration_error(literal("root").then(
         argument("gamemode", GameModeParser).requires_argument_permission::<GameType>("gamemode"),

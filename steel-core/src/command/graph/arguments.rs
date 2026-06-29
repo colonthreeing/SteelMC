@@ -18,6 +18,7 @@ use crate::permission::{
     PermissionSegment,
 };
 use crate::player::Player;
+use crate::scoreboard::ScoreHolder;
 use crate::world::World;
 
 /// A parsed command argument value.
@@ -77,6 +78,12 @@ pub enum ParsedArgument {
     Rotation((f32, f32)),
     /// Text component argument.
     Component(Box<TextComponent>),
+    /// Scoreboard objective name argument.
+    ScoreboardObjective(String),
+    /// Score holder argument.
+    ScoreHolders(ScoreHolderArgumentValue),
+    /// Integer range argument.
+    IntRange(IntRangeArgumentValue),
 }
 
 /// Biome command argument value: either one biome or a biome tag.
@@ -139,6 +146,90 @@ pub enum StructureArgumentValue {
 pub struct PermissionTarget {
     uuid: Option<Uuid>,
     name: String,
+}
+
+/// Score holder command argument value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScoreHolderArgumentValue {
+    /// Explicit score holders.
+    Holders(Vec<ScoreHolder>),
+    /// Wildcard holder expansion.
+    Wildcard,
+}
+
+impl ScoreHolderArgumentValue {
+    /// Returns explicit holders.
+    #[must_use]
+    pub fn holders(&self) -> Option<&[ScoreHolder]> {
+        match self {
+            Self::Holders(holders) => Some(holders),
+            Self::Wildcard => None,
+        }
+    }
+
+    /// Returns whether this argument is a wildcard.
+    #[must_use]
+    pub const fn is_wildcard(&self) -> bool {
+        matches!(self, Self::Wildcard)
+    }
+}
+
+/// Scoreboard objective name command argument value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScoreboardObjectiveName(String);
+
+impl ScoreboardObjectiveName {
+    /// Creates an objective name value.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+
+    /// Returns the objective name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Inclusive integer range command argument value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IntRangeArgumentValue {
+    min: Option<i32>,
+    max: Option<i32>,
+}
+
+impl IntRangeArgumentValue {
+    /// Creates an integer range.
+    #[must_use]
+    pub const fn new(min: Option<i32>, max: Option<i32>) -> Self {
+        Self { min, max }
+    }
+
+    /// Creates an exact-value range.
+    #[must_use]
+    pub const fn exactly(value: i32) -> Self {
+        Self {
+            min: Some(value),
+            max: Some(value),
+        }
+    }
+
+    /// Returns whether `value` matches this range.
+    #[must_use]
+    pub fn matches(self, value: i32) -> bool {
+        if let Some(min) = self.min
+            && value < min
+        {
+            return false;
+        }
+        if let Some(max) = self.max
+            && value > max
+        {
+            return false;
+        }
+        true
+    }
 }
 
 impl PermissionTarget {
@@ -332,6 +423,11 @@ impl fmt::Debug for ParsedArgument {
             Self::Heightmap(value) => f.debug_tuple("Heightmap").field(value).finish(),
             Self::Rotation(value) => f.debug_tuple("Rotation").field(value).finish(),
             Self::Component(_) => f.debug_tuple("Component").finish(),
+            Self::ScoreboardObjective(value) => {
+                f.debug_tuple("ScoreboardObjective").field(value).finish()
+            }
+            Self::ScoreHolders(value) => f.debug_tuple("ScoreHolders").field(value).finish(),
+            Self::IntRange(value) => f.debug_tuple("IntRange").field(value).finish(),
         }
     }
 }
@@ -411,6 +507,9 @@ impl ParsedArgument {
             Self::Heightmap(_) => "heightmap",
             Self::Rotation(_) => "rotation",
             Self::Component(_) => "component",
+            Self::ScoreboardObjective(_) => "scoreboard_objective",
+            Self::ScoreHolders(_) => "score_holders",
+            Self::IntRange(_) => "int_range",
         }
     }
 }
@@ -506,6 +605,39 @@ impl FromParsedArgument for String {
             return None;
         };
         Some(value.clone())
+    }
+}
+
+impl FromParsedArgument for ScoreHolderArgumentValue {
+    const TYPE_NAME: &'static str = "score_holders";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::ScoreHolders(value) = value else {
+            return None;
+        };
+        Some(value.clone())
+    }
+}
+
+impl FromParsedArgument for ScoreboardObjectiveName {
+    const TYPE_NAME: &'static str = "scoreboard_objective";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::ScoreboardObjective(value) = value else {
+            return None;
+        };
+        Some(Self::new(value.to_owned()))
+    }
+}
+
+impl FromParsedArgument for IntRangeArgumentValue {
+    const TYPE_NAME: &'static str = "int_range";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::IntRange(value) = value else {
+            return None;
+        };
+        Some(*value)
     }
 }
 

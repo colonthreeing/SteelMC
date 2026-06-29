@@ -6,6 +6,7 @@ mod nbt;
 mod permission;
 mod position;
 mod resource;
+mod scoreboard;
 mod target;
 mod text;
 mod world;
@@ -18,6 +19,7 @@ pub use position::{BlockPosParser, HeightmapParser, RotationParser, Vec3Parser};
 pub use resource::{
     BiomeParser, EnchantmentParser, EntitySummonParser, ItemParser, StructureParser,
 };
+pub use scoreboard::{IntRangeParser, ObjectiveParser, ScoreHolderParser};
 pub use target::{EntityParser, PermissionTargetParser, PlayerParser};
 pub use text::{ComponentParser, TimeParser};
 pub use world::{DomainParser, WorldParser};
@@ -25,7 +27,7 @@ pub use world::{DomainParser, WorldParser};
 #[cfg(test)]
 mod tests {
     use glam::DVec3;
-    use steel_protocol::packets::game::SuggestionType;
+    use steel_protocol::packets::game::{ArgumentType, SuggestionType};
     use steel_registry::{
         REGISTRY, test_support::init_test_registry, vanilla_biomes, vanilla_blocks,
         vanilla_enchantments, vanilla_entities, vanilla_items,
@@ -40,9 +42,10 @@ mod tests {
             parsers::{
                 BiomeParser, BlockPosParser, BlockPredicateParser, ComponentParser, DomainParser,
                 EnchantmentParser, EntityParser, EntitySummonParser, GameModeParser,
-                HeightmapParser, ItemParser, NbtPathParser, PermissionKeyParser,
-                PermissionRuleExpressionParser, PermissionTargetParser, PlayerParser,
-                RotationParser, StructureParser, TimeParser, Vec3Parser, WorldParser,
+                HeightmapParser, IntRangeParser, ItemParser, NbtPathParser, ObjectiveParser,
+                PermissionKeyParser, PermissionRuleExpressionParser, PermissionTargetParser,
+                PlayerParser, RotationParser, ScoreHolderParser, StructureParser, TimeParser,
+                Vec3Parser, WorldParser,
             },
             reader::CommandReader,
             requirement::{
@@ -147,6 +150,98 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(texts, vec!["survival", "spectator"]);
+    }
+
+    #[test]
+    fn objective_parser_accepts_brigadier_unquoted_string() {
+        let mut reader = CommandReader::new("kills next");
+        let value = ObjectiveParser
+            .parse(&mut reader, &TestContext)
+            .expect("objective parses");
+
+        assert!(matches!(value, ParsedArgument::ScoreboardObjective(name) if name == "kills"));
+        assert_eq!(reader.remaining(), " next");
+    }
+
+    #[test]
+    fn scoreboard_parsers_use_native_client_types() {
+        let (argument_type, suggestion_type) =
+            ObjectiveParser.client_parser().into_protocol_argument();
+        assert!(matches!(argument_type, ArgumentType::Objective));
+        assert!(matches!(suggestion_type, Some(SuggestionType::AskServer)));
+
+        let (argument_type, suggestion_type) = ScoreHolderParser::multiple()
+            .client_parser()
+            .into_protocol_argument();
+        assert!(matches!(
+            argument_type,
+            ArgumentType::ScoreHolder { flags: 1 }
+        ));
+        assert!(matches!(suggestion_type, Some(SuggestionType::AskServer)));
+
+        let (argument_type, suggestion_type) =
+            IntRangeParser.client_parser().into_protocol_argument();
+        assert!(matches!(argument_type, ArgumentType::IntRange));
+        assert!(suggestion_type.is_none());
+    }
+
+    #[test]
+    fn score_holder_parser_accepts_fake_names_and_wildcard() {
+        let mut reader = CommandReader::new("#hidden");
+        let value = ScoreHolderParser::one()
+            .parse(&mut reader, &TestContext)
+            .expect("score holder parses");
+        assert!(
+            matches!(value, ParsedArgument::ScoreHolders(crate::command::graph::ScoreHolderArgumentValue::Holders(holders)) if holders[0].name() == "#hidden")
+        );
+
+        let mut reader = CommandReader::new("*");
+        let value = ScoreHolderParser::multiple()
+            .parse(&mut reader, &TestContext)
+            .expect("wildcard parses");
+        assert!(matches!(
+            value,
+            ParsedArgument::ScoreHolders(crate::command::graph::ScoreHolderArgumentValue::Wildcard)
+        ));
+    }
+
+    #[test]
+    fn int_range_parser_accepts_vanilla_range_forms() {
+        for (input, matching, missing) in [
+            ("5", 5, 4),
+            ("5..", 10, 4),
+            ("..5", 4, 6),
+            ("3..5", 4, 6),
+            ("-5..-3", -4, 0),
+        ] {
+            let mut reader = CommandReader::new(input);
+            let ParsedArgument::IntRange(range) = IntRangeParser
+                .parse(&mut reader, &TestContext)
+                .expect("range parses")
+            else {
+                panic!("expected int range argument");
+            };
+            assert!(range.matches(matching));
+            assert!(!range.matches(missing));
+        }
+    }
+
+    #[test]
+    fn int_range_parser_rejects_empty_and_swapped_ranges() {
+        let mut reader = CommandReader::new("..");
+        let error = IntRangeParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("empty range rejects");
+        assert_eq!(
+            error.kind(),
+            &CommandParseErrorKind::InvalidIntegerRange("..".to_owned())
+        );
+
+        let mut reader = CommandReader::new("5..3");
+        let error = IntRangeParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("swapped range rejects");
+        assert_eq!(error.kind(), &CommandParseErrorKind::SwappedIntegerRange);
     }
 
     #[test]

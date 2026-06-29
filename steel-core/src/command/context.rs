@@ -197,6 +197,12 @@ impl CommandContext {
         self
     }
 
+    /// Chains `callback` after the current result callback.
+    pub fn chain_result_callback(&mut self, callback: CommandResultCallback) {
+        let current = std::mem::take(&mut self.result_callback);
+        self.result_callback = current.chain(callback);
+    }
+
     /// Returns this context without result callbacks.
     #[must_use]
     pub fn without_result_callbacks(mut self) -> Self {

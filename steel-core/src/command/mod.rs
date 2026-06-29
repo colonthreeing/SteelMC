@@ -572,6 +572,12 @@ impl CommandDispatcher {
                     .message([TextComponent::from(value.clone())])
                     .into()
             }
+            CommandParseErrorKind::InvalidIntegerRange(value) => translations::PARSING_INT_INVALID
+                .message([TextComponent::from(value.clone())])
+                .into(),
+            CommandParseErrorKind::SwappedIntegerRange => {
+                TextComponent::from(&translations::ARGUMENT_RANGE_SWAPPED)
+            }
             CommandParseErrorKind::InvalidEntityType(value) => {
                 TextComponent::plain(format!("Invalid entity type '{value}'"))
             }

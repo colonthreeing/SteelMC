@@ -1613,6 +1613,10 @@ impl Entity for Player {
         &vanilla_entities::PLAYER
     }
 
+    fn scoreboard_name(&self) -> String {
+        self.gameprofile.name.to_owned()
+    }
+
     fn is_always_ticking(&self) -> bool {
         true
     }

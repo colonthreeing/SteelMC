@@ -1048,6 +1048,14 @@ pub trait Entity: EntityEventSource + Send + Sync {
         self.base().uuid()
     }
 
+    /// Returns this entity's vanilla scoreboard holder name.
+    ///
+    /// Non-player entities use their UUID string. Players override this with
+    /// their game profile name.
+    fn scoreboard_name(&self) -> String {
+        self.uuid().to_string()
+    }
+
     /// Gets the entity's current position.
     fn position(&self) -> DVec3 {
         self.base().position()
