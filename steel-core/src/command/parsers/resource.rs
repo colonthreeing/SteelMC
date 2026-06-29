@@ -12,6 +12,7 @@ use crate::{
         },
         reader::CommandReader,
         requirement::CommandInputContext,
+        suggestions::matches_suggestion_substr,
     },
     entity::ENTITIES,
 };
@@ -64,11 +65,11 @@ impl CommandArgumentParser for EntitySummonParser {
             .filter(|(_, entity_type)| can_summon_entity_type(entity_type))
             .map(|(_, entity_type)| SuggestionEntry::new(entity_type.key.to_string()))
             .filter(|suggestion| {
-                suggestion
+                let text = suggestion
                     .text
                     .strip_prefix("minecraft:")
-                    .unwrap_or(&suggestion.text)
-                    .starts_with(stripped_prefix)
+                    .unwrap_or(&suggestion.text);
+                matches_suggestion_substr(stripped_prefix, text)
             })
             .collect()
     }
@@ -143,11 +144,11 @@ impl CommandArgumentParser for ItemParser {
             .iter()
             .map(|(_, item)| SuggestionEntry::new(item.key.to_string()))
             .filter(|suggestion| {
-                suggestion
+                let text = suggestion
                     .text
                     .strip_prefix("minecraft:")
-                    .unwrap_or(&suggestion.text)
-                    .starts_with(stripped_prefix)
+                    .unwrap_or(&suggestion.text);
+                matches_suggestion_substr(stripped_prefix, text)
             })
             .collect()
     }
@@ -202,11 +203,11 @@ impl CommandArgumentParser for EnchantmentParser {
             .iter()
             .map(|(_, enchantment)| SuggestionEntry::new(enchantment.key.to_string()))
             .filter(|suggestion| {
-                suggestion
+                let text = suggestion
                     .text
                     .strip_prefix("minecraft:")
-                    .unwrap_or(&suggestion.text)
-                    .starts_with(stripped_prefix)
+                    .unwrap_or(&suggestion.text);
+                matches_suggestion_substr(stripped_prefix, text)
             })
             .collect()
     }
@@ -299,7 +300,7 @@ impl CommandArgumentParser for StructureParser {
                 .filter_map(|key| {
                     let key = key.to_string();
                     let text = key.strip_prefix("minecraft:").unwrap_or(&key);
-                    text.starts_with(stripped_prefix)
+                    matches_suggestion_substr(stripped_prefix, text)
                         .then(|| SuggestionEntry::new(format!("#{key}")))
                 })
                 .collect();
@@ -313,11 +314,11 @@ impl CommandArgumentParser for StructureParser {
                 .iter()
                 .map(|(_, structure)| SuggestionEntry::new(structure.key.to_string()))
                 .filter(|suggestion| {
-                    suggestion
+                    let text = suggestion
                         .text
                         .strip_prefix("minecraft:")
-                        .unwrap_or(&suggestion.text)
-                        .starts_with(stripped_prefix)
+                        .unwrap_or(&suggestion.text);
+                    matches_suggestion_substr(stripped_prefix, text)
                 }),
         );
         suggestions.extend(
@@ -326,11 +327,11 @@ impl CommandArgumentParser for StructureParser {
                 .tag_keys()
                 .map(|key| SuggestionEntry::new(format!("#{key}")))
                 .filter(|suggestion| {
-                    suggestion
+                    let text = suggestion
                         .text
                         .strip_prefix("#minecraft:")
-                        .unwrap_or(&suggestion.text)
-                        .starts_with(stripped_prefix)
+                        .unwrap_or(&suggestion.text);
+                    matches_suggestion_substr(stripped_prefix, text)
                 }),
         );
         suggestions

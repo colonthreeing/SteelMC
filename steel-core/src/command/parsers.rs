@@ -411,6 +411,19 @@ mod tests {
     }
 
     #[test]
+    fn item_parser_suggestions_match_after_resource_splitters() {
+        init_test_registry();
+
+        let suggestions = ItemParser.suggest("planks", &ParsedArguments::default(), &TestContext);
+
+        assert!(
+            suggestions
+                .iter()
+                .any(|suggestion| suggestion.text == "minecraft:oak_planks")
+        );
+    }
+
+    #[test]
     fn enchantment_parser_resolves_default_namespace() {
         init_test_registry();
 

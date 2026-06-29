@@ -8,6 +8,7 @@ pub mod parsers;
 pub mod reader;
 pub mod requirement;
 pub mod sender;
+pub(crate) mod suggestions;
 
 use steel_protocol::packets::game::{CCommandSuggestions, CCommands, CommandNode, SuggestionEntry};
 use steel_utils::translations;

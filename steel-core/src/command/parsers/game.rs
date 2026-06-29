@@ -10,6 +10,7 @@ use crate::command::{
     },
     reader::{CommandReader, StringMode},
     requirement::CommandInputContext,
+    suggestions::matches_suggestion_substr,
 };
 
 /// Game mode argument parser.
@@ -57,7 +58,7 @@ impl CommandArgumentParser for GameModeParser {
     ) -> Vec<SuggestionEntry> {
         ["survival", "creative", "adventure", "spectator"]
             .into_iter()
-            .filter(|suggestion| suggestion.starts_with(prefix))
+            .filter(|suggestion| matches_suggestion_substr(prefix, suggestion))
             .map(SuggestionEntry::new)
             .collect()
     }
