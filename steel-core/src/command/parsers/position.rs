@@ -28,11 +28,12 @@ impl CommandArgumentParser for Vec3Parser {
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
+        let start = reader.cursor();
         let x = reader.read_token()?;
-        reader.expect_whitespace()?;
-        let y = reader.read_token()?;
-        reader.expect_whitespace()?;
-        let z = reader.read_token()?;
+        expect_coordinate_separator(reader, start, cursor, CommandParseErrorKind::InvalidVec3)?;
+        let y = read_coordinate_token(reader, start, cursor, CommandParseErrorKind::InvalidVec3)?;
+        expect_coordinate_separator(reader, start, cursor, CommandParseErrorKind::InvalidVec3)?;
+        let z = read_coordinate_token(reader, start, cursor, CommandParseErrorKind::InvalidVec3)?;
         let raw = format!("{x} {y} {z}");
 
         if x.starts_with('^') {
@@ -94,11 +95,32 @@ impl CommandArgumentParser for BlockPosParser {
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
+        let start = reader.cursor();
         let x = reader.read_token()?;
-        reader.expect_whitespace()?;
-        let y = reader.read_token()?;
-        reader.expect_whitespace()?;
-        let z = reader.read_token()?;
+        expect_coordinate_separator(
+            reader,
+            start,
+            cursor,
+            CommandParseErrorKind::InvalidBlockPos,
+        )?;
+        let y = read_coordinate_token(
+            reader,
+            start,
+            cursor,
+            CommandParseErrorKind::InvalidBlockPos,
+        )?;
+        expect_coordinate_separator(
+            reader,
+            start,
+            cursor,
+            CommandParseErrorKind::InvalidBlockPos,
+        )?;
+        let z = read_coordinate_token(
+            reader,
+            start,
+            cursor,
+            CommandParseErrorKind::InvalidBlockPos,
+        )?;
         let raw = format!("{x} {y} {z}");
 
         if x.starts_with('^') {
@@ -162,9 +184,20 @@ impl CommandArgumentParser for RotationParser {
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
+        let start = reader.cursor();
         let yaw = reader.read_token()?;
-        reader.expect_whitespace()?;
-        let pitch = reader.read_token()?;
+        expect_coordinate_separator(
+            reader,
+            start,
+            cursor,
+            CommandParseErrorKind::InvalidRotation,
+        )?;
+        let pitch = read_coordinate_token(
+            reader,
+            start,
+            cursor,
+            CommandParseErrorKind::InvalidRotation,
+        )?;
         let raw = format!("{yaw} {pitch}");
 
         let (origin_yaw, origin_pitch) = context.rotation().unwrap_or((0.0, 0.0));
@@ -191,6 +224,44 @@ impl CommandArgumentParser for RotationParser {
     fn parsed_type(&self) -> &'static str {
         "rotation"
     }
+}
+
+fn expect_coordinate_separator(
+    reader: &mut CommandReader<'_>,
+    argument_start: usize,
+    error_cursor: usize,
+    error_kind: fn(String) -> CommandParseErrorKind,
+) -> Result<(), CommandParseError> {
+    reader
+        .expect_whitespace()
+        .map_err(|_| incomplete_coordinate_error(reader, argument_start, error_cursor, error_kind))
+}
+
+fn read_coordinate_token(
+    reader: &mut CommandReader<'_>,
+    argument_start: usize,
+    error_cursor: usize,
+    error_kind: fn(String) -> CommandParseErrorKind,
+) -> Result<String, CommandParseError> {
+    reader.read_token().map_err(|error| {
+        if reader.cursor() == argument_start {
+            error
+        } else {
+            incomplete_coordinate_error(reader, argument_start, error_cursor, error_kind)
+        }
+    })
+}
+
+fn incomplete_coordinate_error(
+    reader: &CommandReader<'_>,
+    argument_start: usize,
+    error_cursor: usize,
+    error_kind: fn(String) -> CommandParseErrorKind,
+) -> CommandParseError {
+    let raw = reader.input()[argument_start..reader.cursor()]
+        .trim_end()
+        .to_owned();
+    CommandParseError::new(error_kind(raw), error_cursor)
 }
 
 fn parse_block_coordinate(value: &str, origin: f64) -> Option<f64> {

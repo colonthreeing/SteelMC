@@ -480,6 +480,20 @@ mod tests {
     }
 
     #[test]
+    fn block_pos_parser_reports_incomplete_position() {
+        let mut reader = CommandReader::new("1 2");
+        let error = BlockPosParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("block position is incomplete");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidBlockPos(value) if value == "1 2"
+        ));
+        assert_eq!(error.cursor(), 0);
+    }
+
+    #[test]
     fn vec3_parser_centers_absolute_xz_without_decimal() {
         let mut reader = CommandReader::new("1 2 3.0");
         let value = Vec3Parser
@@ -490,6 +504,20 @@ mod tests {
     }
 
     #[test]
+    fn vec3_parser_reports_incomplete_position() {
+        let mut reader = CommandReader::new("1 ");
+        let error = Vec3Parser
+            .parse(&mut reader, &TestContext)
+            .expect_err("vec3 is incomplete");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidVec3(value) if value == "1"
+        ));
+        assert_eq!(error.cursor(), 0);
+    }
+
+    #[test]
     fn rotation_parser_accepts_and_normalizes_absolute_rotation() {
         let mut reader = CommandReader::new("181 -181");
         let value = RotationParser
@@ -497,6 +525,20 @@ mod tests {
             .expect("rotation parses");
 
         assert!(matches!(value, ParsedArgument::Rotation((-179.0, 179.0))));
+    }
+
+    #[test]
+    fn rotation_parser_reports_incomplete_rotation() {
+        let mut reader = CommandReader::new("90");
+        let error = RotationParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("rotation is incomplete");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidRotation(value) if value == "90"
+        ));
+        assert_eq!(error.cursor(), 0);
     }
 
     #[test]
