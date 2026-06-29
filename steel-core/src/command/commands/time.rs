@@ -18,22 +18,21 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 /// Handler for the `time` command
 #[must_use]
 pub(crate) fn command() -> CommandNodeBuilder {
-    literal("time")
-        .then(
-            literal("query")
-                .then(time_query_literal("day", TimeQuery::Day))
-                .then(time_query_literal("daytime", TimeQuery::Daytime))
-                .then(time_query_literal("gametime", TimeQuery::Gametime)),
-        )
-        .then(
-            literal("set")
-                .then(time_const_set_literal("day", 1000))
-                .then(time_const_set_literal("midnight", 18_000))
-                .then(time_const_set_literal("night", 13_000))
-                .then(time_const_set_literal("noon", 6000))
-                .then(argument("time", TimeParser).executes(set_parsed_time)),
-        )
-        .then(literal("add").then(argument("time", TimeParser).executes(add_time)))
+    literal("time").then_all([
+        literal("query").then_all([
+            time_query_literal("day", TimeQuery::Day),
+            time_query_literal("daytime", TimeQuery::Daytime),
+            time_query_literal("gametime", TimeQuery::Gametime),
+        ]),
+        literal("set").then_all([
+            time_const_set_literal("day", 1000),
+            time_const_set_literal("midnight", 18_000),
+            time_const_set_literal("night", 13_000),
+            time_const_set_literal("noon", 6000),
+            argument("time", TimeParser).executes(set_parsed_time),
+        ]),
+        literal("add").then(argument("time", TimeParser).executes(add_time)),
+    ])
 }
 
 fn time_query_literal(name: &'static str, query: TimeQuery) -> CommandNodeBuilder {

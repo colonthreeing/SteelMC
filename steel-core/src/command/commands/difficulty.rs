@@ -21,10 +21,12 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 pub(crate) fn command() -> CommandNodeBuilder {
     literal("difficulty")
         .executes(query_difficulty)
-        .then(difficulty_literal("peaceful", Difficulty::Peaceful))
-        .then(difficulty_literal("easy", Difficulty::Easy))
-        .then(difficulty_literal("normal", Difficulty::Normal))
-        .then(difficulty_literal("hard", Difficulty::Hard))
+        .then_all([
+            difficulty_literal("peaceful", Difficulty::Peaceful),
+            difficulty_literal("easy", Difficulty::Easy),
+            difficulty_literal("normal", Difficulty::Normal),
+            difficulty_literal("hard", Difficulty::Hard),
+        ])
 }
 
 fn difficulty_literal(name: &'static str, difficulty: Difficulty) -> CommandNodeBuilder {

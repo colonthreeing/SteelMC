@@ -39,6 +39,13 @@ impl CommandNodeBuilder {
         self
     }
 
+    /// Adds multiple child nodes in order.
+    #[must_use]
+    pub fn then_all(mut self, children: impl IntoIterator<Item = Self>) -> Self {
+        self.children.extend(children);
+        self
+    }
+
     /// Adds a requirement to this node.
     #[must_use]
     pub fn requires(mut self, requirement: Requirement) -> Self {

@@ -822,6 +822,24 @@ fn trailing_space_suggests_children() {
 }
 
 #[test]
+fn then_all_adds_children_in_order() {
+    let graph = graph_with_root(literal("root").then_all([
+        literal("one"),
+        literal("two"),
+        literal("three"),
+    ]));
+
+    let result = graph
+        .suggest("root ", &player_context())
+        .expect("child suggestions");
+
+    assert_eq!(
+        suggestion_texts(&result),
+        vec!["one".to_owned(), "two".to_owned(), "three".to_owned()]
+    );
+}
+
+#[test]
 fn trailing_space_after_leaf_has_no_stale_suggestion() {
     let graph = graph_with_root(literal("list").then(literal("uuids")));
 

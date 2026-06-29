@@ -41,127 +41,88 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 /// Handler for the "steelperms" command group.
 #[must_use]
 pub(crate) fn command() -> CommandNodeBuilder {
-    literal("steelperms")
-        .then(user_command())
-        .then(group_command())
-        .then(groups_command())
+    literal("steelperms").then_all([user_command(), group_command(), groups_command()])
 }
 
 fn user_command() -> CommandNodeBuilder {
     literal("user").then(
-        argument("targets", PermissionTargetParser)
-            .then(
-                literal("info")
-                    .requires_subcommand_permission()
-                    .executes(user_info),
-            )
-            .then(
-                literal("allow")
+        argument("targets", PermissionTargetParser).then_all([
+            literal("info")
+                .requires_subcommand_permission()
+                .executes(user_info),
+            literal("allow")
+                .requires_additional_subcommand_permission()
+                .then(permission_key_argument(allow_permission)),
+            literal("deny")
+                .requires_additional_subcommand_permission()
+                .then(permission_key_argument(deny_permission)),
+            literal("unset")
+                .requires_additional_subcommand_permission()
+                .then(permission_override_argument(unset_permission)),
+            literal("check")
+                .requires_subcommand_permission()
+                .then(permission_key_argument(check_permission)),
+            user_metadata_arguments(),
+            contextual_user_permission_arguments(),
+            literal("group").then_all([
+                literal("add")
                     .requires_additional_subcommand_permission()
-                    .then(permission_key_argument(allow_permission)),
-            )
-            .then(
-                literal("deny")
+                    .then(argument("group", PermissionGroupParser).executes(add_group)),
+                literal("remove")
                     .requires_additional_subcommand_permission()
-                    .then(permission_key_argument(deny_permission)),
-            )
-            .then(
-                literal("unset")
-                    .requires_additional_subcommand_permission()
-                    .then(permission_override_argument(unset_permission)),
-            )
-            .then(
-                literal("check")
-                    .requires_subcommand_permission()
-                    .then(permission_key_argument(check_permission)),
-            )
-            .then(user_metadata_arguments())
-            .then(contextual_user_permission_arguments())
-            .then(
-                literal("group").then(
-                    literal("add")
-                        .requires_additional_subcommand_permission()
-                        .then(argument("group", PermissionGroupParser).executes(add_group)),
-                ),
-            )
-            .then(
-                literal("group").then(
-                    literal("remove")
-                        .requires_additional_subcommand_permission()
-                        .then(
-                            argument("group", PermissionAssignedGroupParser::new("targets"))
-                                .executes(remove_group),
-                        ),
-                ),
-            ),
+                    .then(
+                        argument("group", PermissionAssignedGroupParser::new("targets"))
+                            .executes(remove_group),
+                    ),
+            ]),
+        ]),
     )
 }
 
 fn group_command() -> CommandNodeBuilder {
     literal("group").then(
-        argument("group", PermissionGroupNameParser)
-            .then(
-                literal("create")
-                    .requires_additional_subcommand_permission()
-                    .executes(create_group),
-            )
-            .then(
-                literal("info")
-                    .requires_subcommand_permission()
-                    .executes(group_info),
-            )
-            .then(
-                literal("delete")
-                    .requires_additional_subcommand_permission()
-                    .executes(delete_group),
-            )
-            .then(
-                literal("allow")
-                    .requires_additional_subcommand_permission()
-                    .then(permission_key_argument(allow_group_permission)),
-            )
-            .then(
-                literal("deny")
-                    .requires_additional_subcommand_permission()
-                    .then(permission_key_argument(deny_group_permission)),
-            )
-            .then(
-                literal("unset")
-                    .requires_additional_subcommand_permission()
-                    .then(group_permission_argument(unset_group_permission)),
-            )
-            .then(
-                literal("priority")
-                    .requires_additional_subcommand_permission()
-                    .then(argument("priority", IntegerParser::new()).executes(set_group_priority)),
-            )
-            .then(group_metadata_arguments())
-            .then(contextual_group_permission_arguments()),
+        argument("group", PermissionGroupNameParser).then_all([
+            literal("create")
+                .requires_additional_subcommand_permission()
+                .executes(create_group),
+            literal("info")
+                .requires_subcommand_permission()
+                .executes(group_info),
+            literal("delete")
+                .requires_additional_subcommand_permission()
+                .executes(delete_group),
+            literal("allow")
+                .requires_additional_subcommand_permission()
+                .then(permission_key_argument(allow_group_permission)),
+            literal("deny")
+                .requires_additional_subcommand_permission()
+                .then(permission_key_argument(deny_group_permission)),
+            literal("unset")
+                .requires_additional_subcommand_permission()
+                .then(group_permission_argument(unset_group_permission)),
+            literal("priority")
+                .requires_additional_subcommand_permission()
+                .then(argument("priority", IntegerParser::new()).executes(set_group_priority)),
+            group_metadata_arguments(),
+            contextual_group_permission_arguments(),
+        ]),
     )
 }
 
 fn groups_command() -> CommandNodeBuilder {
-    literal("groups")
-        .then(
-            literal("list")
-                .requires_subcommand_permission()
-                .executes(group_list),
-        )
-        .then(
-            literal("default")
-                .then(
-                    literal("add")
-                        .requires_additional_subcommand_permission()
-                        .then(argument("group", PermissionGroupParser).executes(add_default_group)),
-                )
-                .then(
-                    literal("remove")
-                        .requires_additional_subcommand_permission()
-                        .then(
-                            argument("group", PermissionGroupParser).executes(remove_default_group),
-                        ),
-                ),
-        )
+    literal("groups").then_all([
+        literal("list")
+            .requires_subcommand_permission()
+            .executes(group_list),
+        literal("default").then_all([
+            literal("add")
+                .requires_additional_subcommand_permission()
+                .then(argument("group", PermissionGroupParser).executes(add_default_group)),
+            literal("remove")
+                .requires_additional_subcommand_permission()
+                .then(argument("group", PermissionGroupParser).executes(remove_default_group)),
+        ]),
+    ])
 }
 
 fn permission_key_argument(
@@ -199,28 +160,24 @@ fn group_metadata_argument(
 }
 
 fn user_metadata_arguments() -> CommandNodeBuilder {
-    literal("metadata")
-        .then(metadata_set_arguments(set_metadata))
-        .then(
-            literal("check").requires_subcommand_permission().then(
-                argument("metadata_key", PermissionMetadataKeyParser).executes(check_metadata),
-            ),
-        )
-        .then(
-            literal("unset")
-                .requires_additional_subcommand_permission()
-                .then(metadata_override_argument(unset_metadata)),
-        )
+    literal("metadata").then_all([
+        metadata_set_arguments(set_metadata),
+        literal("check").requires_subcommand_permission().then(
+            argument("metadata_key", PermissionMetadataKeyParser).executes(check_metadata),
+        ),
+        literal("unset")
+            .requires_additional_subcommand_permission()
+            .then(metadata_override_argument(unset_metadata)),
+    ])
 }
 
 fn group_metadata_arguments() -> CommandNodeBuilder {
-    literal("metadata")
-        .then(metadata_set_arguments(set_group_metadata))
-        .then(
-            literal("unset")
-                .requires_additional_subcommand_permission()
-                .then(group_metadata_argument(unset_group_metadata)),
-        )
+    literal("metadata").then_all([
+        metadata_set_arguments(set_group_metadata),
+        literal("unset")
+            .requires_additional_subcommand_permission()
+            .then(group_metadata_argument(unset_group_metadata)),
+    ])
 }
 
 fn metadata_set_arguments(
@@ -228,19 +185,15 @@ fn metadata_set_arguments(
 ) -> CommandNodeBuilder {
     literal("set")
         .requires_additional_subcommand_permission()
-        .then(
+        .then_all([
             literal("int").then(
                 argument("metadata_key", PermissionMetadataKeyParser)
                     .then(argument("metadata_int_value", LongParser::new()).executes(executor)),
             ),
-        )
-        .then(
             literal("bool").then(
                 argument("metadata_key", PermissionMetadataKeyParser)
                     .then(argument("metadata_bool_value", BoolParser).executes(executor)),
             ),
-        )
-        .then(
             literal("string").then(
                 argument("metadata_key", PermissionMetadataKeyParser).then(
                     argument(
@@ -250,20 +203,21 @@ fn metadata_set_arguments(
                     .executes(executor),
                 ),
             ),
-        )
+        ])
 }
 
 fn contextual_user_permission_arguments() -> CommandNodeBuilder {
-    literal("context")
-        .then(literal("domain").then(user_permission_context_argument(
+    literal("context").then_all([
+        literal("domain").then(user_permission_context_argument(
             "context_domain",
             DomainParser,
-        )))
-        .then(literal("world").then(user_permission_context_argument(
+        )),
+        literal("world").then(user_permission_context_argument(
             "context_world",
             WorldParser,
-        )))
-        .then(user_custom_context_argument())
+        )),
+        user_custom_context_argument(),
+    ])
 }
 
 fn user_permission_context_argument(
@@ -285,40 +239,35 @@ fn user_custom_context_argument() -> CommandNodeBuilder {
 }
 
 fn user_context_actions(node: CommandNodeBuilder) -> CommandNodeBuilder {
-    node.then(
+    node.then_all([
         literal("allow")
             .requires_additional_subcommand_permission()
             .then(permission_key_argument(allow_permission)),
-    )
-    .then(
         literal("deny")
             .requires_additional_subcommand_permission()
             .then(permission_key_argument(deny_permission)),
-    )
-    .then(
         literal("unset")
             .requires_additional_subcommand_permission()
             .then(permission_override_argument(unset_permission)),
-    )
-    .then(
         literal("check")
             .requires_subcommand_permission()
             .then(permission_key_argument(check_permission)),
-    )
-    .then(user_metadata_arguments())
+        user_metadata_arguments(),
+    ])
 }
 
 fn contextual_group_permission_arguments() -> CommandNodeBuilder {
-    literal("context")
-        .then(literal("domain").then(group_permission_context_argument(
+    literal("context").then_all([
+        literal("domain").then(group_permission_context_argument(
             "context_domain",
             DomainParser,
-        )))
-        .then(literal("world").then(group_permission_context_argument(
+        )),
+        literal("world").then(group_permission_context_argument(
             "context_world",
             WorldParser,
-        )))
-        .then(group_custom_context_argument())
+        )),
+        group_custom_context_argument(),
+    ])
 }
 
 fn group_permission_context_argument(
@@ -340,22 +289,18 @@ fn group_custom_context_argument() -> CommandNodeBuilder {
 }
 
 fn group_context_actions(node: CommandNodeBuilder) -> CommandNodeBuilder {
-    node.then(
+    node.then_all([
         literal("allow")
             .requires_additional_subcommand_permission()
             .then(permission_key_argument(allow_group_permission)),
-    )
-    .then(
         literal("deny")
             .requires_additional_subcommand_permission()
             .then(permission_key_argument(deny_group_permission)),
-    )
-    .then(
         literal("unset")
             .requires_additional_subcommand_permission()
             .then(group_permission_argument(unset_group_permission)),
-    )
-    .then(group_metadata_arguments())
+        group_metadata_arguments(),
+    ])
 }
 
 #[derive(Clone, Copy, Debug)]
