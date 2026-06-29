@@ -20,10 +20,10 @@ mod traversal;
 
 pub use arguments::{
     BiomeArgumentValue, BlockPredicateArgumentValue, CommandPermissionArgument, FromParsedArgument,
-    IntRangeArgumentValue, ItemPredicateArgumentValue, ItemPredicateCondition, ItemPredicateTarget,
-    ItemPredicateTerm, ItemSlotRangeArgumentValue, ParsedArgument, ParsedArgumentError,
-    ParsedArguments, PermissionTarget, ScoreHolderArgumentValue, ScoreboardObjectiveName,
-    StructureArgumentValue,
+    IntRangeArgumentValue, ItemPredicateArgumentValue, ItemPredicateCondition,
+    ItemPredicateMatchError, ItemPredicateTarget, ItemPredicateTerm, ItemSlotRangeArgumentValue,
+    ParsedArgument, ParsedArgumentError, ParsedArguments, PermissionTarget,
+    ScoreHolderArgumentValue, ScoreboardObjectiveName, StructureArgumentValue,
 };
 pub use builder::{CommandNodeBuilder, argument, literal};
 use node::{CommandNode, CommandNodeKind, collect_ambiguities, merge_or_push_node};

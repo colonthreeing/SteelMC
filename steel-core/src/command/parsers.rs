@@ -34,16 +34,16 @@ mod tests {
     use glam::DVec3;
     use steel_protocol::packets::game::{ArgumentType, SuggestionType};
     use steel_registry::{
-        REGISTRY, test_support::init_test_registry, vanilla_biomes, vanilla_blocks,
-        vanilla_enchantments, vanilla_entities, vanilla_items,
+        REGISTRY, item_stack::ItemStack, test_support::init_test_registry, vanilla_biomes,
+        vanilla_blocks, vanilla_enchantments, vanilla_entities, vanilla_items,
     };
 
     use crate::{
         chunk::heightmap::HeightmapType,
         command::{
             graph::{
-                CommandArgumentParser, CommandParseErrorKind, ItemPredicateTarget,
-                ItemPredicateTerm, ParsedArgument, ParsedArguments,
+                CommandArgumentParser, CommandParseErrorKind, ItemPredicateMatchError,
+                ItemPredicateTarget, ItemPredicateTerm, ParsedArgument, ParsedArguments,
             },
             parsers::{
                 BiomeParser, BlockPosParser, BlockPredicateParser, ComponentParser, DomainParser,
@@ -704,6 +704,62 @@ mod tests {
     }
 
     #[test]
+    fn item_predicate_matches_item_tags_and_count_ranges() {
+        init_test_registry();
+
+        let predicate = parse_item_predicate_for_test("#logs[count={min:2,max:3}]");
+        assert!(
+            predicate
+                .matches_stack(&ItemStack::with_count(&vanilla_items::ITEMS.oak_log, 3))
+                .expect("predicate evaluates")
+        );
+        assert!(
+            !predicate
+                .matches_stack(&ItemStack::with_count(&vanilla_items::ITEMS.oak_log, 4))
+                .expect("predicate evaluates")
+        );
+        assert!(
+            !predicate
+                .matches_stack(&ItemStack::with_count(&vanilla_items::ITEMS.stone, 3))
+                .expect("predicate evaluates")
+        );
+    }
+
+    #[test]
+    fn item_predicate_matches_implemented_component_values() {
+        init_test_registry();
+
+        let predicate = parse_item_predicate_for_test("stone[max_stack_size=64]");
+        assert!(
+            predicate
+                .matches_stack(&ItemStack::new(&vanilla_items::ITEMS.stone))
+                .expect("predicate evaluates")
+        );
+
+        let predicate = parse_item_predicate_for_test("stone[max_stack_size=1]");
+        assert!(
+            !predicate
+                .matches_stack(&ItemStack::new(&vanilla_items::ITEMS.stone))
+                .expect("predicate evaluates")
+        );
+    }
+
+    #[test]
+    fn item_predicate_reports_unsupported_component_predicates() {
+        init_test_registry();
+
+        let predicate = parse_item_predicate_for_test("stone[damage~{min:1}]");
+        let error = predicate
+            .matches_stack(&ItemStack::new(&vanilla_items::ITEMS.stone))
+            .expect_err("unsupported predicate reports an error");
+        assert!(matches!(
+            error,
+            ItemPredicateMatchError::UnsupportedComponentPredicate(key)
+                if key == Identifier::vanilla_static("damage")
+        ));
+    }
+
+    #[test]
     fn item_predicate_parser_rejects_unknown_registry_keys() {
         init_test_registry();
 
@@ -771,6 +827,19 @@ mod tests {
                 .iter()
                 .any(|suggestion| suggestion.text == "stone[minecraft:count")
         );
+    }
+
+    fn parse_item_predicate_for_test(
+        input: &str,
+    ) -> crate::command::graph::ItemPredicateArgumentValue {
+        let mut reader = CommandReader::new(input);
+        let ParsedArgument::ItemPredicate(predicate) = ItemPredicateParser
+            .parse(&mut reader, &TestContext)
+            .expect("item predicate parses")
+        else {
+            panic!("expected item predicate");
+        };
+        predicate
     }
 
     #[test]

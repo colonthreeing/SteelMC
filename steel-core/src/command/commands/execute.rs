@@ -1,8 +1,9 @@
 //! Handler for the "execute" command.
 //!
-//! Bossbar store targets, predicates, functions, item predicates, and stopwatch
-//! predicates are not registered here yet because their backing foundations are
-//! not implemented in Steel's command/runtime layer.
+//! Bossbar store targets, loot predicates, functions, entity item slot
+//! predicates, data component predicate evaluation, and stopwatch predicates are
+//! not registered here yet because their backing foundations are not implemented
+//! in Steel's command/runtime layer.
 
 use std::{borrow::Cow, sync::Arc};
 
@@ -23,8 +24,8 @@ use crate::command::context::{CommandContext, EntityAnchor};
 use crate::command::error::CommandError;
 use crate::command::graph::{
     BiomeArgumentValue, BlockPredicateArgumentValue, CommandNodeBuilder, CommandRedirectTarget,
-    CommandResult, IntRangeArgumentValue, ParsedArguments, ScoreHolderArgumentValue,
-    ScoreboardObjectiveName, literal,
+    CommandResult, IntRangeArgumentValue, ItemPredicateArgumentValue, ItemSlotRangeArgumentValue,
+    ParsedArguments, ScoreHolderArgumentValue, ScoreboardObjectiveName, literal,
 };
 use crate::entity::SharedEntity;
 use crate::scoreboard::{ScoreHolder, ScoreboardObjective};
@@ -152,6 +153,20 @@ fn biome_value(arguments: &ParsedArguments) -> Result<BiomeArgumentValue, Comman
 fn block_predicate(arguments: &ParsedArguments) -> Result<BlockPredicateArgumentValue, CommandError> {
     arguments
         .get::<BlockPredicateArgumentValue>("block")
+        .map_err(super::invalid_parsed_argument)
+}
+
+fn item_slots(arguments: &ParsedArguments) -> Result<ItemSlotRangeArgumentValue, CommandError> {
+    arguments
+        .get::<ItemSlotRangeArgumentValue>("slots")
+        .map_err(super::invalid_parsed_argument)
+}
+
+fn item_predicate(
+    arguments: &ParsedArguments,
+) -> Result<ItemPredicateArgumentValue, CommandError> {
+    arguments
+        .get::<ItemPredicateArgumentValue>("item_predicate")
         .map_err(super::invalid_parsed_argument)
 }
 

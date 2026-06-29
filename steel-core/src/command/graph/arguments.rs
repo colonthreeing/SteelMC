@@ -3,8 +3,9 @@ use std::{fmt, sync::Arc};
 use glam::DVec3;
 use simdnbt::owned::{NbtCompound, NbtTag};
 use steel_registry::{
-    REGISTRY, biome::BiomeRef, blocks::BlockRef, enchantment::EnchantmentRef,
-    entity_type::EntityTypeRef, items::ItemRef, structure::StructureRef,
+    REGISTRY, RegistryExt, biome::BiomeRef, blocks::BlockRef, data_components::ComponentData,
+    enchantment::EnchantmentRef, entity_type::EntityTypeRef, item_stack::ItemStack, items::ItemRef,
+    structure::StructureRef,
 };
 use steel_utils::{BlockPos, BlockStateId, Identifier, nbt::NbtPath, types::GameType};
 use text_components::TextComponent;
@@ -207,6 +208,17 @@ pub enum ItemPredicateTerm {
     },
     /// Negated test term.
     Not(Box<ItemPredicateTerm>),
+}
+
+/// Error while evaluating an item predicate against a stack.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ItemPredicateMatchError {
+    /// The `minecraft:count` pseudo-component/predicate value is malformed.
+    MalformedCountPredicate,
+    /// Steel cannot evaluate an exact value for this component yet.
+    UnsupportedComponentValue(Identifier),
+    /// Steel cannot evaluate this data component predicate yet.
+    UnsupportedComponentPredicate(Identifier),
 }
 
 /// Player target for permission-management commands.
@@ -429,6 +441,41 @@ impl ItemPredicateArgumentValue {
     pub fn conditions(&self) -> &[ItemPredicateCondition] {
         &self.conditions
     }
+
+    /// Returns whether this predicate matches `stack`.
+    ///
+    /// Steel currently supports the vanilla item/tag/type checks, component
+    /// presence, exact-value checks for implemented data components, and the
+    /// `minecraft:count` pseudo-component/predicate. Data component predicate
+    /// types need a separate registry/evaluator foundation before they can be
+    /// matched here.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the predicate requests component semantics Steel
+    /// cannot evaluate correctly yet.
+    pub fn matches_stack(&self, stack: &ItemStack) -> Result<bool, ItemPredicateMatchError> {
+        if !self.target_matches(stack) {
+            return Ok(false);
+        }
+
+        for condition in &self.conditions {
+            if !condition.matches_stack(stack)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn target_matches(&self, stack: &ItemStack) -> bool {
+        match &self.target {
+            ItemPredicateTarget::Any => true,
+            ItemPredicateTarget::Item(item) => stack.is(item),
+            ItemPredicateTarget::Tag { items, .. } => {
+                items.iter().any(|item| stack.item().key == item.key)
+            }
+        }
+    }
 }
 
 impl ItemPredicateCondition {
@@ -442,6 +489,152 @@ impl ItemPredicateCondition {
     #[must_use]
     pub fn alternatives(&self) -> &[ItemPredicateTerm] {
         &self.alternatives
+    }
+
+    fn matches_stack(&self, stack: &ItemStack) -> Result<bool, ItemPredicateMatchError> {
+        for alternative in &self.alternatives {
+            if alternative.matches_stack(stack)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+impl ItemPredicateTerm {
+    fn matches_stack(&self, stack: &ItemStack) -> Result<bool, ItemPredicateMatchError> {
+        match self {
+            Self::ComponentPresence { key } => Ok(component_presence_matches(key, stack)),
+            Self::ComponentValue { key, value } => component_value_matches(key, value, stack),
+            Self::PredicateValue { key, value } => predicate_value_matches(key, value, stack),
+            Self::Not(term) => Ok(!term.matches_stack(stack)?),
+        }
+    }
+}
+
+fn component_presence_matches(key: &Identifier, stack: &ItemStack) -> bool {
+    is_count_key(key) || stack.has_component(key)
+}
+
+fn component_value_matches(
+    key: &Identifier,
+    value: &NbtTag,
+    stack: &ItemStack,
+) -> Result<bool, ItemPredicateMatchError> {
+    if is_count_key(key) {
+        return count_range_matches(value, stack.count());
+    }
+
+    let Some(actual) = stack.get_effective_value_raw(key) else {
+        return Ok(false);
+    };
+    if matches!(actual, ComponentData::Todo) {
+        return Err(ItemPredicateMatchError::UnsupportedComponentValue(
+            key.clone(),
+        ));
+    }
+
+    let Some(entry) = REGISTRY.data_components.by_key(key) else {
+        return Ok(false);
+    };
+    let actual = (entry.nbt_writer)(actual);
+    Ok(actual == *value)
+}
+
+fn predicate_value_matches(
+    key: &Identifier,
+    value: &NbtTag,
+    stack: &ItemStack,
+) -> Result<bool, ItemPredicateMatchError> {
+    if is_count_key(key) {
+        return count_range_matches(value, stack.count());
+    }
+
+    if is_empty_compound(value) {
+        return Ok(stack.has_component(key));
+    }
+
+    Err(ItemPredicateMatchError::UnsupportedComponentPredicate(
+        key.clone(),
+    ))
+}
+
+fn count_range_matches(value: &NbtTag, count: i32) -> Result<bool, ItemPredicateMatchError> {
+    Ok(parse_count_range(value)?.matches(count))
+}
+
+fn is_count_key(key: &Identifier) -> bool {
+    key.namespace == Identifier::VANILLA_NAMESPACE && key.path == "count"
+}
+
+fn is_empty_compound(value: &NbtTag) -> bool {
+    matches!(value, NbtTag::Compound(compound) if compound.is_empty())
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CountRange {
+    min: Option<i32>,
+    max: Option<i32>,
+}
+
+impl CountRange {
+    const fn exactly(value: i32) -> Self {
+        Self {
+            min: Some(value),
+            max: Some(value),
+        }
+    }
+
+    const fn new(min: Option<i32>, max: Option<i32>) -> Self {
+        Self { min, max }
+    }
+
+    fn matches(self, value: i32) -> bool {
+        if let Some(min) = self.min
+            && value < min
+        {
+            return false;
+        }
+        if let Some(max) = self.max
+            && value > max
+        {
+            return false;
+        }
+        true
+    }
+}
+
+fn parse_count_range(value: &NbtTag) -> Result<CountRange, ItemPredicateMatchError> {
+    if let Some(value) = nbt_integer(value) {
+        return Ok(CountRange::exactly(value));
+    }
+
+    let NbtTag::Compound(compound) = value else {
+        return Err(ItemPredicateMatchError::MalformedCountPredicate);
+    };
+
+    let min = compound.get("min").map(nbt_integer_required).transpose()?;
+    let max = compound.get("max").map(nbt_integer_required).transpose()?;
+    if let (Some(min), Some(max)) = (min, max)
+        && min > max
+    {
+        return Err(ItemPredicateMatchError::MalformedCountPredicate);
+    }
+
+    Ok(CountRange::new(min, max))
+}
+
+fn nbt_integer_required(value: &NbtTag) -> Result<i32, ItemPredicateMatchError> {
+    nbt_integer(value).ok_or(ItemPredicateMatchError::MalformedCountPredicate)
+}
+
+fn nbt_integer(value: &NbtTag) -> Option<i32> {
+    match value {
+        NbtTag::Byte(value) => Some(i32::from(*value)),
+        NbtTag::Short(value) => Some(i32::from(*value)),
+        NbtTag::Int(value) => Some(*value),
+        NbtTag::Long(value) => i32::try_from(*value).ok(),
+        _ => None,
     }
 }
 

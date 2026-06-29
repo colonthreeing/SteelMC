@@ -183,6 +183,48 @@ fn data_condition_suggests_entity_accessor() {
 }
 
 #[test]
+fn items_block_condition_parses_direct_and_redirect_forms() {
+    init_test_registry();
+    let graph = graph();
+    let context = TestContext;
+
+    let direct = graph
+        .parse("execute if items block 0 64 0 container.* stone", &context)
+        .expect("direct items block conditional parses");
+    assert_eq!(
+        direct.path(),
+        [
+            "execute",
+            "if",
+            "items",
+            "block",
+            "pos",
+            "slots",
+            "item_predicate"
+        ]
+    );
+
+    let redirected = graph
+        .parse(
+            "execute unless items block 0 64 0 container.0 #logs[count={min:2}] run seed",
+            &context,
+        )
+        .expect("redirected items block conditional parses");
+    assert_eq!(
+        redirected.path(),
+        [
+            "execute",
+            "unless",
+            "items",
+            "block",
+            "pos",
+            "slots",
+            "item_predicate"
+        ]
+    );
+}
+
+#[test]
 fn score_condition_parses_comparison_and_range_forms() {
     let graph = graph();
     let context = TestContext;

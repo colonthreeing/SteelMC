@@ -13,11 +13,12 @@ use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
     CommandNodeBuilder, CommandRedirectTarget, CommandResult, IntRangeArgumentValue,
-    ParsedArguments, argument, literal,
+    ItemPredicateMatchError, ParsedArguments, argument, literal,
 };
 use crate::command::parsers::{
     BiomeParser, BlockPosParser, BlockPredicateParser, EntityParser, IntRangeParser,
-    NbtPathParser, ObjectiveParser, ScoreHolderParser, WorldParser,
+    ItemPredicateParser, ItemSlotsParser, NbtPathParser, ObjectiveParser, ScoreHolderParser,
+    WorldParser,
 };
 use crate::scoreboard::{ScoreHolder, Scoreboard, ScoreboardObjective};
 use crate::world::World;
@@ -25,8 +26,8 @@ use crate::world::World;
 use super::{
     StorageKeyParser, biome_value, block_data_invalid_error, block_entity_full_nbt,
     block_position, block_predicate, entities, int_range, loaded_named_block_position, nbt_path,
-    position_error, same_world, scoreboard_objective, single_score_holder, source_entity,
-    storage_id, world,
+    item_predicate, item_slots, position_error, same_world, scoreboard_objective,
+    single_score_holder, source_entity, storage_id, world,
 };
 
 pub(super) fn conditionals(name: &'static str, expected: bool) -> CommandNodeBuilder {
@@ -51,6 +52,19 @@ pub(super) fn conditionals(name: &'static str, expected: bool) -> CommandNodeBui
                     fork_entity_condition(context, arguments, expected)
                 }),
         ))
+        .then(literal("items").then(literal("block").then(
+            argument("pos", BlockPosParser).then(
+                argument("slots", ItemSlotsParser).then(
+                    argument("item_predicate", ItemPredicateParser)
+                        .executes(move |context, arguments| {
+                            execute_block_items_condition(context, arguments, expected)
+                        })
+                        .forks(CommandRedirectTarget::Current, move |context, arguments| {
+                            fork_block_items_condition(context, arguments, expected)
+                        }),
+                ),
+            ),
+        )))
         .then(literal("dimension").then(
             argument("dimension", WorldParser)
                 .executes(move |context, arguments| {
@@ -209,6 +223,80 @@ fn fork_entity_condition(
     } else {
         Vec::new()
     })
+}
+
+fn execute_block_items_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+) -> Result<CommandResult, CommandError> {
+    let count = block_items_match_count(context, arguments)?;
+    if expected {
+        if count == 0 {
+            return Err(conditional_failed(count));
+        }
+        send_condition_pass_count(context, count);
+        return Ok(CommandResult {
+            success_count: success_count(count),
+        });
+    }
+
+    if count == 0 {
+        send_condition_pass(context);
+        Ok(CommandResult::success())
+    } else {
+        Err(conditional_failed(count))
+    }
+}
+
+fn fork_block_items_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+) -> Result<Vec<CommandContext>, CommandError> {
+    let matches = block_items_match_count(context, arguments)? > 0;
+    Ok(if matches == expected {
+        vec![context.clone()]
+    } else {
+        Vec::new()
+    })
+}
+
+fn block_items_match_count(
+    context: &CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<usize, CommandError> {
+    let pos = loaded_block_position(context, arguments)?;
+    let Some(block_entity) = context.world.get_block_entity(pos) else {
+        return Err(item_source_not_a_container(pos));
+    };
+
+    let block_entity = block_entity.lock();
+    let Some(container) = block_entity.as_container() else {
+        return Err(item_source_not_a_container(pos));
+    };
+
+    let slots = item_slots(arguments)?;
+    let predicate = item_predicate(arguments)?;
+    let mut count = 0usize;
+    for &slot_id in slots.slots() {
+        let Ok(slot) = usize::try_from(slot_id) else {
+            continue;
+        };
+        if slot >= container.get_container_size() {
+            continue;
+        }
+
+        let item = container.get_item(slot);
+        if predicate
+            .matches_stack(item)
+            .map_err(item_predicate_match_error)?
+        {
+            count = count.saturating_add(usize::try_from(item.count()).map_or(0, |count| count));
+        }
+    }
+
+    Ok(count)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -755,6 +843,33 @@ fn blocks_too_big_error(area: i64) -> CommandError {
             TextComponent::from(area.to_string()),
         ])),
     }))
+}
+
+fn item_source_not_a_container(pos: BlockPos) -> CommandError {
+    CommandError::failure(TextComponent::translated(TranslatedMessage {
+        key: Cow::Borrowed("commands.item.source.not_a_container"),
+        fallback: None,
+        args: Some(Box::new([
+            TextComponent::from(pos.x().to_string()),
+            TextComponent::from(pos.y().to_string()),
+            TextComponent::from(pos.z().to_string()),
+        ])),
+    }))
+}
+
+fn item_predicate_match_error(error: ItemPredicateMatchError) -> CommandError {
+    let message = match error {
+        ItemPredicateMatchError::MalformedCountPredicate => {
+            "malformed minecraft:count item predicate".to_owned()
+        }
+        ItemPredicateMatchError::UnsupportedComponentValue(key) => {
+            format!("unsupported item component value predicate '{key}'")
+        }
+        ItemPredicateMatchError::UnsupportedComponentPredicate(key) => {
+            format!("unsupported item component predicate '{key}'")
+        }
+    };
+    CommandError::failure(TextComponent::from(message))
 }
 
 fn success_count(count: usize) -> i32 {
