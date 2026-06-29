@@ -14,7 +14,7 @@ use steel_protocol::packets::game::{CCommandSuggestions, CCommands, CommandNode,
 use steel_utils::translations;
 use text_components::TextComponent;
 
-use crate::command::context::CommandContext;
+use crate::command::context::{CommandCallbackResult, CommandContext};
 use crate::command::error::CommandError;
 use crate::command::graph::{
     CommandExecutionStep, CommandGraph, CommandGraphError, CommandNodeBuilder, CommandParseError,
@@ -379,15 +379,49 @@ impl CommandDispatcher {
             budget.consume()?;
             let step = {
                 let (command, active_context) = active.parts();
-                self.graph
-                    .parse(command, active_context)
-                    .map_err(|error| Self::parse_error_to_command_error(command, error))?
-                    .execute_step(active_context)?
+                match self.graph.parse(command, active_context) {
+                    Ok(parsed) => parsed.execute_step(active_context).map_err(|error| {
+                        if parsed.invokes_result_callback_on_error() {
+                            active_context.on_command_result(CommandCallbackResult {
+                                success: false,
+                                result: 0,
+                            });
+                        }
+                        error
+                    }),
+                    Err(error) => {
+                        active_context.on_command_result(CommandCallbackResult {
+                            success: false,
+                            result: 0,
+                        });
+                        Err(Self::parse_error_to_command_error(command, error))
+                    }
+                }
+            };
+            let step = match step {
+                Ok(step) => step,
+                Err(_error) if active.is_forked() => {
+                    let Some(next) = queue.pop_front() else {
+                        return Ok(CommandResult {
+                            success_count: total_success_count,
+                        });
+                    };
+                    active = ActiveCommand::Owned(next);
+                    continue;
+                }
+                Err(error) => return Err(error),
             };
 
             match step {
                 CommandExecutionStep::Complete(result) => {
-                    total_success_count = total_success_count.saturating_add(result.success_count);
+                    active
+                        .context_mut()
+                        .on_command_result(CommandCallbackResult {
+                            success: true,
+                            result: result.success_count,
+                        });
+                    total_success_count = total_success_count
+                        .saturating_add(execution_success_count(result, active.is_forked()));
                     let Some(next) = queue.pop_front() else {
                         return Ok(CommandResult {
                             success_count: total_success_count,
@@ -398,9 +432,15 @@ impl CommandDispatcher {
                 CommandExecutionStep::Redirect {
                     command: next_command,
                     contexts,
+                    forked,
                 } => {
+                    let next_forked = active.is_forked() || forked;
                     for context in contexts {
-                        queue.push_back((next_command.clone(), context));
+                        queue.push_back(QueuedCommand {
+                            command: next_command.clone(),
+                            context,
+                            forked: next_forked,
+                        });
                     }
                     let Some(next) = queue.pop_front() else {
                         return Ok(CommandResult {
@@ -642,16 +682,42 @@ enum ActiveCommand<'a> {
         command: String,
         context: &'a mut CommandContext,
     },
-    Owned((String, CommandContext)),
+    Owned(QueuedCommand),
+}
+
+struct QueuedCommand {
+    command: String,
+    context: CommandContext,
+    forked: bool,
 }
 
 impl ActiveCommand<'_> {
     fn parts(&mut self) -> (&str, &mut CommandContext) {
         match self {
             Self::Borrowed { command, context } => (command, context),
-            Self::Owned((command, context)) => (command, context),
+            Self::Owned(QueuedCommand {
+                command, context, ..
+            }) => (command, context),
         }
     }
+
+    fn context_mut(&mut self) -> &mut CommandContext {
+        match self {
+            Self::Borrowed { context, .. } => context,
+            Self::Owned(QueuedCommand { context, .. }) => context,
+        }
+    }
+
+    const fn is_forked(&self) -> bool {
+        match self {
+            Self::Borrowed { .. } => false,
+            Self::Owned(QueuedCommand { forked, .. }) => *forked,
+        }
+    }
+}
+
+fn execution_success_count(result: CommandResult, forked: bool) -> i32 {
+    if forked { 1 } else { result.success_count }
 }
 
 #[cfg(test)]
@@ -741,6 +807,22 @@ mod tests {
 
         assert!(budget.consume().is_ok());
         assert!(budget.consume().is_err());
+    }
+
+    #[test]
+    fn forked_execution_counts_completed_source_not_command_result() {
+        assert_eq!(
+            super::execution_success_count(CommandResult { success_count: 12 }, false),
+            12
+        );
+        assert_eq!(
+            super::execution_success_count(CommandResult { success_count: 12 }, true),
+            1
+        );
+        assert_eq!(
+            super::execution_success_count(CommandResult { success_count: 0 }, true),
+            1
+        );
     }
 
     #[test]

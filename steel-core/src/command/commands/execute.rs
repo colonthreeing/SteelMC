@@ -1,9 +1,9 @@
 //! Handler for the "execute" command.
 //!
-//! Store callbacks, scoreboards, data/NBT paths, predicates, functions, item
-//! predicates, block predicates, and stopwatch predicates are not registered
-//! here yet because their backing foundations are not implemented in Steel's
-//! command/runtime layer.
+//! Store target nodes, scoreboards, data/NBT paths, predicates, functions, item
+//! predicates, and stopwatch predicates are not registered here yet because
+//! their backing foundations are not implemented in Steel's command/runtime
+//! layer.
 
 use std::{borrow::Cow, sync::Arc};
 

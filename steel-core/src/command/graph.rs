@@ -622,6 +622,7 @@ pub(crate) enum CommandExecutionStep {
     Redirect {
         command: String,
         contexts: Vec<CommandContext>,
+        forked: bool,
     },
 }
 
@@ -710,9 +711,17 @@ impl ParseResults {
                     }
                     CommandRedirectTarget::All => redirect.command.clone(),
                 };
-                Ok(CommandExecutionStep::Redirect { command, contexts })
+                Ok(CommandExecutionStep::Redirect {
+                    command,
+                    contexts,
+                    forked: matches!(redirect.modifier, ParsedRedirectModifier::Fork(_)),
+                })
             }
         }
+    }
+
+    pub(crate) fn invokes_result_callback_on_error(&self) -> bool {
+        matches!(self.action, ParsedCommandAction::Execute(_))
     }
 
     fn check_dynamic_permissions(

@@ -12,6 +12,60 @@ use crate::player::Player;
 use crate::server::Server;
 use crate::world::World;
 
+/// Result reported to a command source callback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommandCallbackResult {
+    /// Whether the command returned normally.
+    pub success: bool,
+    /// Integer result returned by the command.
+    pub result: i32,
+}
+
+type CommandResultCallbackFn = dyn Fn(CommandCallbackResult) + Send + Sync;
+
+/// Callback invoked after a command source executes a terminal command.
+#[derive(Clone, Default)]
+pub struct CommandResultCallback {
+    callback: Option<Arc<CommandResultCallbackFn>>,
+}
+
+impl CommandResultCallback {
+    /// Creates a command result callback.
+    #[must_use]
+    pub fn new(callback: impl Fn(CommandCallbackResult) + Send + Sync + 'static) -> Self {
+        Self {
+            callback: Some(Arc::new(callback)),
+        }
+    }
+
+    /// Creates an empty callback.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self { callback: None }
+    }
+
+    /// Returns a callback that invokes `self`, then `next`.
+    #[must_use]
+    pub fn chain(self, next: Self) -> Self {
+        match (self.callback, next.callback) {
+            (None, None) => Self::empty(),
+            (Some(callback), None) | (None, Some(callback)) => Self {
+                callback: Some(callback),
+            },
+            (Some(first), Some(second)) => Self::new(move |result| {
+                first(result);
+                second(result);
+            }),
+        }
+    }
+
+    pub(crate) fn on_result(&self, result: CommandCallbackResult) {
+        if let Some(callback) = &self.callback {
+            callback(result);
+        }
+    }
+}
+
 /// The context of a command.
 #[derive(Clone)]
 pub struct CommandContext {
@@ -34,6 +88,7 @@ pub struct CommandContext {
     permission_catalog: Option<PermissionCatalog>,
     permission_metadata_catalog: Option<PermissionMetadataCatalog>,
     permission_context_catalog: Option<PermissionContextCatalog>,
+    result_callback: CommandResultCallback,
 }
 
 /// The position anchor to use for an entity.
@@ -87,6 +142,7 @@ impl CommandContext {
             permission_catalog: None,
             permission_metadata_catalog: None,
             permission_context_catalog: None,
+            result_callback: CommandResultCallback::empty(),
         }
     }
 
@@ -125,6 +181,31 @@ impl CommandContext {
 
     pub(crate) fn permission_check_context(&self) -> PermissionContext {
         PermissionContext::for_world(self.world.domain().to_owned(), self.world.key.clone())
+    }
+
+    /// Returns this context with a replaced result callback.
+    #[must_use]
+    pub fn with_result_callback(mut self, callback: CommandResultCallback) -> Self {
+        self.result_callback = callback;
+        self
+    }
+
+    /// Returns this context with `callback` chained after the current result callback.
+    #[must_use]
+    pub fn with_chained_result_callback(mut self, callback: CommandResultCallback) -> Self {
+        self.result_callback = self.result_callback.chain(callback);
+        self
+    }
+
+    /// Returns this context without result callbacks.
+    #[must_use]
+    pub fn without_result_callbacks(mut self) -> Self {
+        self.result_callback = CommandResultCallback::empty();
+        self
+    }
+
+    pub(crate) fn on_command_result(&self, result: CommandCallbackResult) {
+        self.result_callback.on_result(result);
     }
 
     /// Returns this context with a different source entity.
@@ -218,4 +299,56 @@ fn normalize_rotation((mut yaw, mut pitch): (f32, f32)) -> (f32, f32) {
     }
 
     (yaw, pitch)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::{CommandCallbackResult, CommandResultCallback};
+
+    #[test]
+    fn command_result_callbacks_chain_in_order() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let first_events = Arc::clone(&events);
+        let second_events = Arc::clone(&events);
+
+        let first = CommandResultCallback::new(move |result| {
+            first_events
+                .lock()
+                .expect("events lock should not be poisoned")
+                .push(("first", result));
+        });
+        let second = CommandResultCallback::new(move |result| {
+            second_events
+                .lock()
+                .expect("events lock should not be poisoned")
+                .push(("second", result));
+        });
+
+        first.chain(second).on_result(CommandCallbackResult {
+            success: true,
+            result: 7,
+        });
+
+        assert_eq!(
+            *events.lock().expect("events lock should not be poisoned"),
+            vec![
+                (
+                    "first",
+                    CommandCallbackResult {
+                        success: true,
+                        result: 7
+                    }
+                ),
+                (
+                    "second",
+                    CommandCallbackResult {
+                        success: true,
+                        result: 7
+                    }
+                ),
+            ]
+        );
+    }
 }
