@@ -565,6 +565,9 @@ impl CommandDispatcher {
             CommandParseErrorKind::InvalidBlockPredicate(value) => {
                 TextComponent::plain(format!("Invalid block predicate: {value}"))
             }
+            CommandParseErrorKind::InvalidNbtPath(value) => {
+                TextComponent::plain(format!("Invalid NBT path: {value}"))
+            }
             CommandParseErrorKind::InvalidStructure(value) => {
                 TextComponent::plain(format!("Invalid structure '{value}'"))
             }

@@ -1,9 +1,9 @@
 //! Handler for the "execute" command.
 //!
-//! Store target nodes, scoreboards, data/NBT paths, predicates, functions, item
-//! predicates, and stopwatch predicates are not registered here yet because
-//! their backing foundations are not implemented in Steel's command/runtime
-//! layer.
+//! Store target nodes, scoreboards, entity/storage data accessors, predicates,
+//! functions, item predicates, and stopwatch predicates are not registered here
+//! yet because their backing foundations are not implemented in Steel's
+//! command/runtime layer.
 
 use std::{borrow::Cow, sync::Arc};
 
@@ -12,7 +12,11 @@ use simdnbt::owned::{NbtCompound, NbtTag};
 use steel_protocol::packets::game::{ArgumentType, SuggestionEntry};
 use steel_registry::blocks::block_state_ext::BlockStateExt;
 use steel_registry::entity_type::EntityTypeRef;
-use steel_utils::{BlockPos, nbt::compare_nbt, translations};
+use steel_utils::{
+    BlockPos,
+    nbt::{NbtPath, compare_nbt},
+    translations,
+};
 use text_components::TextComponent;
 use text_components::translation::TranslatedMessage;
 
@@ -27,7 +31,7 @@ use crate::command::graph::{
 };
 use crate::command::parsers::{
     BiomeParser, BlockPosParser, BlockPredicateParser, EntityParser, EntitySummonParser,
-    HeightmapParser, RotationParser, Vec3Parser, WorldParser,
+    HeightmapParser, NbtPathParser, RotationParser, Vec3Parser, WorldParser,
 };
 use crate::command::reader::CommandReader;
 use crate::command::requirement::CommandInputContext;
@@ -188,6 +192,17 @@ fn conditionals(name: &'static str, expected: bool) -> CommandNodeBuilder {
                     fork_loaded_condition(context, arguments, expected)
                 }),
         ))
+        .then(literal("data").then(literal("block").then(
+            argument("pos", BlockPosParser).then(
+                argument("path", NbtPathParser)
+                    .executes(move |context, arguments| {
+                        execute_block_data_condition(context, arguments, expected)
+                    })
+                    .forks(CommandRedirectTarget::Current, move |context, arguments| {
+                        fork_block_data_condition(context, arguments, expected)
+                    }),
+            ),
+        )))
         .then(literal("blocks").then(
             argument("start", BlockPosParser).then(
                 argument("end", BlockPosParser).then(
@@ -557,17 +572,73 @@ fn block_condition_matches(
         return Ok(false);
     };
     let block_entity = block_entity.lock();
-    let mut actual = NbtCompound::new();
-    let entity_pos = block_entity.get_block_pos();
-    actual.insert("id", block_entity.get_type().key.to_string());
-    actual.insert("x", entity_pos.x());
-    actual.insert("y", entity_pos.y());
-    actual.insert("z", entity_pos.z());
-    block_entity.save_additional(&mut actual);
+    let actual = block_entity_full_nbt(&*block_entity);
 
     let expected = NbtTag::Compound(expected_nbt.clone());
     let actual = NbtTag::Compound(actual);
     Ok(compare_nbt(Some(&expected), Some(&actual), true))
+}
+
+fn execute_block_data_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+) -> Result<CommandResult, CommandError> {
+    let count = block_data_match_count(context, arguments)?;
+    if expected {
+        if count == 0 {
+            return Err(conditional_failed(count));
+        }
+        send_condition_pass_count(context, count);
+        return Ok(CommandResult {
+            success_count: success_count(count),
+        });
+    }
+
+    if count == 0 {
+        send_condition_pass(context);
+        Ok(CommandResult::success())
+    } else {
+        Err(conditional_failed(count))
+    }
+}
+
+fn fork_block_data_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+) -> Result<Vec<CommandContext>, CommandError> {
+    let matches = block_data_match_count(context, arguments)? > 0;
+    Ok(if matches == expected {
+        vec![context.clone()]
+    } else {
+        Vec::new()
+    })
+}
+
+fn block_data_match_count(
+    context: &CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<usize, CommandError> {
+    let pos = loaded_block_position(context, arguments)?;
+    let Some(block_entity) = context.world.get_block_entity(pos) else {
+        return Err(block_data_invalid_error());
+    };
+
+    let block_entity = block_entity.lock();
+    let tag = NbtTag::Compound(block_entity_full_nbt(&*block_entity));
+    Ok(nbt_path(arguments)?.count_matching(&tag))
+}
+
+fn block_entity_full_nbt(block_entity: &dyn crate::block_entity::BlockEntity) -> NbtCompound {
+    let mut nbt = NbtCompound::new();
+    let entity_pos = block_entity.get_block_pos();
+    nbt.insert("id", block_entity.get_type().key.to_string());
+    nbt.insert("x", entity_pos.x());
+    nbt.insert("y", entity_pos.y());
+    nbt.insert("z", entity_pos.z());
+    block_entity.save_additional(&mut nbt);
+    nbt
 }
 
 fn execute_blocks_condition(
@@ -703,6 +774,14 @@ fn loaded_named_block_position(
 fn position_error(key: &'static str) -> CommandError {
     CommandError::failure(TextComponent::translated(TranslatedMessage {
         key: Cow::Borrowed(key),
+        fallback: None,
+        args: None,
+    }))
+}
+
+fn block_data_invalid_error() -> CommandError {
+    CommandError::failure(TextComponent::translated(TranslatedMessage {
+        key: Cow::Borrowed("commands.data.block.invalid"),
         fallback: None,
         args: None,
     }))
@@ -845,6 +924,12 @@ fn biome_value(arguments: &ParsedArguments) -> Result<BiomeArgumentValue, Comman
 fn block_predicate(arguments: &ParsedArguments) -> Result<BlockPredicateArgumentValue, CommandError> {
     arguments
         .get::<BlockPredicateArgumentValue>("block")
+        .map_err(super::invalid_parsed_argument)
+}
+
+fn nbt_path(arguments: &ParsedArguments) -> Result<NbtPath, CommandError> {
+    arguments
+        .get::<NbtPath>("path")
         .map_err(super::invalid_parsed_argument)
 }
 
@@ -1083,6 +1168,31 @@ mod tests {
         assert_eq!(
             redirected.path(),
             ["execute", "unless", "block", "pos", "block"]
+        );
+    }
+
+    #[test]
+    fn data_block_condition_parses_direct_and_redirect_forms() {
+        let graph = graph();
+        let context = TestContext;
+
+        let direct = graph
+            .parse(
+                "execute if data block 0 64 0 Items[{id:\"minecraft:stone\"}].Count",
+                &context,
+            )
+            .expect("direct data block conditional parses");
+        assert_eq!(
+            direct.path(),
+            ["execute", "if", "data", "block", "pos", "path"]
+        );
+
+        let redirected = graph
+            .parse("execute unless data block 0 64 0 Items[] run seed", &context)
+            .expect("redirected data block conditional parses");
+        assert_eq!(
+            redirected.path(),
+            ["execute", "unless", "data", "block", "pos", "path"]
         );
     }
 

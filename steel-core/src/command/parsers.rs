@@ -2,6 +2,7 @@
 
 mod block;
 mod game;
+mod nbt;
 mod permission;
 mod position;
 mod resource;
@@ -11,6 +12,7 @@ mod world;
 
 pub use block::BlockPredicateParser;
 pub use game::GameModeParser;
+pub use nbt::NbtPathParser;
 pub use permission::{PermissionGroupParser, PermissionKeyParser, PermissionRuleExpressionParser};
 pub use position::{BlockPosParser, HeightmapParser, RotationParser, Vec3Parser};
 pub use resource::{
@@ -38,9 +40,9 @@ mod tests {
             parsers::{
                 BiomeParser, BlockPosParser, BlockPredicateParser, ComponentParser, DomainParser,
                 EnchantmentParser, EntityParser, EntitySummonParser, GameModeParser,
-                HeightmapParser, ItemParser, PermissionKeyParser, PermissionRuleExpressionParser,
-                PermissionTargetParser, PlayerParser, RotationParser, StructureParser, TimeParser,
-                Vec3Parser, WorldParser,
+                HeightmapParser, ItemParser, NbtPathParser, PermissionKeyParser,
+                PermissionRuleExpressionParser, PermissionTargetParser, PlayerParser,
+                RotationParser, StructureParser, TimeParser, Vec3Parser, WorldParser,
             },
             reader::CommandReader,
             requirement::{
@@ -549,6 +551,31 @@ mod tests {
                 .iter()
                 .any(|suggestion| suggestion.text == "#minecraft:logs")
         );
+    }
+
+    #[test]
+    fn nbt_path_parser_reads_one_command_argument() {
+        let mut reader = CommandReader::new("Items[{id:\"minecraft:stone\"}].Count run seed");
+        let value = NbtPathParser
+            .parse(&mut reader, &TestContext)
+            .expect("nbt path parses");
+
+        let ParsedArgument::NbtPath(path) = value else {
+            panic!("expected nbt path");
+        };
+        assert_eq!(path.as_str(), "Items[{id:\"minecraft:stone\"}].Count");
+        assert_eq!(reader.remaining(), " run seed");
+    }
+
+    #[test]
+    fn nbt_path_parser_uses_native_client_type() {
+        let (argument, suggestion) = NbtPathParser.client_parser().into_protocol_argument();
+
+        assert!(matches!(
+            argument,
+            steel_protocol::packets::game::ArgumentType::NbtPath
+        ));
+        assert!(suggestion.is_none());
     }
 
     #[test]

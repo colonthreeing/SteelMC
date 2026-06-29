@@ -6,7 +6,7 @@ use steel_registry::{
     REGISTRY, biome::BiomeRef, blocks::BlockRef, enchantment::EnchantmentRef,
     entity_type::EntityTypeRef, items::ItemRef, structure::StructureRef,
 };
-use steel_utils::{BlockPos, BlockStateId, Identifier, types::GameType};
+use steel_utils::{BlockPos, BlockStateId, Identifier, nbt::NbtPath, types::GameType};
 use text_components::TextComponent;
 use uuid::Uuid;
 
@@ -61,6 +61,8 @@ pub enum ParsedArgument {
     Biome(BiomeArgumentValue),
     /// Block predicate argument.
     BlockPredicate(BlockPredicateArgumentValue),
+    /// NBT path argument.
+    NbtPath(NbtPath),
     /// Structure or structure tag argument.
     Structure(StructureArgumentValue),
     /// Loaded world argument.
@@ -322,6 +324,7 @@ impl fmt::Debug for ParsedArgument {
             Self::Enchantment(value) => f.debug_tuple("Enchantment").field(&value.key).finish(),
             Self::Biome(value) => f.debug_tuple("Biome").field(value).finish(),
             Self::BlockPredicate(value) => f.debug_tuple("BlockPredicate").field(value).finish(),
+            Self::NbtPath(value) => f.debug_tuple("NbtPath").field(value).finish(),
             Self::Structure(value) => f.debug_tuple("Structure").field(value).finish(),
             Self::World(value) => f.debug_tuple("World").field(&value.key).finish(),
             Self::Vec3(value) => f.debug_tuple("Vec3").field(value).finish(),
@@ -400,6 +403,7 @@ impl ParsedArgument {
             Self::Enchantment(_) => "enchantment",
             Self::Biome(_) => "biome",
             Self::BlockPredicate(_) => "block_predicate",
+            Self::NbtPath(_) => "nbt_path",
             Self::Structure(_) => "structure",
             Self::World(_) => "world",
             Self::Vec3(_) => "vec3",
@@ -663,6 +667,17 @@ impl FromParsedArgument for BlockPredicateArgumentValue {
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
         let ParsedArgument::BlockPredicate(value) = value else {
+            return None;
+        };
+        Some(value.clone())
+    }
+}
+
+impl FromParsedArgument for NbtPath {
+    const TYPE_NAME: &'static str = "nbt_path";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::NbtPath(value) = value else {
             return None;
         };
         Some(value.clone())

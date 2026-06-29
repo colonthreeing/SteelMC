@@ -151,6 +151,8 @@ pub enum CommandParseErrorKind {
     InvalidBiome(String),
     /// A block predicate argument was invalid.
     InvalidBlockPredicate(String),
+    /// An NBT path argument was invalid.
+    InvalidNbtPath(String),
     /// A structure argument was invalid.
     InvalidStructure(String),
     /// A domain argument was invalid.
@@ -215,6 +217,7 @@ impl CommandParseErrorKind {
             | Self::InvalidEnchantment(_)
             | Self::InvalidBiome(_)
             | Self::InvalidBlockPredicate(_)
+            | Self::InvalidNbtPath(_)
             | Self::InvalidStructure(_)
             | Self::InvalidDomain(_)
             | Self::InvalidWorld(_)
