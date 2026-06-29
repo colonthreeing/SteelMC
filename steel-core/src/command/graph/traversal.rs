@@ -22,7 +22,8 @@ pub(super) fn parse_children(
     let mut best_error = None;
     let mut usable_child_seen = false;
 
-    for child in children {
+    for child_index in relevant_child_indexes(children, reader) {
+        let child = &children[child_index];
         if !child.requirement.allows(context) {
             continue;
         }
@@ -160,9 +161,10 @@ pub(super) fn suggest_children(
         return None;
     }
 
+    let relevant_child_indexes = relevant_child_indexes(children, reader);
     let mut best_result = None;
 
-    for child in children {
+    for (child_index, child) in children.iter().enumerate() {
         if !child.requirement.allows(context) {
             continue;
         }
@@ -178,6 +180,7 @@ pub(super) fn suggest_children(
             context,
             roots,
             child_root_children,
+            relevant_child_indexes.contains(&child_index),
         ) {
             keep_best_suggestion(&mut best_result, result);
         }
@@ -200,6 +203,40 @@ fn keep_best_suggestion(best_result: &mut Option<SuggestionResult>, result: Sugg
     if result.start == best.start && result.length == best.length {
         best.suggestions.extend(result.suggestions);
     }
+}
+
+fn relevant_child_indexes(children: &[CommandNode], reader: &CommandReader<'_>) -> Vec<usize> {
+    let has_literal_children = children
+        .iter()
+        .any(|child| matches!(&child.kind, CommandNodeKind::Literal(_)));
+    if !has_literal_children {
+        return (0..children.len()).collect();
+    }
+
+    let token = next_token(reader);
+    if let Some(index) = children
+        .iter()
+        .position(|child| matches!(&child.kind, CommandNodeKind::Literal(name) if name == token))
+    {
+        return vec![index];
+    }
+
+    children
+        .iter()
+        .enumerate()
+        .filter_map(|(index, child)| {
+            matches!(&child.kind, CommandNodeKind::Argument { .. }).then_some(index)
+        })
+        .collect()
+}
+
+fn next_token<'a>(reader: &CommandReader<'a>) -> &'a str {
+    let remaining = reader.remaining();
+    let end = remaining
+        .char_indices()
+        .find_map(|(index, ch)| ch.is_whitespace().then_some(index))
+        .unwrap_or(remaining.len());
+    &remaining[..end]
 }
 
 fn make_suggestion_result(
@@ -359,6 +396,7 @@ impl CommandNode {
         context: &dyn CommandInputContext,
         roots: &[CommandNode],
         current_root_children: Option<&[CommandNode]>,
+        allow_deeper_suggestions: bool,
     ) -> Option<SuggestionResult> {
         let token = suggestion_token(reader);
         let direct_suggestions = match &self.kind {
@@ -386,6 +424,10 @@ impl CommandNode {
             }
             CommandNodeKind::Literal(_) | CommandNodeKind::Argument { .. } => None,
         };
+
+        if !allow_deeper_suggestions {
+            return direct_suggestions;
+        }
 
         let mut parsed_reader = reader.clone();
         if self

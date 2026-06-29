@@ -3,9 +3,10 @@ use std::sync::Arc;
 use steel_protocol::packets::game::{CommandNode as ProtocolCommandNode, CommandNodeInfo};
 
 use super::{
-    CommandArgumentParser, CommandExecutor, CommandGraphError, CommandRedirectTarget,
-    DynamicPermission, validate_command_node_name,
+    CommandArgumentParser, CommandExecutor, CommandGraphAmbiguity, CommandGraphError,
+    CommandRedirectTarget, DynamicPermission, validate_command_node_name,
 };
+use crate::command::reader::CommandReader;
 use crate::command::requirement::{
     CommandSourceKind, PermissionExpr, Requirement, RequirementContext,
 };
@@ -103,6 +104,23 @@ impl CommandNode {
         !self.requirement.allows(&no_permission_context)
     }
 
+    fn examples(&self) -> Vec<&str> {
+        match &self.kind {
+            CommandNodeKind::Literal(name) => vec![name],
+            CommandNodeKind::Argument { parser, .. } => parser.examples().to_vec(),
+        }
+    }
+
+    fn is_valid_input(&self, input: &str) -> bool {
+        match &self.kind {
+            CommandNodeKind::Literal(name) => {
+                let mut reader = CommandReader::new(input);
+                reader.read_literal(name)
+            }
+            CommandNodeKind::Argument { parser, .. } => parser.is_valid_input(input),
+        }
+    }
+
     fn can_merge_with(&self, other: &Self) -> bool {
         self.requirement == other.requirement
             && self.dynamic_permissions.is_empty()
@@ -192,4 +210,50 @@ pub(super) fn merge_or_push_node(
     }
 
     existing.merge(node)
+}
+
+pub(super) fn collect_ambiguities(
+    nodes: &[CommandNode],
+    parent_path: &mut Vec<String>,
+    ambiguities: &mut Vec<CommandGraphAmbiguity>,
+) {
+    collect_sibling_ambiguities(nodes, parent_path, ambiguities);
+
+    for node in nodes {
+        parent_path.push(node.display_name().to_owned());
+        collect_ambiguities(&node.children, parent_path, ambiguities);
+        parent_path.pop();
+    }
+}
+
+fn collect_sibling_ambiguities(
+    nodes: &[CommandNode],
+    parent_path: &[String],
+    ambiguities: &mut Vec<CommandGraphAmbiguity>,
+) {
+    for (child_index, child) in nodes.iter().enumerate() {
+        for (sibling_index, sibling) in nodes.iter().enumerate() {
+            if child_index == sibling_index {
+                continue;
+            }
+
+            let matching_inputs = child
+                .examples()
+                .into_iter()
+                .filter(|input| sibling.is_valid_input(input))
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+
+            if matching_inputs.is_empty() {
+                continue;
+            }
+
+            ambiguities.push(CommandGraphAmbiguity {
+                parent_path: parent_path.to_owned(),
+                child: child.display_name().to_owned(),
+                sibling: sibling.display_name().to_owned(),
+                inputs: matching_inputs,
+            });
+        }
+    }
 }

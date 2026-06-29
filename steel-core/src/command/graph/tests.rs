@@ -8,10 +8,10 @@ use crate::command::parsers::{ComponentParser, GameModeParser, PermissionKeyPars
 use crate::command::{
     graph::{
         AnchorParser, BoolParser, CommandArgumentClientParser, CommandArgumentParser, CommandGraph,
-        CommandGraphError, CommandNodeBuilder, CommandNodeNameError, CommandParseError,
-        CommandParseErrorKind, CommandRedirectTarget, CommandResult, FloatParser, IntegerParser,
-        LongParser, ParsedArgument, ParsedCommandAction, StringParser, SuggestionResult, argument,
-        literal,
+        CommandGraphAmbiguity, CommandGraphError, CommandNodeBuilder, CommandNodeNameError,
+        CommandParseError, CommandParseErrorKind, CommandRedirectTarget, CommandResult,
+        FloatParser, IntegerParser, LongParser, ParsedArgument, ParsedCommandAction, StringParser,
+        SuggestionResult, argument, literal,
     },
     reader::{CommandReader, StringMode},
     requirement::{
@@ -503,6 +503,87 @@ fn parses_literal_and_integer_argument() {
 }
 
 #[test]
+fn exact_literals_take_priority_over_argument_siblings() {
+    let graph = graph_with_root(
+        literal("root").then_all([
+            argument("value", StringParser::new(StringMode::SingleWord))
+                .executes(|_, _| Ok(CommandResult::success())),
+            literal("run").executes(|_, _| Ok(CommandResult::success())),
+        ]),
+    );
+
+    let result = graph
+        .parse("root run", &player_context())
+        .expect("literal branch parses");
+
+    assert_eq!(result.path(), ["root", "run"]);
+    assert!(result.arguments().get::<String>("value").is_err());
+}
+
+#[test]
+fn denied_exact_literals_do_not_fall_through_to_argument_siblings() {
+    let graph = graph_with_root(
+        literal("root").then_all([
+            argument("value", StringParser::new(StringMode::SingleWord))
+                .executes(|_, _| Ok(CommandResult::success())),
+            literal("admin")
+                .requires(Requirement::Permission(PermissionExpr::key(
+                    PermissionKey::parse("steel.admin").expect("key parses"),
+                )))
+                .executes(|_, _| Ok(CommandResult::success())),
+        ]),
+    );
+
+    let result = graph
+        .parse("root player", &player_context())
+        .expect("argument fallback parses non-literal tokens");
+    assert_eq!(result.path(), ["root", "value"]);
+    assert_eq!(
+        result.arguments().get::<String>("value"),
+        Ok("player".to_owned())
+    );
+
+    let error = graph
+        .parse("root admin", &player_context())
+        .expect_err("denied literal should not fall through to argument sibling");
+    assert_eq!(error.kind(), &CommandParseErrorKind::UnknownCommand);
+    assert_eq!(error.cursor(), 5);
+}
+
+#[test]
+fn validation_reports_example_based_child_ambiguities() {
+    let graph = graph_with_root(
+        literal("root").then_all([
+            argument("value", StringParser::new(StringMode::SingleWord))
+                .executes(|_, _| Ok(CommandResult::success())),
+            literal("run").executes(|_, _| Ok(CommandResult::success())),
+        ]),
+    );
+
+    let validation = graph.validate();
+
+    assert_eq!(
+        validation.ambiguities(),
+        &[CommandGraphAmbiguity {
+            parent_path: vec!["root".to_owned()],
+            child: "run".to_owned(),
+            sibling: "value".to_owned(),
+            inputs: vec!["run".to_owned()],
+        }]
+    );
+}
+
+#[test]
+fn validation_is_empty_for_distinct_literal_children() {
+    let graph = graph_with_root(literal("root").then_all([
+        literal("one").executes(|_, _| Ok(CommandResult::success())),
+        literal("two").executes(|_, _| Ok(CommandResult::success())),
+    ]));
+
+    assert!(graph.validate().is_empty());
+}
+
+#[test]
 fn argument_parser_must_consume_input() {
     let graph =
         graph_with_root(literal("root").then(
@@ -530,10 +611,7 @@ fn literals_do_not_partially_match_before_punctuation() {
         .parse("/root:tail", &player_context())
         .expect_err("literal should not partially match");
 
-    assert_eq!(
-        error.kind(),
-        &CommandParseErrorKind::ExpectedLiteral("root".to_owned())
-    );
+    assert_eq!(error.kind(), &CommandParseErrorKind::UnknownCommand);
     assert_eq!(error.cursor(), 1);
 }
 
@@ -563,10 +641,7 @@ fn leading_whitespace_is_not_skipped_at_root() {
         .parse(" list", &player_context())
         .expect_err("leading whitespace should not be accepted");
 
-    assert_eq!(
-        error.kind(),
-        &CommandParseErrorKind::ExpectedLiteral("list".to_owned())
-    );
+    assert_eq!(error.kind(), &CommandParseErrorKind::UnknownCommand);
     assert_eq!(error.cursor(), 0);
 }
 
@@ -844,6 +919,24 @@ fn trailing_space_after_leaf_has_no_stale_suggestion() {
     let graph = graph_with_root(literal("list").then(literal("uuids")));
 
     assert!(graph.suggest("list uuids ", &player_context()).is_none());
+}
+
+#[test]
+fn exact_literal_suggestions_do_not_descend_argument_siblings() {
+    let graph =
+        graph_with_root(
+            literal("root").then_all([
+                argument("value", StringParser::new(StringMode::SingleWord))
+                    .then(literal("argument_tail")),
+                literal("run").then(literal("literal_tail")),
+            ]),
+        );
+
+    let result = graph
+        .suggest("root run ", &player_context())
+        .expect("literal child suggestion");
+
+    assert_eq!(suggestion_texts(&result), vec!["literal_tail".to_owned()]);
 }
 
 #[test]

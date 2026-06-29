@@ -24,7 +24,7 @@ pub use arguments::{
     ParsedArguments, PermissionTarget, StructureArgumentValue,
 };
 pub use builder::{CommandNodeBuilder, argument, literal};
-use node::{CommandNode, CommandNodeKind, merge_or_push_node};
+use node::{CommandNode, CommandNodeKind, collect_ambiguities, merge_or_push_node};
 pub use primitive_parsers::{
     AnchorParser, BoolParser, CommandArgumentClientParser, CommandArgumentParser, FloatParser,
     IntegerParser, LongParser, StringParser,
@@ -449,6 +449,44 @@ pub struct SuggestionResult {
     pub length: i32,
 }
 
+/// Example-based ambiguity between sibling command nodes.
+///
+/// This mirrors Brigadier's ambiguity diagnostics: parsers provide
+/// representative examples, and validation checks whether a sibling can also
+/// parse those examples. It is intentionally diagnostic, not a full grammar
+/// proof.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandGraphAmbiguity {
+    /// Path to the parent whose children are ambiguous.
+    pub parent_path: Vec<String>,
+    /// Child node that provided the matching examples.
+    pub child: String,
+    /// Sibling node that also accepts those examples.
+    pub sibling: String,
+    /// Example inputs accepted by both nodes.
+    pub inputs: Vec<String>,
+}
+
+/// Diagnostic command graph validation result.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommandGraphValidation {
+    ambiguities: Vec<CommandGraphAmbiguity>,
+}
+
+impl CommandGraphValidation {
+    /// Returns example-based sibling ambiguities.
+    #[must_use]
+    pub fn ambiguities(&self) -> &[CommandGraphAmbiguity] {
+        &self.ambiguities
+    }
+
+    /// Returns true when the graph has no known validation diagnostics.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ambiguities.is_empty()
+    }
+}
+
 type CommandExecutor = Arc<
     dyn Fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>
         + Send
@@ -694,6 +732,14 @@ impl CommandGraph {
     /// with an existing literal that cannot be merged.
     pub fn register_root(&mut self, root: CommandNodeBuilder) -> Result<(), CommandGraphError> {
         merge_or_push_node(&mut self.roots, root.build()?)
+    }
+
+    /// Returns diagnostic validation information for this graph.
+    #[must_use]
+    pub fn validate(&self) -> CommandGraphValidation {
+        let mut validation = CommandGraphValidation::default();
+        collect_ambiguities(&self.roots, &mut Vec::new(), &mut validation.ambiguities);
+        validation
     }
 
     /// Returns true when this graph has a usable root literal named `name`.

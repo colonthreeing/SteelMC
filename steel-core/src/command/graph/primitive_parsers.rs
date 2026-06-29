@@ -6,7 +6,7 @@ use super::{CommandParseError, CommandParseErrorKind, ParsedArgument, ParsedArgu
 use crate::command::{
     context::EntityAnchor,
     reader::{CommandReader, StringMode},
-    requirement::CommandInputContext,
+    requirement::{CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext},
 };
 
 /// Command argument parser metadata advertised to vanilla clients.
@@ -76,6 +76,21 @@ pub trait CommandArgumentParser: Send + Sync {
     /// Returns the parsed argument type stored by this parser.
     fn parsed_type(&self) -> &'static str;
 
+    /// Returns representative inputs accepted by this parser.
+    ///
+    /// This mirrors Brigadier's example-based ambiguity diagnostics. The
+    /// examples are not an exhaustive grammar definition.
+    fn examples(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Returns whether this parser accepts `input` as one argument token.
+    fn is_valid_input(&self, input: &str) -> bool {
+        let mut reader = CommandReader::new(input);
+        self.parse(&mut reader, &ParserValidationContext).is_ok()
+            && (!reader.can_read() || reader.peek().is_some_and(char::is_whitespace))
+    }
+
     /// Returns suggestions for the current argument token.
     fn suggest(
         &self,
@@ -86,6 +101,20 @@ pub trait CommandArgumentParser: Send + Sync {
         Vec::new()
     }
 }
+
+struct ParserValidationContext;
+
+impl RequirementContext for ParserValidationContext {
+    fn source_kind(&self) -> CommandSourceKind {
+        CommandSourceKind::Console
+    }
+
+    fn has_permission(&self, _permission: &PermissionExpr) -> bool {
+        true
+    }
+}
+
+impl CommandInputContext for ParserValidationContext {}
 
 /// Boolean command argument parser.
 #[derive(Clone, Copy, Debug, Default)]
@@ -116,6 +145,10 @@ impl CommandArgumentParser for BoolParser {
 
     fn parsed_type(&self) -> &'static str {
         "bool"
+    }
+
+    fn examples(&self) -> &'static [&'static str] {
+        &["true", "false"]
     }
 
     fn suggest(
@@ -161,6 +194,10 @@ impl CommandArgumentParser for AnchorParser {
 
     fn parsed_type(&self) -> &'static str {
         "anchor"
+    }
+
+    fn examples(&self) -> &'static [&'static str] {
+        &["feet", "eyes"]
     }
 
     fn suggest(
@@ -247,6 +284,10 @@ impl CommandArgumentParser for IntegerParser {
     fn parsed_type(&self) -> &'static str {
         "i32"
     }
+
+    fn examples(&self) -> &'static [&'static str] {
+        &["0", "1", "-1"]
+    }
 }
 
 /// 64-bit signed integer command argument parser.
@@ -318,6 +359,10 @@ impl CommandArgumentParser for LongParser {
 
     fn parsed_type(&self) -> &'static str {
         "i64"
+    }
+
+    fn examples(&self) -> &'static [&'static str] {
+        &["0", "1", "-1"]
     }
 }
 
@@ -391,6 +436,10 @@ impl CommandArgumentParser for FloatParser {
     fn parsed_type(&self) -> &'static str {
         "f32"
     }
+
+    fn examples(&self) -> &'static [&'static str] {
+        &["0", "1.0", "-1.0"]
+    }
 }
 
 /// String command argument parser.
@@ -428,5 +477,13 @@ impl CommandArgumentParser for StringParser {
 
     fn parsed_type(&self) -> &'static str {
         "string"
+    }
+
+    fn examples(&self) -> &'static [&'static str] {
+        match self.mode {
+            StringMode::SingleWord => &["word", "words_with_underscores"],
+            StringMode::QuotablePhrase => &["word", "\"quoted phrase\""],
+            StringMode::GreedyPhrase => &["word", "words with spaces"],
+        }
     }
 }
