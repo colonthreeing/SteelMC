@@ -42,6 +42,16 @@ pub fn compare_nbt(
     }
 }
 
+/// Compares two compound tags with vanilla `NbtUtils.compareNbt` semantics.
+#[must_use]
+pub fn compare_nbt_compounds(
+    expected: &NbtCompound,
+    actual: &NbtCompound,
+    partial_list_matches: bool,
+) -> bool {
+    compare_compounds(expected, actual, partial_list_matches)
+}
+
 fn compare_compounds(
     expected: &NbtCompound,
     actual: &NbtCompound,

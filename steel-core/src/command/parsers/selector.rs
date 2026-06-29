@@ -4,10 +4,16 @@ use std::sync::Arc;
 
 use glam::DVec3;
 use rand::seq::SliceRandom;
+use simdnbt::owned::NbtCompound;
 use steel_registry::{
     REGISTRY, RegistryExt, TaggedRegistryExt, entity_type::EntityTypeRef, vanilla_entities,
 };
-use steel_utils::{Identifier, geometry::WorldAabb, types::GameType};
+use steel_utils::{
+    Identifier,
+    geometry::WorldAabb,
+    nbt::{compare_nbt_compounds, parse_snbt_compound_argument},
+    types::GameType,
+};
 use uuid::Uuid;
 
 use crate::{
@@ -132,6 +138,10 @@ enum SelectorFilter {
     },
     Tag {
         value: String,
+        inverted: bool,
+    },
+    Nbt {
+        value: NbtCompound,
         inverted: bool,
     },
     Scores(Vec<(String, IntRange)>),
@@ -621,12 +631,18 @@ impl SelectorFilter {
                 };
                 matches != *inverted
             }
+            Self::Nbt { value, inverted } => entity_nbt_filter_matches(value, *inverted, entity),
             Self::Scores(scores) => {
                 let holder_name = entity.scoreboard_name();
                 score_filter_matches(scores, &holder_name, &server.scoreboard)
             }
         }
     }
+}
+
+fn entity_nbt_filter_matches(expected: &NbtCompound, inverted: bool, entity: &dyn Entity) -> bool {
+    let actual = entity.nbt_for_data_compare();
+    compare_nbt_compounds(expected, &actual, true) != inverted
 }
 
 fn score_filter_matches(
@@ -714,16 +730,36 @@ fn read_selector_argument(reader: &mut CommandReader<'_>) -> Result<String, Comm
 
     let start = reader.absolute_cursor();
     let mut value = String::new();
-    let mut in_options = false;
+    let mut option_depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
     while let Some(ch) = reader.peek() {
-        if !in_options && !value.is_empty() && ch.is_whitespace() {
+        if option_depth == 0 && !value.is_empty() && ch.is_whitespace() {
             break;
         }
         value.push(ch);
         reader.read();
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if quote.is_some() {
+            if ch == '\\' {
+                escaped = true;
+            } else if quote == Some(ch) {
+                quote = None;
+            }
+            continue;
+        }
         match ch {
-            '[' if !in_options => in_options = true,
-            ']' if in_options => break,
+            '"' | '\'' => quote = Some(ch),
+            '[' => option_depth += 1,
+            ']' if option_depth > 0 => {
+                option_depth -= 1;
+                if option_depth == 0 {
+                    break;
+                }
+            }
             _ => {}
         }
     }
@@ -1046,8 +1082,9 @@ fn parse_option(
         "gamemode" => parse_gamemode_option(reader, selector, state),
         "type" => parse_type_option(reader, selector, state),
         "tag" => parse_tag_option(reader, selector),
+        "nbt" => parse_nbt_option(reader, selector),
         "scores" => parse_scores_option(reader, selector, state, key_cursor),
-        "team" | "nbt" | "advancements" | "predicate" => Err(SelectorParseError::unsupported(
+        "team" | "advancements" | "predicate" => Err(SelectorParseError::unsupported(
             format!("{key} needs an unimplemented runtime foundation"),
             key_cursor,
         )),
@@ -1259,6 +1296,18 @@ fn parse_tag_option(
     selector
         .filters
         .push(SelectorFilter::Tag { value, inverted });
+    Ok(())
+}
+
+fn parse_nbt_option(
+    reader: &mut SelectorReader<'_>,
+    selector: &mut EntitySelector,
+) -> Result<(), SelectorParseError> {
+    let inverted = reader.read_inversion();
+    let value = reader.read_nbt()?;
+    selector
+        .filters
+        .push(SelectorFilter::Nbt { value, inverted });
     Ok(())
 }
 
@@ -1522,6 +1571,19 @@ impl<'a> SelectorReader<'a> {
         Ok(self.input[start..self.cursor].to_owned())
     }
 
+    fn read_nbt(&mut self) -> Result<NbtCompound, SelectorParseError> {
+        let nbt_cursor = self.cursor;
+        let (nbt, consumed) =
+            parse_snbt_compound_argument(&self.input[self.cursor..]).map_err(|error| {
+                SelectorParseError::invalid_at(
+                    format!("invalid entity selector NBT: {}", error.message()),
+                    nbt_cursor + error.cursor(),
+                )
+            })?;
+        self.cursor += consumed;
+        Ok(nbt)
+    }
+
     fn read_inversion(&mut self) -> bool {
         self.skip_whitespace();
         if self.peek() == Some('!') {
@@ -1628,14 +1690,51 @@ fn is_brigadier_unquoted_char(ch: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use steel_registry::test_support::init_test_registry;
+    use std::sync::Weak;
 
-    use crate::scoreboard::{ScoreHolder, Scoreboard};
+    use glam::DVec3;
+    use simdnbt::owned::{NbtCompound, NbtTag};
+    use steel_registry::{
+        entity_type::EntityTypeRef, test_support::init_test_registry, vanilla_entities,
+    };
+
+    use crate::{
+        command::reader::CommandReader,
+        entity::{Entity, EntityBase},
+        scoreboard::{ScoreHolder, Scoreboard},
+    };
 
     use super::{
-        IntRange, SelectorFilter, SelectorParseErrorKind, SelectorType, parse_selector_plan,
-        score_filter_matches,
+        IntRange, SelectorFilter, SelectorParseErrorKind, SelectorType, entity_nbt_filter_matches,
+        parse_selector_plan, read_selector_argument, score_filter_matches,
     };
+
+    struct SelectorNbtTestEntity {
+        base: EntityBase,
+    }
+
+    impl SelectorNbtTestEntity {
+        fn new() -> Self {
+            Self {
+                base: EntityBase::new(
+                    1,
+                    DVec3::ZERO,
+                    vanilla_entities::ITEM.dimensions,
+                    Weak::new(),
+                ),
+            }
+        }
+    }
+
+    impl Entity for SelectorNbtTestEntity {
+        fn base(&self) -> &EntityBase {
+            &self.base
+        }
+
+        fn entity_type(&self) -> EntityTypeRef {
+            &vanilla_entities::ITEM
+        }
+    }
 
     #[test]
     fn selector_permission_gate_rejects_selector_syntax() {
@@ -1705,6 +1804,51 @@ mod tests {
                 && range.min.is_none()
                 && range.max == Some(2))
         );
+    }
+
+    #[test]
+    fn selector_parses_repeated_nbt_filters() {
+        let selector = parse_selector_plan(
+            "@e[nbt={Tags:[\"foo\"]},nbt=!{NoGravity:1b}]".to_owned(),
+            true,
+        )
+        .expect("nbt filters parse");
+
+        let filters = selector
+            .filters
+            .iter()
+            .filter_map(|filter| match filter {
+                SelectorFilter::Nbt { inverted, .. } => Some(*inverted),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(filters, vec![false, true]);
+    }
+
+    #[test]
+    fn selector_argument_reader_keeps_nested_snbt() {
+        let mut reader = CommandReader::new("@e[nbt={Tags:[\"foo]bar\"],data:{x:1b}}] next");
+        let raw = read_selector_argument(&mut reader).expect("selector argument reads");
+
+        assert_eq!(raw, "@e[nbt={Tags:[\"foo]bar\"],data:{x:1b}}]");
+        assert_eq!(reader.remaining(), " next");
+    }
+
+    #[test]
+    fn selector_nbt_filter_matches_entity_compare_data() {
+        init_test_registry();
+        let entity = SelectorNbtTestEntity::new();
+        let mut custom_data = NbtCompound::new();
+        custom_data.insert("flag", NbtTag::Byte(1));
+        entity.base.set_custom_data(custom_data);
+
+        let mut expected_data = NbtCompound::new();
+        expected_data.insert("flag", NbtTag::Byte(1));
+        let mut expected = NbtCompound::new();
+        expected.insert("data", NbtTag::Compound(expected_data));
+
+        assert!(entity_nbt_filter_matches(&expected, false, &entity));
+        assert!(!entity_nbt_filter_matches(&expected, true, &entity));
     }
 
     #[test]
