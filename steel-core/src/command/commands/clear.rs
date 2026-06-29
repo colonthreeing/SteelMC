@@ -1,7 +1,7 @@
 //! Handler for the "clear" command.
 use std::sync::Arc;
 
-use steel_registry::{item_stack::ItemStack, items::ItemRef};
+use steel_registry::item_stack::ItemStack;
 use steel_utils::translations;
 use text_components::TextComponent;
 
@@ -11,9 +11,10 @@ use crate::{
         context::CommandContext,
         error::CommandError,
         graph::{
-            CommandNodeBuilder, CommandResult, IntegerParser, ParsedArguments, argument, literal,
+            CommandNodeBuilder, CommandResult, IntegerParser, ItemPredicateArgumentValue,
+            ParsedArguments, argument, literal,
         },
-        parsers::{ItemParser, PlayerParser},
+        parsers::{ItemPredicateParser, PlayerParser},
         sender::CommandSender,
     },
     inventory::container::Container,
@@ -29,8 +30,8 @@ pub(crate) fn command() -> CommandNodeBuilder {
         argument("targets", PlayerParser::multiple())
             .executes(clear_targets)
             .then(
-                argument("item", ItemParser)
-                    .executes(clear_targets_with_item) // FIXME: item predicate instead
+                argument("item", ItemPredicateParser)
+                    .executes(clear_targets_with_item)
                     .then(
                         argument("maxCount", IntegerParser::bounded(Some(0), None))
                             .executes(clear_targets_with_max_amount),
@@ -88,13 +89,8 @@ fn clear_targets_with_item(
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
     let targets = targets(arguments)?;
-    let item = item(arguments)?;
-    let mut filter = |item_stack: &mut ItemStack| item_stack.is(item);
-
-    let count: i32 = targets
-        .iter()
-        .map(|it| it.inventory.lock().clear_content_matching(&mut filter))
-        .sum();
+    let predicate = item_predicate(arguments)?;
+    let count = clear_targets_matching(&targets, &predicate, -1)?;
 
     clear_messages(
         &context.sender,
@@ -112,38 +108,9 @@ fn clear_targets_with_max_amount(
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
     let targets = targets(arguments)?;
-    let item = item(arguments)?;
+    let predicate = item_predicate(arguments)?;
     let max_amount = max_amount(arguments)?;
-
-    let count: i32 = targets
-        .iter()
-        .map(|it| {
-            let mut current_amount = max_amount;
-            let mut inventory = it.inventory.lock();
-            let mut removed = 0;
-            for i in 0..inventory.get_container_size() {
-                if max_amount > 0 && current_amount == 0 {
-                    break;
-                }
-                let current_item = inventory.get_item_mut(i);
-                if current_item.is_empty() || !current_item.is(item) {
-                    continue;
-                }
-                if max_amount == 0 {
-                    removed += current_item.count();
-                } else {
-                    let amount_to_remove = current_amount.min(current_item.count());
-                    current_amount -= amount_to_remove;
-                    removed += amount_to_remove;
-                    current_item.shrink(amount_to_remove);
-                }
-            }
-            if max_amount > 0 && removed > 0 {
-                inventory.set_changed();
-            }
-            removed
-        })
-        .sum();
+    let count = clear_targets_matching(&targets, &predicate, max_amount)?;
 
     clear_messages(
         &context.sender,
@@ -156,15 +123,96 @@ fn clear_targets_with_max_amount(
     Ok(CommandResult::success())
 }
 
+fn clear_targets_matching(
+    targets: &[Arc<Player>],
+    predicate: &ItemPredicateArgumentValue,
+    max_amount: i32,
+) -> Result<i32, CommandError> {
+    validate_item_predicate_targets(targets, predicate)?;
+
+    let mut total = 0;
+    for target in targets {
+        total += clear_player_matching(target, predicate, max_amount)?;
+    }
+    Ok(total)
+}
+
+fn validate_item_predicate_targets(
+    targets: &[Arc<Player>],
+    predicate: &ItemPredicateArgumentValue,
+) -> Result<(), CommandError> {
+    for target in targets {
+        let inventory = target.inventory.lock();
+        for slot in 0..inventory.get_container_size() {
+            let item = inventory.get_item(slot);
+            if !item.is_empty() {
+                predicate
+                    .matches_stack(item)
+                    .map_err(super::item_predicate_match_error)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn clear_player_matching(
+    target: &Player,
+    predicate: &ItemPredicateArgumentValue,
+    max_amount: i32,
+) -> Result<i32, CommandError> {
+    let mut inventory = target.inventory.lock();
+    let mut matching_slots = Vec::new();
+    for slot in 0..inventory.get_container_size() {
+        let item = inventory.get_item(slot);
+        if item.is_empty() {
+            continue;
+        }
+        if predicate
+            .matches_stack(item)
+            .map_err(super::item_predicate_match_error)?
+        {
+            matching_slots.push(slot);
+        }
+    }
+
+    let mut removed = 0;
+    let mut current_amount = max_amount;
+    let mut partial_change = false;
+    for slot in matching_slots {
+        if max_amount > 0 && current_amount == 0 {
+            break;
+        }
+
+        let count = inventory.get_item(slot).count();
+        if max_amount == 0 {
+            removed += count;
+        } else if max_amount < 0 {
+            removed += count;
+            inventory.set_item(slot, ItemStack::empty());
+        } else {
+            let amount_to_remove = current_amount.min(count);
+            current_amount -= amount_to_remove;
+            removed += amount_to_remove;
+            inventory.get_item_mut(slot).shrink(amount_to_remove);
+            partial_change = true;
+        }
+    }
+
+    if partial_change {
+        inventory.set_changed();
+    }
+    Ok(removed)
+}
+
 fn targets(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
     arguments
         .get::<Vec<Arc<Player>>>("targets")
         .map_err(super::invalid_parsed_argument)
 }
 
-fn item(arguments: &ParsedArguments) -> Result<ItemRef, CommandError> {
+fn item_predicate(arguments: &ParsedArguments) -> Result<ItemPredicateArgumentValue, CommandError> {
     arguments
-        .get::<ItemRef>("item")
+        .get::<ItemPredicateArgumentValue>("item")
         .map_err(super::invalid_parsed_argument)
 }
 

@@ -13,7 +13,7 @@ use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
     CommandNodeBuilder, CommandRedirectTarget, CommandResult, IntRangeArgumentValue,
-    ItemPredicateMatchError, ParsedArguments, argument, literal,
+    ParsedArguments, argument, literal,
 };
 use crate::command::parsers::{
     BiomeParser, BlockPosParser, BlockPredicateParser, EntityParser, IntRangeParser,
@@ -29,6 +29,7 @@ use super::{
     item_predicate, item_slots, position_error, same_world, scoreboard_objective,
     single_score_holder, source_entity, storage_id, world,
 };
+use super::super::item_predicate_match_error;
 
 pub(super) fn conditionals(name: &'static str, expected: bool) -> CommandNodeBuilder {
     literal(name)
@@ -855,21 +856,6 @@ fn item_source_not_a_container(pos: BlockPos) -> CommandError {
             TextComponent::from(pos.z().to_string()),
         ])),
     }))
-}
-
-fn item_predicate_match_error(error: ItemPredicateMatchError) -> CommandError {
-    let message = match error {
-        ItemPredicateMatchError::MalformedCountPredicate => {
-            "malformed minecraft:count item predicate".to_owned()
-        }
-        ItemPredicateMatchError::UnsupportedComponentValue(key) => {
-            format!("unsupported item component value predicate '{key}'")
-        }
-        ItemPredicateMatchError::UnsupportedComponentPredicate(key) => {
-            format!("unsupported item component predicate '{key}'")
-        }
-    };
-    CommandError::failure(TextComponent::from(message))
 }
 
 fn success_count(count: usize) -> i32 {
