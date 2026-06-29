@@ -522,6 +522,9 @@ impl CommandDispatcher {
             CommandParseErrorKind::InvalidBiome(value) => {
                 TextComponent::plain(format!("Invalid biome '{value}'"))
             }
+            CommandParseErrorKind::InvalidBlockPredicate(value) => {
+                TextComponent::plain(format!("Invalid block predicate: {value}"))
+            }
             CommandParseErrorKind::InvalidStructure(value) => {
                 TextComponent::plain(format!("Invalid structure '{value}'"))
             }

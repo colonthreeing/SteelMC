@@ -19,8 +19,8 @@ mod primitive_parsers;
 mod traversal;
 
 pub use arguments::{
-    BiomeArgumentValue, CommandPermissionArgument, FromParsedArgument, ParsedArgument,
-    ParsedArgumentError, ParsedArguments, PermissionTarget, StructureArgumentValue,
+    BiomeArgumentValue, BlockPredicateArgumentValue, CommandPermissionArgument, FromParsedArgument,
+    ParsedArgument, ParsedArgumentError, ParsedArguments, PermissionTarget, StructureArgumentValue,
 };
 pub use builder::{CommandNodeBuilder, argument, literal};
 use node::{CommandNode, CommandNodeKind, collect_ambiguities, merge_or_push_node};
@@ -149,6 +149,8 @@ pub enum CommandParseErrorKind {
     InvalidEnchantment(String),
     /// A biome argument was invalid.
     InvalidBiome(String),
+    /// A block predicate argument was invalid.
+    InvalidBlockPredicate(String),
     /// A structure argument was invalid.
     InvalidStructure(String),
     /// A domain argument was invalid.
@@ -212,6 +214,7 @@ impl CommandParseErrorKind {
             | Self::InvalidItem(_)
             | Self::InvalidEnchantment(_)
             | Self::InvalidBiome(_)
+            | Self::InvalidBlockPredicate(_)
             | Self::InvalidStructure(_)
             | Self::InvalidDomain(_)
             | Self::InvalidWorld(_)

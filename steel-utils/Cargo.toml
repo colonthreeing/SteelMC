@@ -41,6 +41,7 @@ crc32c = "0.6"
 enum_dispatch.workspace = true
 num-traits.workspace = true
 text_components.workspace = true
+unicode_names2.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

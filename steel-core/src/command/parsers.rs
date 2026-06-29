@@ -1,5 +1,6 @@
 //! Graph-native command argument parsers.
 
+mod block;
 mod game;
 mod permission;
 mod position;
@@ -8,6 +9,7 @@ mod target;
 mod text;
 mod world;
 
+pub use block::BlockPredicateParser;
 pub use game::GameModeParser;
 pub use permission::{PermissionGroupParser, PermissionKeyParser, PermissionRuleExpressionParser};
 pub use position::{BlockPosParser, HeightmapParser, RotationParser, Vec3Parser};
@@ -23,8 +25,8 @@ mod tests {
     use glam::DVec3;
     use steel_protocol::packets::game::SuggestionType;
     use steel_registry::{
-        test_support::init_test_registry, vanilla_biomes, vanilla_enchantments, vanilla_entities,
-        vanilla_items,
+        REGISTRY, test_support::init_test_registry, vanilla_biomes, vanilla_blocks,
+        vanilla_enchantments, vanilla_entities, vanilla_items,
     };
 
     use crate::{
@@ -34,10 +36,11 @@ mod tests {
                 CommandArgumentParser, CommandParseErrorKind, ParsedArgument, ParsedArguments,
             },
             parsers::{
-                BiomeParser, BlockPosParser, ComponentParser, DomainParser, EnchantmentParser,
-                EntityParser, EntitySummonParser, GameModeParser, HeightmapParser, ItemParser,
-                PermissionKeyParser, PermissionRuleExpressionParser, PermissionTargetParser,
-                PlayerParser, RotationParser, StructureParser, TimeParser, Vec3Parser, WorldParser,
+                BiomeParser, BlockPosParser, BlockPredicateParser, ComponentParser, DomainParser,
+                EnchantmentParser, EntityParser, EntitySummonParser, GameModeParser,
+                HeightmapParser, ItemParser, PermissionKeyParser, PermissionRuleExpressionParser,
+                PermissionTargetParser, PlayerParser, RotationParser, StructureParser, TimeParser,
+                Vec3Parser, WorldParser,
             },
             reader::CommandReader,
             requirement::{
@@ -470,6 +473,82 @@ mod tests {
             value,
             ParsedArgument::Biome(biome) if biome.matches_biome(&vanilla_biomes::PLAINS)
         ));
+    }
+
+    #[test]
+    fn block_predicate_parser_resolves_properties_and_nbt() {
+        init_test_registry();
+
+        let mut reader = CommandReader::new("oak_log[axis=y]{id:'minecraft:barrel'} tail");
+        let value = BlockPredicateParser
+            .parse(&mut reader, &TestContext)
+            .expect("block predicate parses");
+
+        let ParsedArgument::BlockPredicate(predicate) = value else {
+            panic!("expected block predicate");
+        };
+        let y_state = REGISTRY
+            .blocks
+            .state_id_from_block_defaulted_properties(&vanilla_blocks::OAK_LOG, [("axis", "y")])
+            .expect("oak log y-axis state exists");
+        let x_state = REGISTRY
+            .blocks
+            .state_id_from_block_defaulted_properties(&vanilla_blocks::OAK_LOG, [("axis", "x")])
+            .expect("oak log x-axis state exists");
+
+        assert!(predicate.matches_state(y_state));
+        assert!(!predicate.matches_state(x_state));
+        assert_eq!(
+            predicate
+                .nbt()
+                .and_then(|nbt| nbt.string("id"))
+                .map(|id| id.to_str().into_owned()),
+            Some("minecraft:barrel".to_owned())
+        );
+        assert_eq!(reader.remaining(), " tail");
+    }
+
+    #[test]
+    fn block_predicate_parser_resolves_tags() {
+        init_test_registry();
+
+        let mut reader = CommandReader::new("#logs[axis=y]");
+        let value = BlockPredicateParser
+            .parse(&mut reader, &TestContext)
+            .expect("block tag predicate parses");
+
+        let ParsedArgument::BlockPredicate(predicate) = value else {
+            panic!("expected block predicate");
+        };
+        let y_log = REGISTRY
+            .blocks
+            .state_id_from_block_defaulted_properties(&vanilla_blocks::OAK_LOG, [("axis", "y")])
+            .expect("oak log y-axis state exists");
+        let stone = REGISTRY.blocks.get_default_state_id(&vanilla_blocks::STONE);
+
+        assert!(predicate.matches_state(y_log));
+        assert!(!predicate.matches_state(stone));
+    }
+
+    #[test]
+    fn block_predicate_parser_suggestions_match_default_namespace() {
+        init_test_registry();
+
+        let block_suggestions =
+            BlockPredicateParser.suggest("oak_l", &ParsedArguments::default(), &TestContext);
+        let tag_suggestions =
+            BlockPredicateParser.suggest("#lo", &ParsedArguments::default(), &TestContext);
+
+        assert!(
+            block_suggestions
+                .iter()
+                .any(|suggestion| suggestion.text == "minecraft:oak_log")
+        );
+        assert!(
+            tag_suggestions
+                .iter()
+                .any(|suggestion| suggestion.text == "#minecraft:logs")
+        );
     }
 
     #[test]

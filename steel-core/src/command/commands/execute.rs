@@ -8,11 +8,11 @@
 use std::{borrow::Cow, sync::Arc};
 
 use glam::DVec3;
-use simdnbt::owned::NbtCompound;
+use simdnbt::owned::{NbtCompound, NbtTag};
 use steel_protocol::packets::game::{ArgumentType, SuggestionEntry};
 use steel_registry::blocks::block_state_ext::BlockStateExt;
 use steel_registry::entity_type::EntityTypeRef;
-use steel_utils::{BlockPos, translations};
+use steel_utils::{BlockPos, nbt::compare_nbt, translations};
 use text_components::TextComponent;
 use text_components::translation::TranslatedMessage;
 
@@ -21,13 +21,13 @@ use crate::command::CommandRegistrationSpec;
 use crate::command::context::{CommandContext, EntityAnchor, anchored_position};
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    AnchorParser, BiomeArgumentValue, CommandArgumentClientParser, CommandArgumentParser,
-    CommandNodeBuilder, CommandParseError, CommandParseErrorKind, CommandRedirectTarget,
-    CommandResult, ParsedArgument, ParsedArguments, argument, literal,
+    AnchorParser, BiomeArgumentValue, BlockPredicateArgumentValue, CommandArgumentClientParser,
+    CommandArgumentParser, CommandNodeBuilder, CommandParseError, CommandParseErrorKind,
+    CommandRedirectTarget, CommandResult, ParsedArgument, ParsedArguments, argument, literal,
 };
 use crate::command::parsers::{
-    BiomeParser, BlockPosParser, EntityParser, EntitySummonParser, HeightmapParser,
-    RotationParser, Vec3Parser, WorldParser,
+    BiomeParser, BlockPosParser, BlockPredicateParser, EntityParser, EntitySummonParser,
+    HeightmapParser, RotationParser, Vec3Parser, WorldParser,
 };
 use crate::command::reader::CommandReader;
 use crate::command::requirement::CommandInputContext;
@@ -139,6 +139,17 @@ pub(crate) fn command() -> CommandNodeBuilder {
 
 fn conditionals(name: &'static str, expected: bool) -> CommandNodeBuilder {
     literal(name)
+        .then(literal("block").then(
+            argument("pos", BlockPosParser).then(
+                argument("block", BlockPredicateParser)
+                    .executes(move |context, arguments| {
+                        execute_block_condition(context, arguments, expected)
+                    })
+                    .forks(CommandRedirectTarget::Current, move |context, arguments| {
+                        fork_block_condition(context, arguments, expected)
+                    }),
+            ),
+        ))
         .then(literal("entity").then(
             argument("entities", EntityParser::multiple())
                 .executes(move |context, arguments| {
@@ -501,6 +512,64 @@ fn biome_condition_matches(
     Ok(biome_value(arguments)?.matches_biome(biome))
 }
 
+fn execute_block_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+) -> Result<CommandResult, CommandError> {
+    let matches = block_condition_matches(context, arguments)?;
+    if matches == expected {
+        send_condition_pass(context);
+        Ok(CommandResult::success())
+    } else {
+        Err(conditional_failed(0))
+    }
+}
+
+fn fork_block_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+) -> Result<Vec<CommandContext>, CommandError> {
+    let matches = block_condition_matches(context, arguments)?;
+    Ok(if matches == expected {
+        vec![context.clone()]
+    } else {
+        Vec::new()
+    })
+}
+
+fn block_condition_matches(
+    context: &CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<bool, CommandError> {
+    let pos = loaded_block_position(context, arguments)?;
+    let predicate = block_predicate(arguments)?;
+    let state = context.world.get_block_state(pos);
+    if !predicate.matches_state(state) {
+        return Ok(false);
+    }
+    let Some(expected_nbt) = predicate.nbt() else {
+        return Ok(true);
+    };
+
+    let Some(block_entity) = context.world.get_block_entity(pos) else {
+        return Ok(false);
+    };
+    let block_entity = block_entity.lock();
+    let mut actual = NbtCompound::new();
+    let entity_pos = block_entity.get_block_pos();
+    actual.insert("id", block_entity.get_type().key.to_string());
+    actual.insert("x", entity_pos.x());
+    actual.insert("y", entity_pos.y());
+    actual.insert("z", entity_pos.z());
+    block_entity.save_additional(&mut actual);
+
+    let expected = NbtTag::Compound(expected_nbt.clone());
+    let actual = NbtTag::Compound(actual);
+    Ok(compare_nbt(Some(&expected), Some(&actual), true))
+}
+
 fn execute_blocks_condition(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
@@ -773,6 +842,12 @@ fn biome_value(arguments: &ParsedArguments) -> Result<BiomeArgumentValue, Comman
         .map_err(super::invalid_parsed_argument)
 }
 
+fn block_predicate(arguments: &ParsedArguments) -> Result<BlockPredicateArgumentValue, CommandError> {
+    arguments
+        .get::<BlockPredicateArgumentValue>("block")
+        .map_err(super::invalid_parsed_argument)
+}
+
 fn heightmap(arguments: &ParsedArguments) -> Result<HeightmapType, CommandError> {
     arguments
         .get::<HeightmapType>("heightmap")
@@ -985,6 +1060,29 @@ mod tests {
         assert_eq!(
             redirected.path(),
             ["execute", "unless", "biome", "pos", "biome"]
+        );
+    }
+
+    #[test]
+    fn block_condition_parses_direct_and_redirect_forms() {
+        init_test_registry();
+        let graph = graph();
+        let context = TestContext;
+
+        let direct = graph
+            .parse("execute if block 0 64 0 stone", &context)
+            .expect("direct block conditional parses");
+        assert_eq!(direct.path(), ["execute", "if", "block", "pos", "block"]);
+
+        let redirected = graph
+            .parse(
+                "execute unless block 0 64 0 oak_log[axis=y]{id:'minecraft:barrel'} run seed",
+                &context,
+            )
+            .expect("redirected block conditional parses");
+        assert_eq!(
+            redirected.path(),
+            ["execute", "unless", "block", "pos", "block"]
         );
     }
 
