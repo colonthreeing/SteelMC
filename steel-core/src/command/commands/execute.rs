@@ -1,8 +1,8 @@
 //! Handler for the "execute" command.
 //!
-//! Bossbar and entity store targets, predicates, functions, item predicates,
-//! and stopwatch predicates are not registered here yet because their backing
-//! foundations are not implemented in Steel's command/runtime layer.
+//! Bossbar store targets, predicates, functions, item predicates, and stopwatch
+//! predicates are not registered here yet because their backing foundations are
+//! not implemented in Steel's command/runtime layer.
 
 use std::{borrow::Cow, fmt, io::Cursor, sync::Arc};
 
@@ -340,6 +340,41 @@ fn store_target(name: &'static str, store_result: bool) -> CommandNodeBuilder {
                     )),
             ),
         ))
+        .then(literal("entity").then(
+            argument("target", EntityParser::one()).then(
+                argument("path", NbtPathParser)
+                    .then(store_entity_data_type(
+                        "int",
+                        StoreDataType::Int,
+                        store_result,
+                    ))
+                    .then(store_entity_data_type(
+                        "float",
+                        StoreDataType::Float,
+                        store_result,
+                    ))
+                    .then(store_entity_data_type(
+                        "short",
+                        StoreDataType::Short,
+                        store_result,
+                    ))
+                    .then(store_entity_data_type(
+                        "long",
+                        StoreDataType::Long,
+                        store_result,
+                    ))
+                    .then(store_entity_data_type(
+                        "double",
+                        StoreDataType::Double,
+                        store_result,
+                    ))
+                    .then(store_entity_data_type(
+                        "byte",
+                        StoreDataType::Byte,
+                        store_result,
+                    )),
+            ),
+        ))
 }
 
 fn store_block_data_type(
@@ -361,6 +396,17 @@ fn store_storage_data_type(
     literal(name).then(argument("scale", DoubleParser::new()).redirects(
         CommandRedirectTarget::Current,
         move |context, arguments| store_storage_data(context, arguments, data_type, store_result),
+    ))
+}
+
+fn store_entity_data_type(
+    name: &'static str,
+    data_type: StoreDataType,
+    store_result: bool,
+) -> CommandNodeBuilder {
+    literal(name).then(argument("scale", DoubleParser::new()).redirects(
+        CommandRedirectTarget::Current,
+        move |context, arguments| store_entity_data(context, arguments, data_type, store_result),
     ))
 }
 
@@ -661,6 +707,68 @@ fn store_storage_data(
     });
     context.chain_result_callback(callback);
     Ok(CommandResult::success())
+}
+
+fn store_entity_data(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    data_type: StoreDataType,
+    store_result: bool,
+) -> Result<CommandResult, CommandError> {
+    let target = single_entity(arguments, "target")?;
+    if target.as_player().is_some() {
+        return Err(entity_data_invalid_error());
+    }
+
+    let path = nbt_path(arguments)?;
+    let scale = double(arguments, "scale")?;
+    let callback = CommandResultCallback::new(move |result| {
+        let value = if store_result {
+            result.result
+        } else {
+            i32::from(result.success)
+        };
+        let tag = data_type.tag(value, scale);
+        if let Err(error) = store_entity_data_value(target.as_ref(), &path, tag) {
+            log::warn!("Failed to store execute command result in entity data: {error}");
+        }
+    });
+    context.chain_result_callback(callback);
+    Ok(CommandResult::success())
+}
+
+fn store_entity_data_value(
+    entity: &dyn crate::entity::Entity,
+    path: &NbtPath,
+    value: NbtTag,
+) -> Result<(), StoreEntityDataError> {
+    let mut tag = NbtTag::Compound(entity.nbt_for_data_compare());
+    path.set(&mut tag, value).map_err(StoreEntityDataError::Path)?;
+    let NbtTag::Compound(data) = tag else {
+        return Err(StoreEntityDataError::ExpectedCompoundRoot);
+    };
+
+    entity
+        .load_data_command_nbt(&data)
+        .map_err(StoreEntityDataError::Load)?;
+    Ok(())
+}
+
+#[derive(Debug)]
+enum StoreEntityDataError {
+    Path(NbtPathMutationError),
+    ExpectedCompoundRoot,
+    Load(crate::entity::EntityDataLoadError),
+}
+
+impl fmt::Display for StoreEntityDataError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Path(error) => write!(f, "{error}"),
+            Self::ExpectedCompoundRoot => write!(f, "NBT path mutation replaced the root compound"),
+            Self::Load(error) => write!(f, "{error}"),
+        }
+    }
 }
 
 fn store_storage_data_value(
@@ -1372,6 +1480,14 @@ fn block_data_invalid_error() -> CommandError {
     }))
 }
 
+fn entity_data_invalid_error() -> CommandError {
+    CommandError::failure(TextComponent::translated(TranslatedMessage {
+        key: Cow::Borrowed("commands.data.entity.invalid"),
+        fallback: None,
+        args: None,
+    }))
+}
+
 fn blocks_too_big_error(area: i64) -> CommandError {
     CommandError::failure(TextComponent::translated(TranslatedMessage {
         key: Cow::Borrowed("commands.execute.blocks.toobig"),
@@ -1627,13 +1743,17 @@ fn int_range(arguments: &ParsedArguments) -> Result<IntRangeArgumentValue, Comma
 }
 
 fn source_entity(arguments: &ParsedArguments) -> Result<SharedEntity, CommandError> {
+    single_entity(arguments, "source")
+}
+
+fn single_entity(arguments: &ParsedArguments, name: &'static str) -> Result<SharedEntity, CommandError> {
     let mut entities = arguments
-        .get::<Vec<SharedEntity>>("source")
+        .get::<Vec<SharedEntity>>(name)
         .map_err(super::invalid_parsed_argument)?;
     if entities.len() != 1 {
         return Err(super::invalid_parsed_argument(
             crate::command::graph::ParsedArgumentError::WrongType {
-                name: "source".to_owned(),
+                name: name.to_owned(),
                 expected: "single_entity",
                 actual: "entities",
             },
@@ -1858,9 +1978,11 @@ impl BlockRegion {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Weak};
+
     use glam::DVec3;
     use simdnbt::owned::NbtTag;
-    use steel_registry::test_support::init_test_registry;
+    use steel_registry::{entity_type::EntityTypeRef, test_support::init_test_registry, vanilla_entities};
     use steel_utils::{Identifier, nbt::parse_nbt_path};
 
     use crate::command::graph::CommandGraph;
@@ -1868,9 +1990,32 @@ mod tests {
         CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext,
     };
     use crate::command::storage::CommandStorage;
+    use crate::entity::{Entity, EntityBase};
     use crate::scoreboard::{ScoreHolder, Scoreboard};
 
     struct TestContext;
+
+    struct StoreTestEntity {
+        base: EntityBase,
+    }
+
+    impl StoreTestEntity {
+        fn shared(id: i32, position: DVec3) -> Arc<Self> {
+            Arc::new(Self {
+                base: EntityBase::new(id, position, vanilla_entities::ITEM.dimensions, Weak::new()),
+            })
+        }
+    }
+
+    impl Entity for StoreTestEntity {
+        fn base(&self) -> &EntityBase {
+            &self.base
+        }
+
+        fn entity_type(&self) -> EntityTypeRef {
+            &vanilla_entities::ITEM
+        }
+    }
 
     impl RequirementContext for TestContext {
         fn source_kind(&self) -> CommandSourceKind {
@@ -2145,6 +2290,19 @@ mod tests {
 
         let data = storage.get(&key);
         assert_eq!(data.get("value"), Some(&NbtTag::Int(7)));
+    }
+
+    #[test]
+    fn store_entity_data_value_updates_entity_data() {
+        init_test_registry();
+
+        let entity = StoreTestEntity::shared(1, DVec3::ZERO);
+        let path = parse_nbt_path("Air").expect("path parses");
+
+        super::store_entity_data_value(entity.as_ref(), &path, NbtTag::Int(123))
+            .expect("entity data updates");
+
+        assert_eq!(entity.air_supply(), 123);
     }
 
     #[test]

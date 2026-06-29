@@ -1199,6 +1199,15 @@ impl EntityBase {
         *self.save_data.lock() = save_data;
     }
 
+    /// Replaces vanilla scoreboard tags, applying the vanilla per-entity tag limit.
+    pub fn replace_tags(&self, tags: impl IntoIterator<Item = String>) {
+        let mut save_data = self.save_data.lock();
+        save_data.tags.clear();
+        save_data
+            .tags
+            .extend(tags.into_iter().take(MAX_ENTITY_TAGS));
+    }
+
     /// Returns vanilla `Entity.getInBlockState`, cached until base tick or block-position change.
     pub fn in_block_state(&self, world: &World) -> BlockStateId {
         let mut state = self.state.lock();

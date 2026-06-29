@@ -1,12 +1,19 @@
 //! This module contains entity-related traits and types.
 
-use std::sync::{Arc, LazyLock, Weak};
+use std::{
+    error::Error,
+    fmt,
+    io::Cursor,
+    sync::{Arc, LazyLock, Weak},
+};
 
 use glam::DVec3;
 use rand::{SeedableRng as _, rngs::StdRng};
 use rustc_hash::FxHashSet;
 use simdnbt::ToNbtTag;
-use simdnbt::borrow::NbtCompound as BorrowedNbtCompoundView;
+use simdnbt::borrow::{
+    NbtCompound as BorrowedNbtCompoundView, read_compound as read_borrowed_compound,
+};
 use simdnbt::owned::{NbtCompound, NbtList, NbtTag};
 use steel_protocol::packets::game::{
     AnimateAction, AttributeSnapshot, CAnimate, CDamageEvent, CEntityEvent, CHurtAnimation,
@@ -73,6 +80,8 @@ use entities::ExperienceOrbEntity;
 static ENTITY_COUNTER: LazyLock<SyncMutex<i32>> = LazyLock::new(|| SyncMutex::new(1));
 const MOVEMENT_RECORD_EPSILON: f64 = 1.0e-7;
 const NO_PHYSICS_COLLISION_EPSILON: f64 = 1.0e-7;
+pub(crate) const ENTITY_LOAD_MAX_HORIZONTAL_POSITION: f64 = 3.000_051_2E7;
+pub(crate) const ENTITY_LOAD_MAX_VERTICAL_POSITION: f64 = 2.0E7;
 const IN_WALL_EYE_BOX_HEIGHT: f64 = 1.0e-6;
 const WATER_ENTITY_FLOW_SCALE: f64 = 0.014;
 const DAMAGE_KNOCKBACK_POWER: f64 = 0.4_f32 as f64;
@@ -759,6 +768,91 @@ fn nbt_bool(value: bool) -> NbtTag {
     NbtTag::Byte(i8::from(value))
 }
 
+/// Error returned when vanilla-shaped command NBT cannot be loaded into an entity.
+#[derive(Debug)]
+pub enum EntityDataLoadError {
+    /// The resulting entity position was not finite.
+    InvalidPosition,
+    /// The resulting entity rotation was not finite.
+    InvalidRotation,
+    /// The mutated entity NBT could not be reborrowed for type-specific loading.
+    InvalidWrittenNbt,
+    /// The live entity manager rejected the resulting move.
+    Move(EntityMoveError),
+}
+
+impl fmt::Display for EntityDataLoadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidPosition => write!(f, "entity NBT contained a non-finite position"),
+            Self::InvalidRotation => write!(f, "entity NBT contained a non-finite rotation"),
+            Self::InvalidWrittenNbt => write!(f, "mutated entity NBT could not be reborrowed"),
+            Self::Move(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl Error for EntityDataLoadError {}
+
+fn nbt_number_i32(tag: Option<&NbtTag>) -> Option<i32> {
+    match tag? {
+        NbtTag::Byte(value) => Some(i32::from(*value)),
+        NbtTag::Short(value) => Some(i32::from(*value)),
+        NbtTag::Int(value) => Some(*value),
+        NbtTag::Long(value) => Some(*value as i32),
+        NbtTag::Float(value) => Some(*value as i32),
+        NbtTag::Double(value) => Some(*value as i32),
+        _ => None,
+    }
+}
+
+fn nbt_number_f64(tag: Option<&NbtTag>) -> Option<f64> {
+    match tag? {
+        NbtTag::Byte(value) => Some(f64::from(*value)),
+        NbtTag::Short(value) => Some(f64::from(*value)),
+        NbtTag::Int(value) => Some(f64::from(*value)),
+        NbtTag::Long(value) => Some(*value as f64),
+        NbtTag::Float(value) => Some(f64::from(*value)),
+        NbtTag::Double(value) => Some(*value),
+        _ => None,
+    }
+}
+
+fn nbt_tag_bool(tag: Option<&NbtTag>) -> Option<bool> {
+    Some(nbt_number_i32(tag)? != 0)
+}
+
+fn nbt_vec3(nbt: &NbtCompound, name: &str) -> Option<DVec3> {
+    let Some(NbtTag::List(NbtList::Double(values))) = nbt.get(name) else {
+        return None;
+    };
+    let [x, y, z, ..] = values.as_slice() else {
+        return None;
+    };
+    Some(DVec3::new(*x, *y, *z))
+}
+
+fn nbt_rotation(nbt: &NbtCompound, name: &str) -> Option<(f32, f32)> {
+    let Some(NbtTag::List(NbtList::Float(values))) = nbt.get(name) else {
+        return None;
+    };
+    let [yaw, pitch, ..] = values.as_slice() else {
+        return None;
+    };
+    Some((*yaw, *pitch))
+}
+
+fn nbt_tags(nbt: &NbtCompound) -> Vec<String> {
+    let Some(NbtTag::List(NbtList::String(tags))) = nbt.get("Tags") else {
+        return Vec::new();
+    };
+
+    tags.iter()
+        .take(MAX_ENTITY_TAGS)
+        .map(|tag| tag.to_str().into_owned())
+        .collect()
+}
+
 pub(crate) fn start_riding_entities(
     passenger: &SharedEntity,
     entity_to_ride: &SharedEntity,
@@ -1433,6 +1527,86 @@ pub trait Entity: EntityEventSource + Send + Sync {
         }
 
         nbt
+    }
+
+    /// Loads vanilla-shaped entity command data into this live entity.
+    ///
+    /// Mirrors vanilla `Entity.load` for `/data entity` and `/execute store ...
+    /// entity`, while preserving the entity UUID like vanilla's
+    /// `EntityDataAccessor.setData`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the mutated NBT cannot be reborrowed or if the live
+    /// entity manager rejects the resulting position update.
+    fn load_data_command_nbt(&self, nbt: &NbtCompound) -> Result<(), EntityDataLoadError> {
+        let position = nbt_vec3(nbt, "Pos").unwrap_or(DVec3::ZERO).clamp(
+            DVec3::new(
+                -ENTITY_LOAD_MAX_HORIZONTAL_POSITION,
+                -ENTITY_LOAD_MAX_VERTICAL_POSITION,
+                -ENTITY_LOAD_MAX_HORIZONTAL_POSITION,
+            ),
+            DVec3::new(
+                ENTITY_LOAD_MAX_HORIZONTAL_POSITION,
+                ENTITY_LOAD_MAX_VERTICAL_POSITION,
+                ENTITY_LOAD_MAX_HORIZONTAL_POSITION,
+            ),
+        );
+        if !position.is_finite() {
+            return Err(EntityDataLoadError::InvalidPosition);
+        }
+
+        let velocity = nbt_vec3(nbt, "Motion")
+            .unwrap_or(DVec3::ZERO)
+            .map(|value| if value.abs() > 10.0 { 0.0 } else { value });
+        let rotation = nbt_rotation(nbt, "Rotation").unwrap_or((0.0, 0.0));
+        if !rotation.0.is_finite() || !rotation.1.is_finite() {
+            return Err(EntityDataLoadError::InvalidRotation);
+        }
+
+        let custom_name = nbt.get("CustomName").and_then(TextComponent::from_nbt);
+        let custom_data = match nbt.get("data") {
+            Some(NbtTag::Compound(data)) => data.clone(),
+            _ => NbtCompound::new(),
+        };
+        let tags = nbt_tags(nbt);
+        let mut nbt_bytes = Vec::new();
+        nbt.write(&mut nbt_bytes);
+        let borrowed = read_borrowed_compound(&mut Cursor::new(&nbt_bytes))
+            .map_err(|_| EntityDataLoadError::InvalidWrittenNbt)?;
+
+        self.try_set_position(position)
+            .map_err(EntityDataLoadError::Move)?;
+        self.set_velocity(velocity);
+        self.set_rotation(rotation);
+        self.set_old_position_to_current();
+        if let Some(living) = self.as_living_entity() {
+            living.set_y_head_rot(rotation.0);
+            living.set_y_body_rot(rotation.0);
+        }
+
+        self.set_fall_distance(nbt_number_f64(nbt.get("fall_distance")).unwrap_or(0.0));
+        self.set_remaining_fire_ticks(nbt_number_i32(nbt.get("Fire")).unwrap_or(0));
+        self.set_air_supply(nbt_number_i32(nbt.get("Air")).unwrap_or(DEFAULT_MAX_AIR_SUPPLY));
+        self.set_on_ground(nbt_tag_bool(nbt.get("OnGround")).unwrap_or(false));
+        self.set_invulnerable(nbt_tag_bool(nbt.get("Invulnerable")).unwrap_or(false));
+        self.set_portal_cooldown(nbt_number_i32(nbt.get("PortalCooldown")).unwrap_or(0));
+        self.set_custom_name(custom_name);
+        self.set_custom_name_visible(nbt_tag_bool(nbt.get("CustomNameVisible")).unwrap_or(false));
+        self.set_silent(nbt_tag_bool(nbt.get("Silent")).unwrap_or(false));
+        self.set_no_gravity(nbt_tag_bool(nbt.get("NoGravity")).unwrap_or(false));
+        self.set_glowing_tag(nbt_tag_bool(nbt.get("Glowing")).unwrap_or(false));
+        self.set_ticks_frozen(nbt_number_i32(nbt.get("TicksFrozen")).unwrap_or(0));
+        self.base()
+            .set_visual_fire(nbt_tag_bool(nbt.get("HasVisualFire")).unwrap_or(false));
+        self.set_custom_data(custom_data);
+        self.base().replace_tags(tags);
+
+        let borrowed_view: BorrowedNbtCompoundView<'_, '_> = (&borrowed).into();
+        self.load_additional(borrowed_view);
+        self.sync_base_entity_data();
+
+        Ok(())
     }
 
     /// Returns this entity's vanilla passenger-save NBT, including the entity id.
@@ -6655,7 +6829,7 @@ mod tests {
     use std::sync::{Arc, Weak};
 
     use glam::DVec3;
-    use simdnbt::owned::{NbtList, NbtTag};
+    use simdnbt::owned::{NbtCompound, NbtList, NbtTag};
     use steel_registry::blocks::{
         block_state_ext::BlockStateExt as _,
         properties::{BlockStateProperties, Direction as BlockDirection},
@@ -6685,11 +6859,11 @@ mod tests {
     use super::{
         AttributeModifier, AttributeModifierOperation, DAMAGE_KNOCKBACK_POWER,
         DEFAULT_SWING_DURATION, DEFAULT_TICKS_REQUIRED_TO_FREEZE, Entity, EntityBase,
-        EntityFireFreezeState, EntityFluidContact, EntityLevelCallback, EntityMoveError,
-        EntitySyncedData, EntityVerticalMovementStateUpdate, InsideBlockEffectType, LivingEntity,
-        LivingEntityBase, LivingTravelInput, RemovalReason, SPEED_MODIFIER_POWDER_SNOW_ID,
-        SharedEntity, block_state_suffocates_eye_box, closest_open_space_direction,
-        fall_damage_reset_clip_target, fall_flying_collision_damage,
+        EntityDataLoadError, EntityFireFreezeState, EntityFluidContact, EntityLevelCallback,
+        EntityMoveError, EntitySyncedData, EntityVerticalMovementStateUpdate,
+        InsideBlockEffectType, LivingEntity, LivingEntityBase, LivingTravelInput, RemovalReason,
+        SPEED_MODIFIER_POWDER_SNOW_ID, SharedEntity, block_state_suffocates_eye_box,
+        closest_open_space_direction, fall_damage_reset_clip_target, fall_flying_collision_damage,
         fall_flying_free_fall_interval, get_input_vector, should_apply_entity_cramming_damage,
         should_apply_resolved_movement, start_riding_entities, transfer_leashables_to_holder,
         trapdoor_usable_as_ladder_state,
@@ -7102,6 +7276,14 @@ mod tests {
             (left - right).abs() <= 1.0e-12,
             "expected {left} to equal {right}"
         );
+    }
+
+    fn set_nbt_tag(nbt: &mut NbtCompound, name: &'static str, tag: NbtTag) {
+        if let Some(existing) = nbt.get_mut(name) {
+            *existing = tag;
+        } else {
+            nbt.insert(name, tag);
+        }
     }
 
     fn closest_direction_with_blocked_neighbors(
@@ -8748,6 +8930,117 @@ mod tests {
         assert!(
             matches!(nbt.get("Tags"), Some(NbtTag::List(NbtList::String(tags))) if tags.len() == 1 && tags[0].to_string() == "keep")
         );
+    }
+
+    #[test]
+    fn load_data_command_nbt_applies_vanilla_base_fields() {
+        init_test_registry();
+
+        let entity = PushableTestEntity::shared(1, DVec3::ZERO);
+        let original_uuid = entity.uuid();
+        let mut nbt = entity.nbt_for_data_compare();
+        set_nbt_tag(
+            &mut nbt,
+            "Pos",
+            NbtTag::List(NbtList::Double(vec![4.0, 5.0, 6.0])),
+        );
+        set_nbt_tag(
+            &mut nbt,
+            "Motion",
+            NbtTag::List(NbtList::Double(vec![0.25, 12.0, -0.5])),
+        );
+        set_nbt_tag(
+            &mut nbt,
+            "Rotation",
+            NbtTag::List(NbtList::Float(vec![45.0, 10.0])),
+        );
+        set_nbt_tag(&mut nbt, "fall_distance", NbtTag::Double(3.5));
+        set_nbt_tag(&mut nbt, "Fire", NbtTag::Short(17));
+        set_nbt_tag(&mut nbt, "Air", NbtTag::Int(111));
+        set_nbt_tag(&mut nbt, "OnGround", NbtTag::Byte(1));
+        set_nbt_tag(&mut nbt, "Invulnerable", NbtTag::Byte(1));
+        set_nbt_tag(&mut nbt, "PortalCooldown", NbtTag::Int(9));
+        set_nbt_tag(&mut nbt, "Silent", NbtTag::Byte(1));
+        set_nbt_tag(&mut nbt, "NoGravity", NbtTag::Byte(1));
+        set_nbt_tag(&mut nbt, "Glowing", NbtTag::Byte(1));
+        set_nbt_tag(&mut nbt, "TicksFrozen", NbtTag::Int(4));
+        set_nbt_tag(&mut nbt, "HasVisualFire", NbtTag::Byte(1));
+        set_nbt_tag(
+            &mut nbt,
+            "UUID",
+            NbtTag::IntArray(Uuid::new_v4().to_int_array().to_vec()),
+        );
+        set_nbt_tag(
+            &mut nbt,
+            "Tags",
+            NbtTag::List(NbtList::from(vec![
+                "loaded".to_owned(),
+                "second".to_owned(),
+            ])),
+        );
+        let mut custom_data = NbtCompound::new();
+        custom_data.insert("flag", NbtTag::Byte(1));
+        set_nbt_tag(&mut nbt, "data", NbtTag::Compound(custom_data.clone()));
+
+        entity
+            .load_data_command_nbt(&nbt)
+            .expect("command entity data loads");
+
+        assert_eq!(entity.uuid(), original_uuid);
+        assert_vec3_close(entity.position(), DVec3::new(4.0, 5.0, 6.0));
+        assert_vec3_close(entity.velocity(), DVec3::new(0.25, 0.0, -0.5));
+        assert_eq!(entity.rotation(), (45.0, 10.0));
+        assert_f64_close(entity.fall_distance(), 3.5);
+        assert_eq!(entity.remaining_fire_ticks(), 17);
+        assert_eq!(entity.air_supply(), 111);
+        assert!(entity.on_ground());
+        assert!(entity.is_invulnerable());
+        assert_eq!(entity.portal_cooldown(), 9);
+        assert!(entity.is_silent());
+        assert!(entity.is_no_gravity());
+        assert!(entity.has_glowing_tag());
+        assert_eq!(entity.ticks_frozen(), 4);
+        assert!(entity.has_visual_fire());
+        assert_eq!(
+            entity.tags(),
+            vec!["loaded".to_owned(), "second".to_owned()]
+        );
+        assert_eq!(entity.custom_data(), custom_data);
+    }
+
+    #[test]
+    fn load_data_command_nbt_does_not_partially_update_when_move_fails() {
+        init_test_registry();
+
+        let entity = PushableTestEntity::shared(1, DVec3::ZERO);
+        entity.set_velocity(DVec3::new(0.1, 0.2, 0.3));
+        entity.set_air_supply(222);
+        entity.set_level_callback(Arc::new(CommitRejectingCallback { entity_id: 1 }));
+
+        let mut nbt = entity.nbt_for_data_compare();
+        set_nbt_tag(
+            &mut nbt,
+            "Pos",
+            NbtTag::List(NbtList::Double(vec![4.0, 5.0, 6.0])),
+        );
+        set_nbt_tag(
+            &mut nbt,
+            "Motion",
+            NbtTag::List(NbtList::Double(vec![0.4, 0.5, 0.6])),
+        );
+        set_nbt_tag(&mut nbt, "Air", NbtTag::Int(111));
+
+        let result = entity.load_data_command_nbt(&nbt);
+
+        assert!(matches!(
+            result,
+            Err(EntityDataLoadError::Move(EntityMoveError::NotLive {
+                entity_id: 1
+            }))
+        ));
+        assert_vec3_close(entity.position(), DVec3::ZERO);
+        assert_vec3_close(entity.velocity(), DVec3::new(0.1, 0.2, 0.3));
+        assert_eq!(entity.air_supply(), 222);
     }
 
     #[test]
