@@ -11,11 +11,12 @@ use crate::command::reader::{CommandReader, StringMode};
 use crate::command::requirement::CommandInputContext;
 use crate::permission::{PermissionContextKey, PermissionSegment, parse_permission_value_key};
 
-use super::{
+use super::access::{
     assigned_group_suggestions, direct_metadata_override_suggestions,
     direct_permission_override_suggestions, group_metadata_suggestions, group_permission_suggestions,
-    metadata_catalog_suggestions, permission_targets,
+    metadata_catalog_suggestions,
 };
+use super::permission_targets;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PermissionOverrideParser {
