@@ -23,6 +23,8 @@ pub mod hash;
 pub mod locks;
 /// Utilities for Steel logging.
 pub mod logger;
+/// Vanilla-compatible NBT helpers.
+pub mod nbt;
 pub mod random;
 /// helpful tools for registry
 pub mod registry;
