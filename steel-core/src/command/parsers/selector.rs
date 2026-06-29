@@ -21,11 +21,11 @@ use crate::{
         entity_selector_permission_expr,
         graph::{CommandParseError, CommandParseErrorKind},
         parsers::parse_resource_identifier,
-        reader::CommandReader,
+        reader::{CommandReader, StringMode},
         requirement::CommandInputContext,
     },
     entity::{Entity, SharedEntity},
-    player::{Player, is_valid_player_name},
+    player::Player,
     scoreboard::{ScoreHolder, Scoreboard},
     server::Server,
 };
@@ -723,7 +723,7 @@ pub(super) fn selector_suggestions(
 
 fn read_selector_argument(reader: &mut CommandReader<'_>) -> Result<String, CommandParseError> {
     if reader.peek() != Some('@') {
-        return reader.read_token();
+        return reader.read_string(StringMode::QuotablePhrase);
     }
 
     let start = reader.absolute_cursor();
@@ -770,6 +770,10 @@ fn read_selector_argument(reader: &mut CommandReader<'_>) -> Result<String, Comm
     Ok(value)
 }
 
+fn is_valid_selector_name(name: &str) -> bool {
+    !name.is_empty() && name.encode_utf16().count() <= 16
+}
+
 fn parse_selector_plan(
     raw: String,
     allow_selectors: bool,
@@ -812,7 +816,7 @@ fn parse_name_or_uuid(
             filters: Vec::new(),
         });
     }
-    if !is_valid_player_name(&name) {
+    if !is_valid_selector_name(&name) {
         return Err(SelectorParseError::invalid_at(
             "invalid player name or UUID",
             0,
@@ -1736,6 +1740,26 @@ mod tests {
     }
 
     #[test]
+    fn selector_direct_names_use_vanilla_name_or_uuid_syntax() {
+        let short = parse_selector_plan("ab".to_owned(), false).expect("short name parses");
+        assert!(matches!(
+            short.kind,
+            super::SelectorKind::PlayerName(ref name) if name == "ab"
+        ));
+
+        let dashed =
+            parse_selector_plan("name-with-dash".to_owned(), false).expect("dashed name parses");
+        assert!(matches!(
+            dashed.kind,
+            super::SelectorKind::PlayerName(ref name) if name == "name-with-dash"
+        ));
+
+        let error = parse_selector_plan("way_too_long_player_name".to_owned(), false)
+            .expect_err("too-long name is invalid");
+        assert!(matches!(error.kind, SelectorParseErrorKind::Invalid(_)));
+    }
+
+    #[test]
     fn selector_parses_vanilla_core_options() {
         init_test_registry();
 
@@ -1846,6 +1870,15 @@ mod tests {
         let raw = read_selector_argument(&mut reader).expect("selector argument reads");
 
         assert_eq!(raw, "@e[nbt={Tags:[\"foo]bar\"],data:{x:1b}}]");
+        assert_eq!(reader.remaining(), " next");
+    }
+
+    #[test]
+    fn selector_argument_reader_reads_quoted_direct_names() {
+        let mut reader = CommandReader::new("\"ab\" next");
+        let raw = read_selector_argument(&mut reader).expect("selector argument reads");
+
+        assert_eq!(raw, "ab");
         assert_eq!(reader.remaining(), " next");
     }
 
