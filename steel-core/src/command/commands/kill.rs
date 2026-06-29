@@ -79,9 +79,7 @@ fn kill_targets(
         );
     }
 
-    Ok(CommandResult {
-        success_count: success_count(victim_count),
-    })
+    Ok(CommandResult::from_success_count(success_count(victim_count)))
 }
 
 fn success_count(count: usize) -> i32 {

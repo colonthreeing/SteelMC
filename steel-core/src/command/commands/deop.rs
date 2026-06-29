@@ -77,9 +77,9 @@ fn deop_targets(
         ));
     }
 
-    Ok(CommandResult {
-        success_count: i32::try_from(changed_count).map_or(i32::MAX, |count| count),
-    })
+    Ok(CommandResult::from_success_count(
+        i32::try_from(changed_count).map_or(i32::MAX, |count| count),
+    ))
 }
 
 fn spawn_offline_deop(server: Arc<Server>, sender: CommandSender, targets: Vec<PermissionTarget>) {

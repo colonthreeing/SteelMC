@@ -408,6 +408,8 @@ impl CommandDispatcher {
         let mut queue = VecDeque::new();
         let mut active = ActiveCommand::Borrowed { command, context };
         let mut total_success_count = 0_i32;
+        let mut last_result = 0_i32;
+        let mut completed_forked_context = false;
 
         loop {
             budget.consume()?;
@@ -436,9 +438,11 @@ impl CommandDispatcher {
                 Ok(step) => step,
                 Err(_error) if active.is_forked() => {
                     let Some(next) = queue.pop_front() else {
-                        return Ok(CommandResult {
-                            success_count: total_success_count,
-                        });
+                        return Ok(dispatch_result(
+                            total_success_count,
+                            last_result,
+                            completed_forked_context,
+                        ));
                     };
                     active = ActiveCommand::Owned(next);
                     continue;
@@ -450,16 +454,19 @@ impl CommandDispatcher {
                 CommandExecutionStep::Complete(result) => {
                     active
                         .context_mut()
-                        .on_command_result(CommandCallbackResult {
-                            success: true,
-                            result: result.success_count,
-                        });
+                        .on_command_result(successful_command_callback_result(result));
+                    if active.is_forked() {
+                        completed_forked_context = true;
+                    }
+                    last_result = result.result;
                     total_success_count = total_success_count
                         .saturating_add(execution_success_count(result, active.is_forked()));
                     let Some(next) = queue.pop_front() else {
-                        return Ok(CommandResult {
-                            success_count: total_success_count,
-                        });
+                        return Ok(dispatch_result(
+                            total_success_count,
+                            last_result,
+                            completed_forked_context,
+                        ));
                     };
                     active = ActiveCommand::Owned(next);
                 }
@@ -477,9 +484,11 @@ impl CommandDispatcher {
                         });
                     }
                     let Some(next) = queue.pop_front() else {
-                        return Ok(CommandResult {
-                            success_count: total_success_count,
-                        });
+                        return Ok(dispatch_result(
+                            total_success_count,
+                            last_result,
+                            completed_forked_context,
+                        ));
                     };
                     active = ActiveCommand::Owned(next);
                 }
@@ -793,6 +802,28 @@ fn execution_success_count(result: CommandResult, forked: bool) -> i32 {
     if forked { 1 } else { result.success_count }
 }
 
+fn successful_command_callback_result(result: CommandResult) -> CommandCallbackResult {
+    CommandCallbackResult {
+        success: true,
+        result: result.result,
+    }
+}
+
+fn dispatch_result(
+    total_success_count: i32,
+    last_result: i32,
+    completed_forked_context: bool,
+) -> CommandResult {
+    CommandResult::with_result(
+        total_success_count,
+        if completed_forked_context {
+            total_success_count
+        } else {
+            last_result
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -889,16 +920,41 @@ mod tests {
     #[test]
     fn forked_execution_counts_completed_source_not_command_result() {
         assert_eq!(
-            super::execution_success_count(CommandResult { success_count: 12 }, false),
+            super::execution_success_count(CommandResult::with_result(12, 37), false),
             12
         );
         assert_eq!(
-            super::execution_success_count(CommandResult { success_count: 12 }, true),
+            super::execution_success_count(CommandResult::with_result(12, 37), true),
             1
         );
         assert_eq!(
-            super::execution_success_count(CommandResult { success_count: 0 }, true),
+            super::execution_success_count(CommandResult::with_result(0, 37), true),
             1
+        );
+    }
+
+    #[test]
+    fn command_result_callback_receives_result_not_success_count() {
+        let callback =
+            super::successful_command_callback_result(CommandResult::with_result(12, 37));
+
+        assert!(callback.success);
+        assert_eq!(callback.result, 37);
+    }
+
+    #[test]
+    fn dispatch_result_preserves_non_forked_command_result() {
+        assert_eq!(
+            super::dispatch_result(12, 37, false),
+            CommandResult::with_result(12, 37)
+        );
+    }
+
+    #[test]
+    fn dispatch_result_aggregates_completed_forked_contexts() {
+        assert_eq!(
+            super::dispatch_result(3, 37, true),
+            CommandResult::from_success_count(3)
         );
     }
 

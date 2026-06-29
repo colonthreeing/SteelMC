@@ -502,13 +502,36 @@ impl From<PermissionKeyError> for DynamicPermissionError {
 pub struct CommandResult {
     /// Number of successful command results.
     pub success_count: i32,
+    /// Integer result returned by the command.
+    pub result: i32,
 }
 
 impl CommandResult {
     /// Creates a successful command result.
     #[must_use]
     pub const fn success() -> Self {
-        Self { success_count: 1 }
+        Self {
+            success_count: 1,
+            result: 1,
+        }
+    }
+
+    /// Creates a command result where the result value is the success count.
+    #[must_use]
+    pub const fn from_success_count(success_count: i32) -> Self {
+        Self {
+            success_count,
+            result: success_count,
+        }
+    }
+
+    /// Creates a command result with separate success-count and result values.
+    #[must_use]
+    pub const fn with_result(success_count: i32, result: i32) -> Self {
+        Self {
+            success_count,
+            result,
+        }
     }
 }
 

@@ -462,7 +462,5 @@ pub(super) fn target_count_text(count: usize) -> String {
 }
 
 pub(super) fn command_result(count: usize) -> CommandResult {
-    CommandResult {
-        success_count: i32::try_from(count).map_or(i32::MAX, |count| count),
-    }
+    CommandResult::from_success_count(i32::try_from(count).map_or(i32::MAX, |count| count))
 }

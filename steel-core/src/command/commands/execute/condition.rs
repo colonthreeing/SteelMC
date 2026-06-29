@@ -223,9 +223,7 @@ fn execute_entity_condition(
             return Err(conditional_failed(count));
         }
         send_condition_pass_count(context, count);
-        return Ok(CommandResult {
-            success_count: success_count(count),
-        });
+        return Ok(CommandResult::from_success_count(success_count(count)));
     }
 
     if count == 0 {
@@ -260,9 +258,7 @@ fn execute_entity_items_condition(
             return Err(conditional_failed(count));
         }
         send_condition_pass_count(context, count);
-        return Ok(CommandResult {
-            success_count: success_count(count),
-        });
+        return Ok(CommandResult::from_success_count(success_count(count)));
     }
 
     if count == 0 {
@@ -334,9 +330,7 @@ fn execute_block_items_condition(
             return Err(conditional_failed(count));
         }
         send_condition_pass_count(context, count);
-        return Ok(CommandResult {
-            success_count: success_count(count),
-        });
+        return Ok(CommandResult::from_success_count(success_count(count)));
     }
 
     if count == 0 {
@@ -688,9 +682,7 @@ fn execute_block_data_condition(
             return Err(conditional_failed(count));
         }
         send_condition_pass_count(context, count);
-        return Ok(CommandResult {
-            success_count: success_count(count),
-        });
+        return Ok(CommandResult::from_success_count(success_count(count)));
     }
 
     if count == 0 {
@@ -739,9 +731,7 @@ fn execute_entity_data_condition(
             return Err(conditional_failed(count));
         }
         send_condition_pass_count(context, count);
-        return Ok(CommandResult {
-            success_count: success_count(count),
-        });
+        return Ok(CommandResult::from_success_count(success_count(count)));
     }
 
     if count == 0 {
@@ -763,9 +753,7 @@ fn execute_storage_data_condition(
             return Err(conditional_failed(count));
         }
         send_condition_pass_count(context, count);
-        return Ok(CommandResult {
-            success_count: success_count(count),
-        });
+        return Ok(CommandResult::from_success_count(success_count(count)));
     }
 
     if count == 0 {
@@ -827,9 +815,7 @@ fn execute_blocks_condition(
     if expected {
         if let Some(count) = count {
             send_condition_pass_count(context, count);
-            return Ok(CommandResult {
-                success_count: success_count(count),
-            });
+            return Ok(CommandResult::from_success_count(success_count(count)));
         }
         return Err(conditional_failed(0));
     }
