@@ -12,6 +12,7 @@ use syn::Ident;
 
 mod blocks;
 mod candle_cakes;
+mod commands;
 mod common;
 mod entities;
 mod items;
@@ -29,6 +30,7 @@ struct Classes {
 
 pub fn main() {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
+    let out_dir = env::var("OUT_DIR").expect("OUT_DIR not set");
     let behavior_out_dir = format!("{manifest_dir}/src/behavior/generated");
     let entity_out_dir = format!("{manifest_dir}/src/entity/generated");
 
@@ -65,11 +67,13 @@ pub fn main() {
         format!("{entity_out_dir}/entities.rs"),
         entities::build(&classes.entities),
     );
+    write_if_changed(format!("{out_dir}/built_in_commands.rs"), commands::build());
 
     println!("cargo:rerun-if-changed={manifest_dir}/build/classes.json");
     println!("cargo:rerun-if-changed={manifest_dir}/src/behavior/blocks");
     println!("cargo:rerun-if-changed={manifest_dir}/src/behavior/items");
     println!("cargo:rerun-if-changed={manifest_dir}/src/entity/entities");
+    println!("cargo:rerun-if-changed={manifest_dir}/src/command/commands");
 }
 
 /// Items use lowercase field names (`vanilla_items::ITEMS.stone`)
