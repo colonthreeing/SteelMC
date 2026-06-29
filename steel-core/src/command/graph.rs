@@ -160,6 +160,12 @@ pub enum CommandParseErrorKind {
     InvalidPlayer(String),
     /// An entity argument was invalid.
     InvalidEntity(String),
+    /// Entity selector syntax is not allowed for this source.
+    EntitySelectorsNotAllowed,
+    /// Entity selector syntax was malformed.
+    InvalidEntitySelector(String),
+    /// Entity selector option is recognized but needs a missing runtime foundation.
+    UnsupportedEntitySelectorOption(String),
     /// An entity type argument was invalid.
     InvalidEntityType(String),
     /// An item argument was invalid.
@@ -244,6 +250,9 @@ impl CommandParseErrorKind {
             | Self::InvalidGameMode(_)
             | Self::InvalidPlayer(_)
             | Self::InvalidEntity(_)
+            | Self::EntitySelectorsNotAllowed
+            | Self::InvalidEntitySelector(_)
+            | Self::UnsupportedEntitySelectorOption(_)
             | Self::InvalidEntityType(_)
             | Self::InvalidItem(_)
             | Self::InvalidItemSlot(_)

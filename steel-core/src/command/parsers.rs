@@ -8,6 +8,7 @@ mod permission;
 mod position;
 mod resource;
 mod scoreboard;
+mod selector;
 mod slot;
 mod target;
 mod text;
@@ -80,6 +81,20 @@ mod tests {
     }
 
     impl CommandInputContext for TestContext {}
+
+    struct SelectorPermissionContext;
+
+    impl RequirementContext for SelectorPermissionContext {
+        fn source_kind(&self) -> CommandSourceKind {
+            CommandSourceKind::Player
+        }
+
+        fn has_permission(&self, _permission: &PermissionExpr) -> bool {
+            true
+        }
+    }
+
+    impl CommandInputContext for SelectorPermissionContext {}
 
     struct CatalogContext {
         catalog: PermissionCatalog,
@@ -456,9 +471,38 @@ mod tests {
     }
 
     #[test]
-    fn player_parser_suggests_selectors_without_live_server() {
+    fn player_parser_hides_selector_suggestions_without_permission() {
         let suggestions =
             PlayerParser::multiple().suggest("@", &ParsedArguments::default(), &TestContext);
+        let texts = suggestions
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+
+        assert!(texts.is_empty());
+    }
+
+    #[test]
+    fn player_parser_rejects_selector_without_permission() {
+        let mut reader = CommandReader::new("@a");
+        let error = match PlayerParser::multiple().parse(&mut reader, &TestContext) {
+            Ok(_) => panic!("selector unexpectedly parsed"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error.kind(),
+            &CommandParseErrorKind::EntitySelectorsNotAllowed
+        );
+    }
+
+    #[test]
+    fn player_parser_suggests_selectors_without_live_server() {
+        let suggestions = PlayerParser::multiple().suggest(
+            "@",
+            &ParsedArguments::default(),
+            &SelectorPermissionContext,
+        );
         let texts = suggestions
             .into_iter()
             .map(|suggestion| suggestion.text)
@@ -469,8 +513,11 @@ mod tests {
 
     #[test]
     fn single_player_parser_does_not_suggest_multi_player_selector() {
-        let suggestions =
-            PlayerParser::one().suggest("@", &ParsedArguments::default(), &TestContext);
+        let suggestions = PlayerParser::one().suggest(
+            "@",
+            &ParsedArguments::default(),
+            &SelectorPermissionContext,
+        );
         let texts = suggestions
             .into_iter()
             .map(|suggestion| suggestion.text)
@@ -481,14 +528,17 @@ mod tests {
 
     #[test]
     fn entity_parser_suggests_selectors_without_live_server() {
-        let suggestions =
-            EntityParser::multiple().suggest("@", &ParsedArguments::default(), &TestContext);
+        let suggestions = EntityParser::multiple().suggest(
+            "@",
+            &ParsedArguments::default(),
+            &SelectorPermissionContext,
+        );
         let texts = suggestions
             .into_iter()
             .map(|suggestion| suggestion.text)
             .collect::<Vec<_>>();
 
-        assert_eq!(texts, vec!["@a", "@e", "@p", "@r", "@s"]);
+        assert_eq!(texts, vec!["@a", "@e", "@p", "@r", "@s", "@n"]);
     }
 
     #[test]

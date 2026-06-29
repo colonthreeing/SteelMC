@@ -24,8 +24,8 @@ use crate::command::graph::{
 use crate::command::requirement::RequirementContext;
 use crate::command::sender::CommandSender;
 use crate::permission::{
-    PermissionCatalog, PermissionCatalogSource, PermissionContextCatalog, PermissionKey,
-    PermissionKeyError, PermissionMetadataCatalog, PermissionSegment,
+    PermissionCatalog, PermissionCatalogSource, PermissionContextCatalog, PermissionExpr,
+    PermissionKey, PermissionKeyError, PermissionMetadataCatalog, PermissionSegment,
 };
 use crate::player::Player;
 use crate::server::Server;
@@ -303,6 +303,16 @@ pub(crate) fn minecraft_command_permission_key(
     command_permission_key(&PermissionSegment::parse("minecraft")?, command)
 }
 
+pub(crate) const ENTITY_SELECTOR_PERMISSION_KEY: &str = "minecraft.command.selector";
+
+pub(crate) fn entity_selector_permission_key() -> Result<PermissionKey, PermissionKeyError> {
+    PermissionKey::parse(ENTITY_SELECTOR_PERMISSION_KEY)
+}
+
+pub(crate) fn entity_selector_permission_expr() -> Result<PermissionExpr, PermissionKeyError> {
+    Ok(PermissionExpr::key(entity_selector_permission_key()?))
+}
+
 impl CommandDispatcher {
     /// Creates a new command dispatcher with built-in commands.
     ///
@@ -311,6 +321,10 @@ impl CommandDispatcher {
     /// Returns an error when a built-in command registration is invalid.
     pub fn new() -> Result<Self, CommandRegistrationError> {
         let mut dispatcher = CommandDispatcher::new_empty();
+        dispatcher.permission_catalog.insert(
+            entity_selector_permission_key()?,
+            PermissionCatalogSource::Command,
+        );
         for registration in commands::registrations()? {
             dispatcher.register_command(registration)?;
         }
@@ -570,6 +584,15 @@ impl CommandDispatcher {
             }
             CommandParseErrorKind::InvalidEntity(_) => {
                 TextComponent::from(&translations::ARGUMENT_ENTITY_NOTFOUND_ENTITY)
+            }
+            CommandParseErrorKind::EntitySelectorsNotAllowed => {
+                TextComponent::plain("Selector syntax is not allowed for this command source")
+            }
+            CommandParseErrorKind::InvalidEntitySelector(value) => {
+                TextComponent::plain(format!("Invalid entity selector: {value}"))
+            }
+            CommandParseErrorKind::UnsupportedEntitySelectorOption(value) => {
+                TextComponent::plain(format!("Unsupported entity selector option: {value}"))
             }
             CommandParseErrorKind::InvalidItem(value) => translations::ARGUMENT_ITEM_ID_INVALID
                 .message([TextComponent::from(value.clone())])
@@ -1064,6 +1087,12 @@ mod tests {
                 "minecraft.command.gamemode.spectator".to_owned(),
                 "minecraft.command.gamemode.survival".to_owned(),
             ]
+        );
+        assert_eq!(
+            dispatcher
+                .permission_catalog
+                .suggestions(super::ENTITY_SELECTOR_PERMISSION_KEY),
+            vec![super::ENTITY_SELECTOR_PERMISSION_KEY.to_owned()]
         );
         assert!(
             dispatcher
