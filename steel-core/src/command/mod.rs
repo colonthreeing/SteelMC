@@ -92,21 +92,18 @@ impl CommandRegistration {
         Ok(self)
     }
 
-    fn resolved_permission_base(&self) -> Result<PermissionKey, CommandRegistrationError> {
+    fn resolved_permission_base(&self) -> Result<Option<PermissionKey>, CommandRegistrationError> {
         match &self.permission {
-            CommandPermissionMode::Auto | CommandPermissionMode::Public => {
+            CommandPermissionMode::Public => Ok(None),
+            CommandPermissionMode::Auto => {
                 let command_name = self
                     .root
                     .literal_name()
                     .ok_or(CommandRegistrationError::RootMustBeLiteral)?;
-                Ok(command_permission_key(&self.namespace, command_name)?)
+                Ok(Some(command_permission_key(&self.namespace, command_name)?))
             }
-            CommandPermissionMode::Override(permission) => Ok(permission.clone()),
+            CommandPermissionMode::Override(permission) => Ok(Some(permission.clone())),
         }
-    }
-
-    const fn has_root_permission(&self) -> bool {
-        !matches!(self.permission, CommandPermissionMode::Public)
     }
 }
 
@@ -198,12 +195,9 @@ impl CommandDispatcher {
         registration: CommandRegistration,
     ) -> Result<(), CommandRegistrationError> {
         let permission_base = registration.resolved_permission_base()?;
-        let permission = registration
-            .has_root_permission()
-            .then(|| permission_base.clone());
         let mut command_catalog = PermissionCatalog::new();
-        let root = if let Some(permission) = &permission {
-            command_catalog.insert(permission.clone(), PermissionCatalogSource::Command);
+        let root = if let Some(permission_base) = &permission_base {
+            command_catalog.insert(permission_base.clone(), PermissionCatalogSource::Command);
             registration
                 .root
                 .clone()
@@ -211,31 +205,20 @@ impl CommandDispatcher {
         } else {
             registration.root.clone()
         };
-        self.register_root(root)?;
+        let root_for_aliases = (!registration.aliases.is_empty()).then(|| root.clone());
+        let mut graph = self.graph.clone();
+        graph.register_root(root)?;
         for alias in registration.aliases {
-            let root = if permission.is_some() {
-                let mut alias_catalog = PermissionCatalog::new();
-                registration
-                    .root
-                    .clone()
-                    .with_literal_name(alias)
-                    .ok_or(CommandRegistrationError::RootMustBeLiteral)?
-                    .resolve_subcommand_permissions(&permission_base, &mut alias_catalog)?
-            } else {
-                registration
-                    .root
-                    .clone()
-                    .with_literal_name(alias)
-                    .ok_or(CommandRegistrationError::RootMustBeLiteral)?
-            };
-            self.register_root(root)?;
+            let root = root_for_aliases
+                .as_ref()
+                .ok_or(CommandRegistrationError::RootMustBeLiteral)?
+                .clone()
+                .with_literal_name(alias)
+                .ok_or(CommandRegistrationError::RootMustBeLiteral)?;
+            graph.register_root(root)?;
         }
+        self.graph = graph;
         self.permission_catalog.extend(&command_catalog);
-        Ok(())
-    }
-
-    fn register_root(&mut self, root: CommandNodeBuilder) -> Result<(), CommandRegistrationError> {
-        self.graph.register_root(root)?;
         Ok(())
     }
 
@@ -798,6 +781,25 @@ mod tests {
     }
 
     #[test]
+    fn public_commands_do_not_require_permission_segment_literals() {
+        let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
+        let mut dispatcher = CommandDispatcher::new_empty();
+        let registration = CommandRegistration::new(
+            literal("Visible").executes(|_, _| Ok(CommandResult::success())),
+            minecraft,
+        )
+        .public();
+
+        dispatcher
+            .register_command(registration)
+            .expect("public command registers without permission key derivation");
+
+        let player = player_context();
+        assert!(dispatcher.graph.has_root("Visible", &player));
+        assert!(dispatcher.graph.parse("Visible", &player).is_ok());
+    }
+
+    #[test]
     fn aliases_reject_invalid_command_literals() {
         let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
         let Err(error) = CommandRegistration::new(literal("root"), minecraft).alias("bad alias")
@@ -809,6 +811,40 @@ mod tests {
             error,
             CommandRegistrationError::InvalidGraph(CommandGraphError::InvalidLiteralName { .. })
         ));
+    }
+
+    #[test]
+    fn failed_alias_registration_does_not_leave_primary_root() {
+        let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
+        let mut dispatcher = CommandDispatcher::new_empty();
+        dispatcher
+            .register_command(
+                CommandRegistration::new(
+                    literal("other").executes(|_, _| Ok(CommandResult::success())),
+                    minecraft.clone(),
+                )
+                .public(),
+            )
+            .expect("existing command registers");
+
+        let registration = CommandRegistration::new(
+            literal("root").executes(|_, _| Ok(CommandResult::success())),
+            minecraft,
+        )
+        .public()
+        .alias("other")
+        .expect("alias literal parses");
+        let Err(error) = dispatcher.register_command(registration) else {
+            panic!("colliding alias should reject registration");
+        };
+
+        assert!(matches!(
+            error,
+            CommandRegistrationError::InvalidGraph(CommandGraphError::LiteralCollision { .. })
+        ));
+        let player = player_context();
+        assert!(!dispatcher.graph.has_root("root", &player));
+        assert!(dispatcher.graph.has_root("other", &player));
     }
 
     #[test]
