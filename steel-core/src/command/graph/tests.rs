@@ -522,9 +522,11 @@ fn denied_dynamic_argument_hides_deeper_suggestions() {
             .is_none()
     );
 
-    let creative = player_context_with(
+    let creative = player_context_with_all([
         PermissionKey::parse("minecraft.command.gamemode.creative").expect("permission key parses"),
-    );
+        PermissionKey::parse(crate::command::ENTITY_SELECTOR_PERMISSION_KEY)
+            .expect("selector permission key parses"),
+    ]);
     let result = graph
         .suggest("gamemode creative @", &creative)
         .expect("target suggestions");

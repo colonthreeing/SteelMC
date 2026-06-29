@@ -2126,6 +2126,29 @@ pub trait Entity: EntityEventSource + Send + Sync {
         self.base().set_removed(reason);
     }
 
+    /// Kills this entity using vanilla's entity-class split.
+    ///
+    /// Living entities take `genericKill` damage. Other entities are removed as
+    /// killed and emit the vanilla death game event immediately.
+    fn kill(&self) {
+        if self.is_living_entity() {
+            self.hurt(
+                &DamageSource::environment(&vanilla_damage_types::GENERIC_KILL),
+                f32::MAX,
+            );
+            return;
+        }
+
+        self.set_removed(RemovalReason::Killed);
+        if let Some(world) = self.level() {
+            world.game_event(
+                &vanilla_game_events::ENTITY_DIE,
+                self.block_position(),
+                &GameEventContext::new(Some(self.as_entity_event_source()), None),
+            );
+        }
+    }
+
     /// Sets the level callback for lifecycle events (movement, removal).
     fn set_level_callback(&self, callback: Arc<dyn EntityLevelCallback>) {
         self.base().set_level_callback(callback);

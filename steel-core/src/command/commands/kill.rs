@@ -10,10 +10,7 @@ use crate::command::graph::{
 };
 use crate::command::parsers::EntityParser;
 use crate::command::CommandRegistrationSpec;
-use crate::entity::damage::DamageSource;
-use crate::entity::{Entity, SharedEntity};
-use crate::player::Player;
-use steel_registry::vanilla_damage_types;
+use crate::entity::SharedEntity;
 use steel_utils::translations;
 
 pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::minecraft();
@@ -26,29 +23,22 @@ pub(crate) fn command() -> CommandNodeBuilder {
         .then(argument("targets", EntityParser::multiple()).executes(kill_targets))
 }
 
-/// `LivingEntity.kill()` — hurt with `genericKill` at `Float.MAX_VALUE`.
-fn kill_player(player: &Player) {
-    player.hurt(
-        &DamageSource::environment(&vanilla_damage_types::GENERIC_KILL),
-        f32::MAX,
-    );
-}
-
 fn kill_self(
     context: &mut CommandContext,
     _: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let player = context
-        .sender
-        .get_player()
+    let entity = context
+        .entity
+        .as_ref()
         .ok_or(CommandError::InvalidRequirement)?;
+    let entity_name = entity.plain_text_name();
 
-    kill_player(player);
+    entity.kill();
 
     // TODO: use getDisplayName() (team formatting, hover event, UUID insertion)
     context.sender.send_message(
         &translations::COMMANDS_KILL_SUCCESS_SINGLE
-            .message([TextComponent::plain(player.gameprofile.name.clone())])
+            .message([TextComponent::plain(entity_name)])
             .into(),
     );
 
@@ -67,23 +57,12 @@ fn kill_targets(
         return Err(CommandError::failure("No entity was found"));
     }
 
-    let players = context.server.get_players();
-
     let mut last_name = String::new();
-    let mut victim_count = 0;
     for target in &targets {
-        let target_uuid = target.uuid();
-        if let Some(player) = players.iter().find(|p| p.uuid() == target_uuid) {
-            kill_player(player);
-            victim_count += 1;
-            last_name.clone_from(&player.gameprofile.name);
-        }
-        // TODO: non-player entities via Entity::kill() (remove with RemovalReason::KILLED)
+        last_name = target.plain_text_name();
+        target.kill();
     }
-
-    if victim_count == 0 {
-        return Err(CommandError::failure("No entity was found"));
-    }
+    let victim_count = targets.len();
 
     // TODO: use getDisplayName() (team formatting, hover event, UUID insertion)
     if victim_count == 1 {
@@ -100,5 +79,57 @@ fn kill_targets(
         );
     }
 
-    Ok(CommandResult::success())
+    Ok(CommandResult {
+        success_count: success_count(victim_count),
+    })
+}
+
+fn success_count(count: usize) -> i32 {
+    i32::try_from(count).unwrap_or(i32::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Weak;
+
+    use glam::DVec3;
+    use steel_registry::{entity_type::EntityTypeRef, vanilla_entities};
+
+    use crate::entity::{Entity, EntityBase, RemovalReason};
+
+    struct KillTestEntity {
+        base: EntityBase,
+    }
+
+    impl KillTestEntity {
+        fn new() -> Self {
+            Self {
+                base: EntityBase::new(
+                    1,
+                    DVec3::ZERO,
+                    vanilla_entities::ITEM.dimensions,
+                    Weak::new(),
+                ),
+            }
+        }
+    }
+
+    impl Entity for KillTestEntity {
+        fn base(&self) -> &EntityBase {
+            &self.base
+        }
+
+        fn entity_type(&self) -> EntityTypeRef {
+            &vanilla_entities::ITEM
+        }
+    }
+
+    #[test]
+    fn kill_removes_non_living_entities_as_killed() {
+        let entity = KillTestEntity::new();
+
+        entity.kill();
+
+        assert_eq!(entity.removal_reason(), Some(RemovalReason::Killed));
+    }
 }
