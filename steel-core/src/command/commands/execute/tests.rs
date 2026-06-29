@@ -2,15 +2,21 @@ use std::sync::{Arc, Weak};
 
 use glam::DVec3;
 use simdnbt::owned::NbtTag;
-use steel_registry::{entity_type::EntityTypeRef, test_support::init_test_registry, vanilla_entities};
+use steel_registry::{
+    entity_type::EntityTypeRef, item_stack::ItemStack, test_support::init_test_registry,
+    vanilla_entities, vanilla_items,
+};
 use steel_utils::{Identifier, nbt::parse_nbt_path};
 
-use crate::command::graph::CommandGraph;
+use crate::command::graph::{
+    CommandGraph, ItemPredicateArgumentValue, ItemPredicateTarget, ItemSlotRangeArgumentValue,
+    ParsedArgument, ParsedArguments,
+};
 use crate::command::requirement::{
     CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext,
 };
 use crate::command::storage::CommandStorage;
-use crate::entity::{Entity, EntityBase};
+use crate::entity::{Entity, EntityBase, entities::ItemEntity};
 use crate::scoreboard::{ScoreHolder, Scoreboard};
 
 struct TestContext;
@@ -57,6 +63,27 @@ fn graph() -> CommandGraph {
     CommandGraph::new()
         .with_root(super::command())
         .expect("execute command registers")
+}
+
+fn stone_predicate() -> ItemPredicateArgumentValue {
+    ItemPredicateArgumentValue::new(
+        ItemPredicateTarget::Item(&vanilla_items::ITEMS.stone),
+        Vec::new(),
+    )
+}
+
+fn entity_item_arguments(
+    entity: Arc<dyn Entity>,
+    slots: ItemSlotRangeArgumentValue,
+) -> ParsedArguments {
+    let mut arguments = ParsedArguments::default();
+    arguments.insert("entities", ParsedArgument::Entities(vec![entity]));
+    arguments.insert("slots", ParsedArgument::ItemSlots(slots));
+    arguments.insert(
+        "item_predicate",
+        ParsedArgument::ItemPredicate(stone_predicate()),
+    );
+    arguments
 }
 
 #[test]
@@ -222,6 +249,62 @@ fn items_block_condition_parses_direct_and_redirect_forms() {
             "item_predicate"
         ]
     );
+}
+
+#[test]
+fn items_condition_suggests_entity_source() {
+    init_test_registry();
+    let graph = graph();
+    let context = TestContext;
+
+    let suggestions = graph
+        .suggest("execute if items ", &context)
+        .expect("items condition suggestions");
+    let suggestions = suggestions
+        .suggestions
+        .iter()
+        .map(|suggestion| suggestion.text.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(suggestions.contains(&"entity"));
+    assert!(suggestions.contains(&"block"));
+}
+
+#[test]
+fn items_entity_condition_counts_item_entity_contents() {
+    init_test_registry();
+    let item = ItemStack::with_count(&vanilla_items::ITEMS.stone, 4);
+    let entity: Arc<dyn Entity> = Arc::new(ItemEntity::with_item(
+        &vanilla_entities::ITEM,
+        1,
+        DVec3::ZERO,
+        item,
+        Weak::new(),
+    ));
+    let arguments = entity_item_arguments(
+        entity,
+        ItemSlotRangeArgumentValue::new("contents", vec![0]),
+    );
+
+    match super::condition::entity_items_match_count(&arguments) {
+        Ok(count) => assert_eq!(count, 4),
+        Err(_) => panic!("item entity contents count should succeed"),
+    }
+}
+
+#[test]
+fn items_entity_condition_ignores_missing_slots() {
+    init_test_registry();
+    let entity: Arc<dyn Entity> = StoreTestEntity::shared(1, DVec3::ZERO);
+    let arguments = entity_item_arguments(
+        entity,
+        ItemSlotRangeArgumentValue::new("contents", vec![0]),
+    );
+
+    match super::condition::entity_items_match_count(&arguments) {
+        Ok(count) => assert_eq!(count, 0),
+        Err(_) => panic!("missing entity slots should count as zero"),
+    }
 }
 
 #[test]

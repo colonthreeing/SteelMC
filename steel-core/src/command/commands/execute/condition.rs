@@ -20,6 +20,7 @@ use crate::command::parsers::{
     ItemPredicateParser, ItemSlotsParser, NbtPathParser, ObjectiveParser, ScoreHolderParser,
     WorldParser,
 };
+use crate::entity::EntityCommandItemSlotResult;
 use crate::scoreboard::{ScoreHolder, Scoreboard, ScoreboardObjective};
 use crate::world::World;
 
@@ -53,19 +54,41 @@ pub(super) fn conditionals(name: &'static str, expected: bool) -> CommandNodeBui
                     fork_entity_condition(context, arguments, expected)
                 }),
         ))
-        .then(literal("items").then(literal("block").then(
-            argument("pos", BlockPosParser).then(
-                argument("slots", ItemSlotsParser).then(
-                    argument("item_predicate", ItemPredicateParser)
-                        .executes(move |context, arguments| {
-                            execute_block_items_condition(context, arguments, expected)
-                        })
-                        .forks(CommandRedirectTarget::Current, move |context, arguments| {
-                            fork_block_items_condition(context, arguments, expected)
-                        }),
-                ),
-            ),
-        )))
+        .then(
+            literal("items")
+                .then(literal("entity").then(
+                    argument("entities", EntityParser::multiple()).then(
+                        argument("slots", ItemSlotsParser).then(
+                            argument("item_predicate", ItemPredicateParser)
+                                .executes(move |context, arguments| {
+                                    execute_entity_items_condition(context, arguments, expected)
+                                })
+                                .forks(
+                                    CommandRedirectTarget::Current,
+                                    move |context, arguments| {
+                                        fork_entity_items_condition(context, arguments, expected)
+                                    },
+                                ),
+                        ),
+                    ),
+                ))
+                .then(literal("block").then(
+                    argument("pos", BlockPosParser).then(
+                        argument("slots", ItemSlotsParser).then(
+                            argument("item_predicate", ItemPredicateParser)
+                                .executes(move |context, arguments| {
+                                    execute_block_items_condition(context, arguments, expected)
+                                })
+                                .forks(
+                                    CommandRedirectTarget::Current,
+                                    move |context, arguments| {
+                                        fork_block_items_condition(context, arguments, expected)
+                                    },
+                                ),
+                        ),
+                    ),
+                ))
+        )
         .then(literal("dimension").then(
             argument("dimension", WorldParser)
                 .executes(move |context, arguments| {
@@ -224,6 +247,80 @@ fn fork_entity_condition(
     } else {
         Vec::new()
     })
+}
+
+fn execute_entity_items_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+) -> Result<CommandResult, CommandError> {
+    let count = entity_items_match_count(arguments)?;
+    if expected {
+        if count == 0 {
+            return Err(conditional_failed(count));
+        }
+        send_condition_pass_count(context, count);
+        return Ok(CommandResult {
+            success_count: success_count(count),
+        });
+    }
+
+    if count == 0 {
+        send_condition_pass(context);
+        Ok(CommandResult::success())
+    } else {
+        Err(conditional_failed(count))
+    }
+}
+
+fn fork_entity_items_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+) -> Result<Vec<CommandContext>, CommandError> {
+    let matches = entity_items_match_count(arguments)? > 0;
+    Ok(if matches == expected {
+        vec![context.clone()]
+    } else {
+        Vec::new()
+    })
+}
+
+pub(super) fn entity_items_match_count(arguments: &ParsedArguments) -> Result<usize, CommandError> {
+    let targets = entities(arguments)?;
+    let slots = item_slots(arguments)?;
+    let predicate = item_predicate(arguments)?;
+    let mut count = 0usize;
+
+    for entity in &targets {
+        for &slot_id in slots.slots() {
+            let mut slot_count = Ok(0usize);
+            let result = entity.with_command_item_slot(slot_id, &mut |item| {
+                slot_count = predicate
+                    .matches_stack(item)
+                    .map_err(item_predicate_match_error)
+                    .map(|matches| {
+                        if matches {
+                            usize::try_from(item.count()).map_or(0, |count| count)
+                        } else {
+                            0
+                        }
+                    });
+            });
+
+            match result {
+                EntityCommandItemSlotResult::Found => {
+                    count = count.saturating_add(slot_count?);
+                }
+                EntityCommandItemSlotResult::Missing => {}
+                EntityCommandItemSlotResult::Unsupported => {
+                    return Err(unsupported_entity_item_slot(slots.name()));
+                }
+            }
+        }
+    }
+
+    Ok(count)
 }
 
 fn execute_block_items_condition(
@@ -856,6 +953,12 @@ fn item_source_not_a_container(pos: BlockPos) -> CommandError {
             TextComponent::from(pos.z().to_string()),
         ])),
     }))
+}
+
+fn unsupported_entity_item_slot(slot: &str) -> CommandError {
+    CommandError::failure(TextComponent::from(format!(
+        "unsupported entity item slot '{slot}'"
+    )))
 }
 
 fn success_count(count: usize) -> i32 {

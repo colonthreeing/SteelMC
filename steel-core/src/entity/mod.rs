@@ -62,11 +62,13 @@ use crate::behavior::{
 };
 use crate::entity::attribute::{AttributeMap, AttributeModifier, AttributeModifierOperation};
 use crate::fluid::{LavaFluid, get_fluid_state, get_height};
+use crate::inventory::container::Container;
 use crate::inventory::equipment::EquipmentSlot;
 use crate::physics::{
     COLLISION_EPSILON, CollisionWorld, EntityPhysicsState, MoveResult, MoverType,
     WorldCollisionProvider, move_entity as resolve_entity_movement,
 };
+use crate::player::player_inventory::PlayerInventory;
 use crate::world::game_event_context::GameEventContext;
 use crate::world::{ClipBlockShape, ClipFluid, LevelReader, World};
 use crate::{enchantment_helper, entity::damage::DamageSource, player::Player};
@@ -763,6 +765,66 @@ pub type SharedEntity = Arc<dyn Entity>;
 
 /// Type alias for a weak entity reference.
 pub type WeakEntity = Weak<dyn Entity>;
+
+/// Result of querying an entity with vanilla command slot IDs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntityCommandItemSlotResult {
+    /// The slot exists and the visitor was called.
+    Found,
+    /// Vanilla would return no slot for this entity and slot ID.
+    Missing,
+    /// Vanilla exposes this slot for this entity, but Steel lacks the backing state.
+    Unsupported,
+}
+
+fn command_item_slot_to_equipment_slot(slot: i32) -> Option<EquipmentSlot> {
+    match slot {
+        98 => Some(EquipmentSlot::MainHand),
+        99 => Some(EquipmentSlot::OffHand),
+        100 => Some(EquipmentSlot::Feet),
+        101 => Some(EquipmentSlot::Legs),
+        102 => Some(EquipmentSlot::Chest),
+        103 => Some(EquipmentSlot::Head),
+        105 => Some(EquipmentSlot::Body),
+        106 => Some(EquipmentSlot::Saddle),
+        _ => None,
+    }
+}
+
+fn with_player_command_item_slot(
+    player: &Player,
+    slot: i32,
+    visitor: &mut dyn FnMut(&ItemStack),
+) -> EntityCommandItemSlotResult {
+    if player_command_item_slot_unsupported(slot) {
+        return EntityCommandItemSlotResult::Unsupported;
+    }
+
+    let inventory = player.inventory.lock();
+    let Ok(inventory_slot) = usize::try_from(slot) else {
+        return EntityCommandItemSlotResult::Missing;
+    };
+
+    if inventory_slot < PlayerInventory::INVENTORY_SIZE {
+        visitor(inventory.get_item(inventory_slot));
+        return EntityCommandItemSlotResult::Found;
+    }
+
+    let Some(equipment_slot) = command_item_slot_to_equipment_slot(slot) else {
+        return EntityCommandItemSlotResult::Missing;
+    };
+
+    if equipment_slot == EquipmentSlot::MainHand {
+        visitor(inventory.get_selected_item());
+    } else {
+        visitor(inventory.equipment().get_ref(equipment_slot));
+    }
+    EntityCommandItemSlotResult::Found
+}
+
+fn player_command_item_slot_unsupported(slot: i32) -> bool {
+    matches!(slot, 200..=226 | 499 | 500..=503)
+}
 
 fn nbt_bool(value: bool) -> NbtTag {
     NbtTag::Byte(i8::from(value))
@@ -2339,6 +2401,40 @@ pub trait Entity: EntityEventSource + Send + Sync {
     /// downcast through `Any`.
     fn as_player(&self) -> Option<&Player> {
         self.capabilities().player
+    }
+
+    /// Visits the item exposed through a vanilla command slot ID.
+    ///
+    /// Mirrors the read side of vanilla `SlotProvider.getSlot(int)` for command
+    /// features such as `execute if items entity`. The IDs come from
+    /// `net.minecraft.world.inventory.SlotRanges`.
+    fn with_command_item_slot(
+        &self,
+        slot: i32,
+        visitor: &mut dyn FnMut(&ItemStack),
+    ) -> EntityCommandItemSlotResult {
+        if let Some(player) = self.as_player() {
+            return with_player_command_item_slot(player, slot, visitor);
+        }
+
+        if slot == 0 {
+            if let Some(item_entity) = self.as_item_merge_entity() {
+                let stack = item_entity.item_merge_stack();
+                visitor(&stack);
+                return EntityCommandItemSlotResult::Found;
+            }
+            return EntityCommandItemSlotResult::Missing;
+        }
+
+        let Some(equipment_slot) = command_item_slot_to_equipment_slot(slot) else {
+            return EntityCommandItemSlotResult::Missing;
+        };
+        let Some(living) = self.as_living_entity() else {
+            return EntityCommandItemSlotResult::Missing;
+        };
+
+        living.with_equipment_slot(equipment_slot, visitor);
+        EntityCommandItemSlotResult::Found
     }
 
     /// Returns true for mobs with pathfinding navigation.
@@ -6859,11 +6955,12 @@ mod tests {
     use super::{
         AttributeModifier, AttributeModifierOperation, DAMAGE_KNOCKBACK_POWER,
         DEFAULT_SWING_DURATION, DEFAULT_TICKS_REQUIRED_TO_FREEZE, Entity, EntityBase,
-        EntityDataLoadError, EntityFireFreezeState, EntityFluidContact, EntityLevelCallback,
-        EntityMoveError, EntitySyncedData, EntityVerticalMovementStateUpdate,
-        InsideBlockEffectType, LivingEntity, LivingEntityBase, LivingTravelInput, RemovalReason,
-        SPEED_MODIFIER_POWDER_SNOW_ID, SharedEntity, block_state_suffocates_eye_box,
-        closest_open_space_direction, fall_damage_reset_clip_target, fall_flying_collision_damage,
+        EntityCommandItemSlotResult, EntityDataLoadError, EntityFireFreezeState,
+        EntityFluidContact, EntityLevelCallback, EntityMoveError, EntitySyncedData,
+        EntityVerticalMovementStateUpdate, InsideBlockEffectType, LivingEntity, LivingEntityBase,
+        LivingTravelInput, RemovalReason, SPEED_MODIFIER_POWDER_SNOW_ID, SharedEntity,
+        block_state_suffocates_eye_box, closest_open_space_direction,
+        fall_damage_reset_clip_target, fall_flying_collision_damage,
         fall_flying_free_fall_interval, get_input_vector, should_apply_entity_cramming_damage,
         should_apply_resolved_movement, start_riding_entities, transfer_leashables_to_holder,
         trapdoor_usable_as_ladder_state,
@@ -8325,6 +8422,34 @@ mod tests {
 
         let non_living = PushableTestEntity::shared(2, DVec3::ZERO);
         assert!(non_living.as_living_entity().is_none());
+    }
+
+    #[test]
+    fn command_item_slot_reads_living_equipment() {
+        init_test_registry();
+        let entity = LivingFluidTestEntity::new(0.0, 0.0, true);
+        entity.equip(
+            EquipmentSlot::Head,
+            ItemStack::with_count(&vanilla_items::ITEMS.stone, 2),
+        );
+
+        let mut count = 0;
+        let result = entity.with_command_item_slot(103, &mut |item| {
+            count = item.count();
+        });
+
+        assert_eq!(result, EntityCommandItemSlotResult::Found);
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn command_item_slot_reports_player_only_missing_foundations() {
+        assert!(super::player_command_item_slot_unsupported(200));
+        assert!(super::player_command_item_slot_unsupported(226));
+        assert!(super::player_command_item_slot_unsupported(499));
+        assert!(super::player_command_item_slot_unsupported(500));
+        assert!(super::player_command_item_slot_unsupported(503));
+        assert!(!super::player_command_item_slot_unsupported(504));
     }
 
     #[test]
