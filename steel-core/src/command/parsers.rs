@@ -911,6 +911,76 @@ mod tests {
     }
 
     #[test]
+    fn item_predicate_matches_enchantment_component_predicates() {
+        init_test_registry();
+
+        let mut sword = ItemStack::new(&vanilla_items::ITEMS.diamond_sword);
+        sword.set_enchantments(&[(Identifier::vanilla_static("sharpness"), 3)], false);
+
+        let predicate = parse_item_predicate_for_test(
+            "diamond_sword[enchantments~[{enchantments:\"minecraft:sharpness\",levels:{min:2}}]]",
+        );
+        assert!(
+            predicate
+                .matches_stack(&sword)
+                .expect("predicate evaluates")
+        );
+
+        let predicate = parse_item_predicate_for_test(
+            "diamond_sword[enchantments~[{enchantments:\"minecraft:sharpness\",levels:{max:2}}]]",
+        );
+        assert!(
+            !predicate
+                .matches_stack(&sword)
+                .expect("predicate evaluates")
+        );
+
+        let predicate = parse_item_predicate_for_test("diamond_sword[enchantments~[{levels:3}]]");
+        assert!(
+            predicate
+                .matches_stack(&sword)
+                .expect("predicate evaluates")
+        );
+    }
+
+    #[test]
+    fn item_predicate_matches_enchantment_tag_predicates() {
+        init_test_registry();
+
+        let mut sword = ItemStack::new(&vanilla_items::ITEMS.diamond_sword);
+        sword.set_enchantments(&[(Identifier::vanilla_static("fire_aspect"), 1)], false);
+
+        let predicate = parse_item_predicate_for_test(
+            "diamond_sword[enchantments~[{enchantments:\"#minecraft:smelts_loot\"}]]",
+        );
+        assert!(
+            predicate
+                .matches_stack(&sword)
+                .expect("predicate evaluates")
+        );
+    }
+
+    #[test]
+    fn item_predicate_matches_stored_enchantment_component_predicates() {
+        init_test_registry();
+
+        let mut enchantments = vanilla_components::ItemEnchantments::empty();
+        enchantments.set(Identifier::vanilla_static("sharpness"), 2);
+        let mut book = ItemStack::new(&vanilla_items::ITEMS.enchanted_book);
+        book.set(vanilla_components::STORED_ENCHANTMENTS, enchantments);
+
+        let predicate = parse_item_predicate_for_test(
+            "enchanted_book[stored_enchantments~[{enchantments:\"minecraft:sharpness\",levels:2}]]",
+        );
+        assert!(predicate.matches_stack(&book).expect("predicate evaluates"));
+
+        let predicate = parse_item_predicate_for_test(
+            "enchanted_book[stored_enchantments~[{enchantments:\"minecraft:sharpness\",levels:3}]]",
+        );
+        assert!(!predicate.matches_stack(&book).expect("predicate evaluates"));
+    }
+
+    #[test]
     fn item_predicate_reports_malformed_component_predicates() {
         init_test_registry();
 
@@ -922,6 +992,30 @@ mod tests {
             error,
             ItemPredicateMatchError::MalformedComponentPredicate(key)
                 if key == Identifier::vanilla_static("damage")
+        ));
+
+        let predicate = parse_item_predicate_for_test(
+            "diamond_sword[enchantments~{enchantments:\"minecraft:sharpness\"}]",
+        );
+        let error = predicate
+            .matches_stack(&ItemStack::new(&vanilla_items::ITEMS.diamond_sword))
+            .expect_err("malformed predicate reports an error");
+        assert!(matches!(
+            error,
+            ItemPredicateMatchError::MalformedComponentPredicate(key)
+                if key == Identifier::vanilla_static("enchantments")
+        ));
+
+        let predicate = parse_item_predicate_for_test(
+            "diamond_sword[enchantments~[{enchantments:\"minecraft:missing\"}]]",
+        );
+        let error = predicate
+            .matches_stack(&ItemStack::new(&vanilla_items::ITEMS.diamond_sword))
+            .expect_err("malformed predicate reports an error");
+        assert!(matches!(
+            error,
+            ItemPredicateMatchError::MalformedComponentPredicate(key)
+                if key == Identifier::vanilla_static("enchantments")
         ));
     }
 

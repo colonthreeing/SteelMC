@@ -1,9 +1,9 @@
 use std::{fmt, sync::Arc};
 
 use glam::DVec3;
-use simdnbt::owned::{NbtCompound, NbtTag};
+use simdnbt::owned::{NbtCompound, NbtList, NbtTag};
 use steel_registry::{
-    REGISTRY, RegistryExt,
+    REGISTRY, RegistryExt, TaggedRegistryExt,
     biome::BiomeRef,
     blocks::BlockRef,
     data_components::{ComponentData, vanilla_components},
@@ -456,9 +456,8 @@ impl ItemPredicateArgumentValue {
     ///
     /// Steel currently supports the vanilla item/tag/type checks, component
     /// presence, exact-value checks for implemented data components, and the
-    /// `minecraft:count` pseudo-component/predicate. Data component predicate
-    /// types need a separate registry/evaluator foundation before they can be
-    /// matched here.
+    /// `minecraft:count`, `minecraft:damage`, `minecraft:enchantments`, and
+    /// `minecraft:stored_enchantments` predicate types.
     ///
     /// # Errors
     ///
@@ -564,6 +563,14 @@ fn predicate_value_matches(
         return damage_predicate_matches(value, stack);
     }
 
+    if is_enchantments_predicate_key(key) {
+        return enchantments_predicate_matches(value, stack);
+    }
+
+    if is_stored_enchantments_predicate_key(key) {
+        return stored_enchantments_predicate_matches(value, stack);
+    }
+
     if is_empty_compound(value) {
         return Ok(stack.has_component(key));
     }
@@ -611,6 +618,141 @@ fn parse_damage_predicate_range(value: &NbtTag) -> Result<CountRange, ItemPredic
     parse_count_range(value).map_err(|_| malformed_component_predicate("damage"))
 }
 
+fn enchantments_predicate_matches(
+    value: &NbtTag,
+    stack: &ItemStack,
+) -> Result<bool, ItemPredicateMatchError> {
+    let predicates = parse_enchantment_predicates(value, "enchantments")?;
+    let Some(enchantments) = stack.get(vanilla_components::ENCHANTMENTS) else {
+        return Ok(false);
+    };
+
+    Ok(predicates
+        .iter()
+        .all(|predicate| predicate.matches(enchantments)))
+}
+
+fn stored_enchantments_predicate_matches(
+    value: &NbtTag,
+    stack: &ItemStack,
+) -> Result<bool, ItemPredicateMatchError> {
+    let predicates = parse_enchantment_predicates(value, "stored_enchantments")?;
+    let Some(enchantments) = stack.get(vanilla_components::STORED_ENCHANTMENTS) else {
+        return Ok(false);
+    };
+
+    Ok(predicates
+        .iter()
+        .all(|predicate| predicate.matches(enchantments)))
+}
+
+fn parse_enchantment_predicates(
+    value: &NbtTag,
+    path: &'static str,
+) -> Result<Vec<EnchantmentPredicate>, ItemPredicateMatchError> {
+    match value {
+        NbtTag::List(NbtList::Empty) => Ok(Vec::new()),
+        NbtTag::List(NbtList::Compound(compounds)) => compounds
+            .iter()
+            .map(|compound| parse_enchantment_predicate(compound, path))
+            .collect(),
+        _ => Err(malformed_component_predicate(path)),
+    }
+}
+
+fn parse_enchantment_predicate(
+    compound: &NbtCompound,
+    path: &'static str,
+) -> Result<EnchantmentPredicate, ItemPredicateMatchError> {
+    let enchantments = compound
+        .get("enchantments")
+        .map(|value| parse_enchantment_holder_set(value, path))
+        .transpose()?;
+    let level = compound
+        .get("levels")
+        .map(|value| parse_enchantment_predicate_range(value, path))
+        .transpose()?
+        .unwrap_or_else(CountRange::any);
+
+    Ok(EnchantmentPredicate {
+        enchantments,
+        level,
+    })
+}
+
+fn parse_enchantment_holder_set(
+    value: &NbtTag,
+    path: &'static str,
+) -> Result<Vec<EnchantmentRef>, ItemPredicateMatchError> {
+    match value {
+        NbtTag::String(value) => parse_enchantment_holder(&value.to_string(), path),
+        NbtTag::List(NbtList::Empty) => Ok(Vec::new()),
+        NbtTag::List(NbtList::String(values)) => {
+            let mut enchantments = Vec::new();
+            for value in values {
+                enchantments.extend(parse_enchantment_holder(&value.to_string(), path)?);
+            }
+            Ok(enchantments)
+        }
+        _ => Err(malformed_component_predicate(path)),
+    }
+}
+
+fn parse_enchantment_holder(
+    value: &str,
+    path: &'static str,
+) -> Result<Vec<EnchantmentRef>, ItemPredicateMatchError> {
+    let Some(tag) = value.strip_prefix('#') else {
+        let Some(key) = parse_identifier_with_default_namespace(value) else {
+            return Err(malformed_component_predicate(path));
+        };
+        let Some(enchantment) = REGISTRY.enchantments.by_key(&key) else {
+            return Err(malformed_component_predicate(path));
+        };
+        return Ok(vec![enchantment]);
+    };
+
+    let Some(key) = parse_identifier_with_default_namespace(tag) else {
+        return Err(malformed_component_predicate(path));
+    };
+    REGISTRY
+        .enchantments
+        .get_tag(&key)
+        .ok_or_else(|| malformed_component_predicate(path))
+}
+
+fn parse_enchantment_predicate_range(
+    value: &NbtTag,
+    path: &'static str,
+) -> Result<CountRange, ItemPredicateMatchError> {
+    parse_count_range(value).map_err(|_| malformed_component_predicate(path))
+}
+
+#[derive(Clone, Debug)]
+struct EnchantmentPredicate {
+    enchantments: Option<Vec<EnchantmentRef>>,
+    level: CountRange,
+}
+
+impl EnchantmentPredicate {
+    fn matches(&self, enchantments: &vanilla_components::ItemEnchantments) -> bool {
+        if let Some(expected) = &self.enchantments {
+            return expected.iter().any(|enchantment| {
+                let level = enchantments.get_level(&enchantment.key);
+                level != 0 && self.level.matches_u32(level)
+            });
+        }
+
+        if !self.level.is_any() {
+            return enchantments
+                .iter()
+                .any(|(_, level)| self.level.matches_u32(*level));
+        }
+
+        !enchantments.is_empty()
+    }
+}
+
 fn malformed_component_predicate(path: &'static str) -> ItemPredicateMatchError {
     ItemPredicateMatchError::MalformedComponentPredicate(Identifier::vanilla_static(path))
 }
@@ -623,8 +765,27 @@ fn is_damage_predicate_key(key: &Identifier) -> bool {
     key.namespace == Identifier::VANILLA_NAMESPACE && key.path == "damage"
 }
 
+fn is_enchantments_predicate_key(key: &Identifier) -> bool {
+    key.namespace == Identifier::VANILLA_NAMESPACE && key.path == "enchantments"
+}
+
+fn is_stored_enchantments_predicate_key(key: &Identifier) -> bool {
+    key.namespace == Identifier::VANILLA_NAMESPACE && key.path == "stored_enchantments"
+}
+
 fn is_empty_compound(value: &NbtTag) -> bool {
     matches!(value, NbtTag::Compound(compound) if compound.is_empty())
+}
+
+fn parse_identifier_with_default_namespace(value: &str) -> Option<Identifier> {
+    let (namespace, path) = match value.split_once(':') {
+        Some(("", path)) => (Identifier::VANILLA_NAMESPACE, path),
+        Some((namespace, path)) => (namespace, path),
+        None => (Identifier::VANILLA_NAMESPACE, value),
+    };
+
+    Identifier::validate(namespace, path)
+        .then(|| Identifier::new(namespace.to_owned(), path.to_owned()))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -664,6 +825,25 @@ impl CountRange {
             return false;
         }
         true
+    }
+
+    fn matches_u32(self, value: u32) -> bool {
+        let value = i64::from(value);
+        if let Some(min) = self.min
+            && value < i64::from(min)
+        {
+            return false;
+        }
+        if let Some(max) = self.max
+            && value > i64::from(max)
+        {
+            return false;
+        }
+        true
+    }
+
+    const fn is_any(self) -> bool {
+        self.min.is_none() && self.max.is_none()
     }
 }
 
