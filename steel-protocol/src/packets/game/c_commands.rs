@@ -314,6 +314,9 @@ pub enum ArgumentType {
     ResourceKey {
         identifier: &'static str,
     },
+    ResourceSelector {
+        identifier: &'static str,
+    },
     TemplateMirror,
     TemplateRotation,
     Heightmap,
@@ -382,14 +385,15 @@ impl ArgumentType {
             Self::ResourceOrTagKey { .. } => 45,
             Self::Resource { .. } => 46,
             Self::ResourceKey { .. } => 47,
-            Self::TemplateMirror => 48,
-            Self::TemplateRotation => 49,
-            Self::Heightmap => 50,
-            Self::LootTable => 51,
-            Self::LootPredicate => 52,
-            Self::LootModifier => 53,
-            Self::Dialog => 54,
-            Self::Uuid => 55,
+            Self::ResourceSelector { .. } => 48,
+            Self::TemplateMirror => 49,
+            Self::TemplateRotation => 50,
+            Self::Heightmap => 51,
+            Self::LootTable => 52,
+            Self::LootPredicate => 53,
+            Self::LootModifier => 54,
+            Self::Dialog => 55,
+            Self::Uuid => 56,
         }
     }
 }
@@ -418,6 +422,7 @@ impl WriteTo for ArgumentType {
             Self::ResourceOrTagKey { identifier } => identifier.write_prefixed::<VarInt>(writer),
             Self::Resource { identifier } => identifier.write_prefixed::<VarInt>(writer),
             Self::ResourceKey { identifier } => identifier.write_prefixed::<VarInt>(writer),
+            Self::ResourceSelector { identifier } => identifier.write_prefixed::<VarInt>(writer),
             _ => Ok(()),
         }
     }
@@ -466,7 +471,7 @@ impl SuggestionType {
 
 #[cfg(test)]
 mod tests {
-    use super::{CommandNode, CommandNodeInfo};
+    use super::{ArgumentType, CommandNode, CommandNodeInfo};
     use steel_utils::serial::WriteTo;
 
     fn first_flag_byte(node: &CommandNode) -> u8 {
@@ -480,5 +485,25 @@ mod tests {
         let node = CommandNode::new_literal(CommandNodeInfo::new(Vec::new()).restricted(), "admin");
 
         assert_eq!(first_flag_byte(&node), 1 | CommandNode::FLAG_RESTRICTED);
+    }
+
+    #[test]
+    fn late_argument_type_ids_match_vanilla_registry_order() {
+        assert_eq!(
+            ArgumentType::ResourceKey {
+                identifier: "minecraft:worldgen/biome",
+            }
+            .discriminant(),
+            47
+        );
+        assert_eq!(
+            ArgumentType::ResourceSelector {
+                identifier: "minecraft:worldgen/biome",
+            }
+            .discriminant(),
+            48
+        );
+        assert_eq!(ArgumentType::TemplateMirror.discriminant(), 49);
+        assert_eq!(ArgumentType::Uuid.discriminant(), 56);
     }
 }
