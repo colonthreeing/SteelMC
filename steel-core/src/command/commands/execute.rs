@@ -1,14 +1,16 @@
 //! Handler for the "execute" command.
 //!
 //! Store callbacks, scoreboards, data/NBT paths, predicates, functions, item
-//! predicates, block predicates, region comparisons, and stopwatch predicates
-//! are not registered here yet because their backing foundations are not
-//! implemented in Steel's command/runtime layer.
+//! predicates, block predicates, and stopwatch predicates are not registered
+//! here yet because their backing foundations are not implemented in Steel's
+//! command/runtime layer.
 
 use std::{borrow::Cow, sync::Arc};
 
 use glam::DVec3;
+use simdnbt::owned::NbtCompound;
 use steel_protocol::packets::game::{ArgumentType, SuggestionEntry};
+use steel_registry::blocks::block_state_ext::BlockStateExt;
 use steel_registry::entity_type::EntityTypeRef;
 use steel_utils::{BlockPos, translations};
 use text_components::TextComponent;
@@ -175,6 +177,25 @@ fn conditionals(name: &'static str, expected: bool) -> CommandNodeBuilder {
                     fork_loaded_condition(context, arguments, expected)
                 }),
         ))
+        .then(literal("blocks").then(
+            argument("start", BlockPosParser).then(
+                argument("end", BlockPosParser).then(
+                    argument("destination", BlockPosParser)
+                        .then(blocks_conditional("all", expected, false))
+                        .then(blocks_conditional("masked", expected, true)),
+                ),
+            ),
+        ))
+}
+
+fn blocks_conditional(name: &'static str, expected: bool, skip_air: bool) -> CommandNodeBuilder {
+    literal(name)
+        .executes(move |context, arguments| {
+            execute_blocks_condition(context, arguments, expected, skip_air)
+        })
+        .forks(CommandRedirectTarget::Current, move |context, arguments| {
+            fork_blocks_condition(context, arguments, expected, skip_air)
+        })
 }
 
 fn on_relations() -> CommandNodeBuilder {
@@ -480,11 +501,127 @@ fn biome_condition_matches(
     Ok(biome_value(arguments)?.matches_biome(biome))
 }
 
+fn execute_blocks_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+    skip_air: bool,
+) -> Result<CommandResult, CommandError> {
+    let count = matching_block_region_count(context, arguments, skip_air)?;
+    if expected {
+        if let Some(count) = count {
+            send_condition_pass_count(context, count);
+            return Ok(CommandResult {
+                success_count: success_count(count),
+            });
+        }
+        return Err(conditional_failed(0));
+    }
+
+    if let Some(count) = count {
+        Err(conditional_failed(count))
+    } else {
+        send_condition_pass(context);
+        Ok(CommandResult::success())
+    }
+}
+
+fn fork_blocks_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+    skip_air: bool,
+) -> Result<Vec<CommandContext>, CommandError> {
+    let matches = matching_block_region_count(context, arguments, skip_air)?.is_some();
+    Ok(if matches == expected {
+        vec![context.clone()]
+    } else {
+        Vec::new()
+    })
+}
+
+fn matching_block_region_count(
+    context: &CommandContext,
+    arguments: &ParsedArguments,
+    skip_air: bool,
+) -> Result<Option<usize>, CommandError> {
+    const MAX_BLOCKS_REGION: i64 = 32_768;
+
+    let start = loaded_named_block_position(context, arguments, "start")?;
+    let end = loaded_named_block_position(context, arguments, "end")?;
+    let destination = loaded_named_block_position(context, arguments, "destination")?;
+    let source_region = BlockRegion::from_corners(start, end);
+    let area = source_region.area();
+    if area > MAX_BLOCKS_REGION {
+        return Err(blocks_too_big_error(area));
+    }
+
+    let offset_x = destination.x() - source_region.min.x();
+    let offset_y = destination.y() - source_region.min.y();
+    let offset_z = destination.z() - source_region.min.z();
+    let mut count = 0;
+    for z in source_region.min.z()..=source_region.max.z() {
+        for y in source_region.min.y()..=source_region.max.y() {
+            for x in source_region.min.x()..=source_region.max.x() {
+                let source_pos = BlockPos::new(x, y, z);
+                let source_state = context.world.get_block_state(source_pos);
+                if skip_air && source_state.is_air() {
+                    continue;
+                }
+
+                let destination_pos = source_pos.offset(offset_x, offset_y, offset_z);
+                if source_state != context.world.get_block_state(destination_pos) {
+                    return Ok(None);
+                }
+                if !block_entities_match(&context.world, source_pos, destination_pos) {
+                    return Ok(None);
+                }
+
+                count += 1;
+            }
+        }
+    }
+
+    Ok(Some(count))
+}
+
+fn block_entities_match(world: &Arc<World>, source_pos: BlockPos, destination_pos: BlockPos) -> bool {
+    let Some(source_entity) = world.get_block_entity(source_pos) else {
+        return true;
+    };
+    let Some(destination_entity) = world.get_block_entity(destination_pos) else {
+        return false;
+    };
+    if Arc::ptr_eq(&source_entity, &destination_entity) {
+        return true;
+    }
+
+    let source_entity = source_entity.lock();
+    let destination_entity = destination_entity.lock();
+    if source_entity.get_type() != destination_entity.get_type() {
+        return false;
+    }
+
+    let mut source_nbt = NbtCompound::new();
+    source_entity.save_additional(&mut source_nbt);
+    let mut destination_nbt = NbtCompound::new();
+    destination_entity.save_additional(&mut destination_nbt);
+    source_nbt == destination_nbt
+}
+
 fn loaded_block_position(
     context: &CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<BlockPos, CommandError> {
-    let pos = block_position(arguments)?;
+    loaded_named_block_position(context, arguments, "pos")
+}
+
+fn loaded_named_block_position(
+    context: &CommandContext,
+    arguments: &ParsedArguments,
+    name: &'static str,
+) -> Result<BlockPos, CommandError> {
+    let pos = named_block_position(arguments, name)?;
     if !context.world.is_full_chunk_loaded_at(pos) {
         return Err(position_error("argument.pos.unloaded"));
     }
@@ -499,6 +636,17 @@ fn position_error(key: &'static str) -> CommandError {
         key: Cow::Borrowed(key),
         fallback: None,
         args: None,
+    }))
+}
+
+fn blocks_too_big_error(area: i64) -> CommandError {
+    CommandError::failure(TextComponent::translated(TranslatedMessage {
+        key: Cow::Borrowed("commands.execute.blocks.toobig"),
+        fallback: None,
+        args: Some(Box::new([
+            TextComponent::from("32768"),
+            TextComponent::from(area.to_string()),
+        ])),
     }))
 }
 
@@ -607,8 +755,15 @@ fn position(arguments: &ParsedArguments) -> Result<DVec3, CommandError> {
 }
 
 fn block_position(arguments: &ParsedArguments) -> Result<BlockPos, CommandError> {
+    named_block_position(arguments, "pos")
+}
+
+fn named_block_position(
+    arguments: &ParsedArguments,
+    name: &'static str,
+) -> Result<BlockPos, CommandError> {
     arguments
-        .get::<BlockPos>("pos")
+        .get::<BlockPos>(name)
         .map_err(super::invalid_parsed_argument)
 }
 
@@ -741,6 +896,28 @@ fn is_valid_axes(axes: &str) -> bool {
     true
 }
 
+#[derive(Clone, Copy, Debug)]
+struct BlockRegion {
+    min: BlockPos,
+    max: BlockPos,
+}
+
+impl BlockRegion {
+    fn from_corners(first: BlockPos, second: BlockPos) -> Self {
+        Self {
+            min: BlockPos::min(first, second),
+            max: BlockPos::max(first, second),
+        }
+    }
+
+    fn area(self) -> i64 {
+        let x_span = i64::from(self.max.x() - self.min.x()) + 1;
+        let y_span = i64::from(self.max.y() - self.min.y()) + 1;
+        let z_span = i64::from(self.max.z() - self.min.z()) + 1;
+        x_span * y_span * z_span
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use glam::DVec3;
@@ -820,5 +997,43 @@ mod tests {
             .parse("execute positioned over motion_blocking run seed", &context)
             .expect("positioned over parses");
         assert_eq!(parsed.path(), ["execute", "positioned", "over", "heightmap"]);
+    }
+
+    #[test]
+    fn blocks_condition_parses_direct_and_redirect_forms() {
+        let graph = graph();
+        let context = TestContext;
+
+        let direct = graph
+            .parse("execute if blocks 0 64 0 1 64 1 10 64 10 all", &context)
+            .expect("direct blocks conditional parses");
+        assert_eq!(
+            direct.path(),
+            [
+                "execute",
+                "if",
+                "blocks",
+                "start",
+                "end",
+                "destination",
+                "all"
+            ]
+        );
+
+        let redirected = graph
+            .parse("execute unless blocks 0 64 0 1 64 1 10 64 10 masked run seed", &context)
+            .expect("redirected blocks conditional parses");
+        assert_eq!(
+            redirected.path(),
+            [
+                "execute",
+                "unless",
+                "blocks",
+                "start",
+                "end",
+                "destination",
+                "masked"
+            ]
+        );
     }
 }
