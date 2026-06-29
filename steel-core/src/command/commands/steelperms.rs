@@ -8,9 +8,9 @@ use text_components::TextComponent;
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    BoolParser, CommandArgumentParser, CommandNodeBuilder, CommandParseError,
-    CommandParseErrorKind, CommandResult, IntegerParser, LongParser, ParsedArgument,
-    ParsedArguments, PermissionTarget, StringParser, argument, literal,
+    BoolParser, CommandArgumentClientParser, CommandArgumentParser, CommandNodeBuilder,
+    CommandParseError, CommandParseErrorKind, CommandResult, IntegerParser, LongParser,
+    ParsedArgument, ParsedArguments, PermissionTarget, StringParser, argument, literal,
 };
 use crate::command::parsers::{
     DomainParser, PermissionGroupParser, PermissionRuleExpressionParser, PermissionTargetParser,
@@ -380,8 +380,8 @@ impl CommandArgumentParser for PermissionOverrideParser {
         PermissionRuleExpressionParser.parse(reader, context)
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        PermissionRuleExpressionParser.usage()
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        PermissionRuleExpressionParser.client_parser()
     }
 
     fn parsed_type(&self) -> &'static str {
@@ -438,8 +438,8 @@ impl CommandArgumentParser for PermissionAssignedGroupParser {
         Ok(ParsedArgument::String(value))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        PermissionGroupParser.usage()
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        PermissionGroupParser.client_parser()
     }
 
     fn parsed_type(&self) -> &'static str {
@@ -488,8 +488,8 @@ impl CommandArgumentParser for PermissionGroupNameParser {
         Ok(ParsedArgument::String(value))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        PermissionGroupParser.usage()
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        PermissionGroupParser.client_parser()
     }
 
     fn parsed_type(&self) -> &'static str {
@@ -536,8 +536,8 @@ impl CommandArgumentParser for PermissionGroupRuleParser {
         PermissionRuleExpressionParser.parse(reader, context)
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        PermissionRuleExpressionParser.usage()
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        PermissionRuleExpressionParser.client_parser()
     }
 
     fn parsed_type(&self) -> &'static str {
@@ -586,8 +586,8 @@ impl CommandArgumentParser for PermissionContextKeyParser {
         Ok(ParsedArgument::String(value))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(
             ArgumentType::String {
                 behavior: steel_protocol::packets::game::ArgumentStringTypeBehavior::SingleWord,
             },
@@ -639,8 +639,8 @@ impl CommandArgumentParser for PermissionContextValueParser {
             .map(ParsedArgument::String)
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(
             ArgumentType::String {
                 behavior: steel_protocol::packets::game::ArgumentStringTypeBehavior::SingleWord,
             },
@@ -697,8 +697,8 @@ impl CommandArgumentParser for PermissionMetadataKeyParser {
         Ok(ParsedArgument::Identifier(key))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(
             ArgumentType::ResourceLocation,
             Some(SuggestionType::AskServer),
         )
@@ -742,8 +742,8 @@ impl CommandArgumentParser for PermissionMetadataOverrideParser {
         PermissionMetadataKeyParser.parse(reader, context)
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(
             ArgumentType::ResourceLocation,
             Some(SuggestionType::AskServer),
         )
@@ -794,8 +794,8 @@ impl CommandArgumentParser for PermissionGroupMetadataParser {
         PermissionMetadataKeyParser.parse(reader, context)
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(
             ArgumentType::ResourceLocation,
             Some(SuggestionType::AskServer),
         )
@@ -3328,22 +3328,29 @@ mod tests {
 
     #[test]
     fn metadata_key_parser_requests_server_suggestions() {
+        let (_, suggestion_type) = PermissionMetadataKeyParser
+            .client_parser()
+            .into_protocol_argument();
         assert!(matches!(
-            PermissionMetadataKeyParser.usage().1,
+            suggestion_type,
             Some(steel_protocol::packets::game::SuggestionType::AskServer)
         ));
     }
 
     #[test]
     fn context_key_and_value_parsers_request_server_suggestions() {
+        let (_, key_suggestion_type) = PermissionContextKeyParser
+            .client_parser()
+            .into_protocol_argument();
         assert!(matches!(
-            PermissionContextKeyParser.usage().1,
+            key_suggestion_type,
             Some(steel_protocol::packets::game::SuggestionType::AskServer)
         ));
+        let (_, value_suggestion_type) = PermissionContextValueParser::new("context_custom_key")
+            .client_parser()
+            .into_protocol_argument();
         assert!(matches!(
-            PermissionContextValueParser::new("context_custom_key")
-                .usage()
-                .1,
+            value_suggestion_type,
             Some(steel_protocol::packets::game::SuggestionType::AskServer)
         ));
     }

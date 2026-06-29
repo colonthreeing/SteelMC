@@ -9,6 +9,40 @@ use crate::command::{
     requirement::CommandInputContext,
 };
 
+/// Command argument parser metadata advertised to vanilla clients.
+pub struct CommandArgumentClientParser {
+    argument_type: ArgumentType,
+    suggestion_type: Option<SuggestionType>,
+}
+
+impl CommandArgumentClientParser {
+    /// Creates client parser metadata.
+    #[must_use]
+    pub const fn new(argument_type: ArgumentType, suggestion_type: Option<SuggestionType>) -> Self {
+        Self {
+            argument_type,
+            suggestion_type,
+        }
+    }
+
+    /// Returns whether the client parser consumes the rest of the command input.
+    #[must_use]
+    pub const fn is_greedy_phrase(&self) -> bool {
+        matches!(
+            &self.argument_type,
+            ArgumentType::String {
+                behavior: ArgumentStringTypeBehavior::GreedyPhrase,
+            }
+        )
+    }
+
+    /// Converts this metadata into the protocol argument tuple.
+    #[must_use]
+    pub fn into_protocol_argument(self) -> (ArgumentType, Option<SuggestionType>) {
+        (self.argument_type, self.suggestion_type)
+    }
+}
+
 /// Dynamic command argument parser.
 pub trait CommandArgumentParser: Send + Sync {
     /// Parses one argument at the reader cursor.
@@ -22,8 +56,14 @@ pub trait CommandArgumentParser: Send + Sync {
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError>;
 
-    /// Returns protocol parser metadata for this argument.
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>);
+    /// Returns the parser shape advertised to vanilla clients.
+    ///
+    /// This is intentionally separate from [`Self::parse`]. A Steel parser can
+    /// validate stricter syntax than the vanilla client knows how to parse.
+    /// For example, permission expressions are one strict server-side token,
+    /// but need `greedyString` client metadata because Brigadier `word()`
+    /// accepts only a hardcoded unquoted character set.
+    fn client_parser(&self) -> CommandArgumentClientParser;
 
     /// Returns the parsed argument type stored by this parser.
     fn parsed_type(&self) -> &'static str;
@@ -62,8 +102,8 @@ impl CommandArgumentParser for BoolParser {
         }
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (ArgumentType::Bool, None)
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(ArgumentType::Bool, None)
     }
 
     fn parsed_type(&self) -> &'static str {
@@ -107,8 +147,8 @@ impl CommandArgumentParser for AnchorParser {
         }
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (ArgumentType::EntityAnchor, None)
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(ArgumentType::EntityAnchor, None)
     }
 
     fn parsed_type(&self) -> &'static str {
@@ -186,8 +226,8 @@ impl CommandArgumentParser for IntegerParser {
         Ok(ParsedArgument::I32(value))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(
             ArgumentType::Integer {
                 min: self.min,
                 max: self.max,
@@ -258,8 +298,8 @@ impl CommandArgumentParser for LongParser {
         Ok(ParsedArgument::I64(value))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(
             ArgumentType::Long {
                 min: self.min,
                 max: self.max,
@@ -330,8 +370,8 @@ impl CommandArgumentParser for FloatParser {
         Ok(ParsedArgument::F32(value))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(
             ArgumentType::Float {
                 min: self.min,
                 max: self.max,
@@ -368,14 +408,14 @@ impl CommandArgumentParser for StringParser {
         reader.read_string(self.mode).map(ParsedArgument::String)
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+    fn client_parser(&self) -> CommandArgumentClientParser {
         let behavior = match self.mode {
             StringMode::SingleWord => ArgumentStringTypeBehavior::SingleWord,
             StringMode::QuotablePhrase => ArgumentStringTypeBehavior::QuotablePhrase,
             StringMode::GreedyPhrase => ArgumentStringTypeBehavior::GreedyPhrase,
         };
 
-        (ArgumentType::String { behavior }, None)
+        CommandArgumentClientParser::new(ArgumentType::String { behavior }, None)
     }
 
     fn parsed_type(&self) -> &'static str {

@@ -3,15 +3,15 @@
 
 use std::sync::Arc;
 
-use steel_protocol::packets::game::{ArgumentType, SuggestionEntry, SuggestionType};
+use steel_protocol::packets::game::SuggestionEntry;
 use steel_utils::translations;
 use text_components::TextComponent;
 
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandArgumentParser, CommandNodeBuilder, CommandParseError, CommandResult, ParsedArgument,
-    ParsedArguments, PermissionTarget, argument, literal,
+    CommandArgumentClientParser, CommandArgumentParser, CommandNodeBuilder, CommandParseError,
+    CommandResult, ParsedArgument, ParsedArguments, PermissionTarget, argument, literal,
 };
 use crate::command::parsers::PermissionTargetParser;
 use crate::command::reader::CommandReader;
@@ -145,8 +145,8 @@ impl CommandArgumentParser for DeOpTargetsParser {
         PermissionTargetParser.parse(reader, context)
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        PermissionTargetParser.usage()
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        PermissionTargetParser.client_parser()
     }
 
     fn parsed_type(&self) -> &'static str {

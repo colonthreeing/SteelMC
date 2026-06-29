@@ -21,8 +21,9 @@ use crate::{
     command::{
         context::EntityAnchor,
         graph::{
-            CommandArgumentParser, CommandParseError, CommandParseErrorKind, ParsedArgument,
-            ParsedArguments, PermissionTarget, StructureArgumentValue,
+            CommandArgumentClientParser, CommandArgumentParser, CommandParseError,
+            CommandParseErrorKind, ParsedArgument, ParsedArguments, PermissionTarget,
+            StructureArgumentValue,
         },
         reader::{CommandReader, StringMode},
         requirement::CommandInputContext,
@@ -60,8 +61,8 @@ impl CommandArgumentParser for GameModeParser {
         Ok(ParsedArgument::GameMode(game_mode))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (ArgumentType::Gamemode, None)
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(ArgumentType::Gamemode, None)
     }
 
     fn parsed_type(&self) -> &'static str {
@@ -179,8 +180,8 @@ impl CommandArgumentParser for PlayerParser {
         Ok(ParsedArgument::Players(targets))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(
             ArgumentType::Entity {
                 flags: 2 | u8::from(self.one),
             },
@@ -308,8 +309,8 @@ impl CommandArgumentParser for PermissionTargetParser {
         Ok(ParsedArgument::PermissionTargets(targets))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (ArgumentType::GameProfile, Some(SuggestionType::AskServer))
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(ArgumentType::GameProfile, Some(SuggestionType::AskServer))
     }
 
     fn parsed_type(&self) -> &'static str {
@@ -372,8 +373,8 @@ impl CommandArgumentParser for PermissionKeyParser {
         Ok(ParsedArgument::PermissionKey(permission))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(
             ArgumentType::String {
                 behavior: steel_protocol::packets::game::ArgumentStringTypeBehavior::GreedyPhrase,
             },
@@ -425,8 +426,8 @@ impl CommandArgumentParser for PermissionRuleExpressionParser {
         Ok(ParsedArgument::PermissionRuleExpression(expression))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(
             ArgumentType::String {
                 behavior: steel_protocol::packets::game::ArgumentStringTypeBehavior::GreedyPhrase,
             },
@@ -644,8 +645,8 @@ impl CommandArgumentParser for PermissionGroupParser {
         Ok(ParsedArgument::String(value))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(
             ArgumentType::String {
                 behavior: steel_protocol::packets::game::ArgumentStringTypeBehavior::SingleWord,
             },
@@ -783,8 +784,8 @@ impl CommandArgumentParser for EntityParser {
         Ok(ParsedArgument::Entities(targets))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(
             ArgumentType::Entity {
                 flags: 2 | u8::from(self.one),
             },
@@ -851,8 +852,8 @@ impl CommandArgumentParser for EntitySummonParser {
         Ok(ParsedArgument::EntityType(entity_type))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(
             ArgumentType::Resource {
                 identifier: "minecraft:entity_type",
             },
@@ -936,8 +937,8 @@ impl CommandArgumentParser for ItemParser {
         Ok(ParsedArgument::Item(item))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (ArgumentType::ItemStack, Some(SuggestionType::AskServer))
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(ArgumentType::ItemStack, Some(SuggestionType::AskServer))
     }
 
     fn parsed_type(&self) -> &'static str {
@@ -990,8 +991,8 @@ impl CommandArgumentParser for EnchantmentParser {
         Ok(ParsedArgument::Enchantment(enchantment))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(
             ArgumentType::Resource {
                 identifier: "minecraft:enchantment",
             },
@@ -1082,8 +1083,8 @@ impl CommandArgumentParser for StructureParser {
         ))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(
             ArgumentType::ResourceOrTagKey {
                 identifier: "minecraft:worldgen/structure",
             },
@@ -1179,8 +1180,8 @@ impl CommandArgumentParser for DomainParser {
         Ok(ParsedArgument::String(domain))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(
             ArgumentType::ResourceLocation,
             Some(SuggestionType::AskServer),
         )
@@ -1254,8 +1255,8 @@ impl CommandArgumentParser for WorldParser {
         Ok(ParsedArgument::World(world))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (ArgumentType::Dimension, Some(SuggestionType::AskServer))
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(ArgumentType::Dimension, Some(SuggestionType::AskServer))
     }
 
     fn parsed_type(&self) -> &'static str {
@@ -1350,8 +1351,8 @@ impl CommandArgumentParser for Vec3Parser {
         Ok(ParsedArgument::Vec3(DVec3::new(x, y, z)))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (ArgumentType::Vec3, None)
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(ArgumentType::Vec3, None)
     }
 
     fn parsed_type(&self) -> &'static str {
@@ -1418,8 +1419,8 @@ impl CommandArgumentParser for BlockPosParser {
         Ok(ParsedArgument::BlockPos(BlockPos::containing(x, y, z)))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (ArgumentType::BlockPos, None)
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(ArgumentType::BlockPos, None)
     }
 
     fn parsed_type(&self) -> &'static str {
@@ -1460,8 +1461,8 @@ impl CommandArgumentParser for RotationParser {
         Ok(ParsedArgument::Rotation(normalize_rotation((yaw, pitch))))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (ArgumentType::Rotation, None)
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(ArgumentType::Rotation, None)
     }
 
     fn parsed_type(&self) -> &'static str {
@@ -1623,8 +1624,8 @@ impl CommandArgumentParser for ComponentParser {
         Ok(ParsedArgument::Component(Box::new(component)))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (ArgumentType::Component, None)
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(ArgumentType::Component, None)
     }
 
     fn parsed_type(&self) -> &'static str {
@@ -1678,8 +1679,8 @@ impl CommandArgumentParser for TimeParser {
         Ok(ParsedArgument::I32(ticks.round() as i32))
     }
 
-    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
-        (ArgumentType::Time { min: 0 }, None)
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(ArgumentType::Time { min: 0 }, None)
     }
 
     fn parsed_type(&self) -> &'static str {
@@ -1850,32 +1851,43 @@ mod tests {
 
     #[test]
     fn permission_management_parsers_request_server_suggestions() {
+        let (permission_key_argument, permission_key_suggestion) =
+            PermissionKeyParser.client_parser().into_protocol_argument();
         assert!(matches!(
-            PermissionKeyParser.usage().0,
+            permission_key_argument,
             steel_protocol::packets::game::ArgumentType::String {
                 behavior: steel_protocol::packets::game::ArgumentStringTypeBehavior::GreedyPhrase
             }
         ));
         assert!(matches!(
-            PermissionKeyParser.usage().1,
-            Some(SuggestionType::AskServer)
+            permission_key_suggestion,
+            Some(SuggestionType::AskServer),
         ));
+
+        let (expression_argument, expression_suggestion) = PermissionRuleExpressionParser
+            .client_parser()
+            .into_protocol_argument();
         assert!(matches!(
-            PermissionRuleExpressionParser.usage().0,
+            expression_argument,
             steel_protocol::packets::game::ArgumentType::String {
                 behavior: steel_protocol::packets::game::ArgumentStringTypeBehavior::GreedyPhrase
             }
         ));
         assert!(matches!(
-            PermissionRuleExpressionParser.usage().1,
-            Some(SuggestionType::AskServer)
+            expression_suggestion,
+            Some(SuggestionType::AskServer),
         ));
+
+        let (_, group_suggestion) = super::PermissionGroupParser
+            .client_parser()
+            .into_protocol_argument();
+        assert!(matches!(group_suggestion, Some(SuggestionType::AskServer),));
+
+        let (target_argument, _) = PermissionTargetParser
+            .client_parser()
+            .into_protocol_argument();
         assert!(matches!(
-            super::PermissionGroupParser.usage().1,
-            Some(SuggestionType::AskServer)
-        ));
-        assert!(matches!(
-            PermissionTargetParser.usage().0,
+            target_argument,
             steel_protocol::packets::game::ArgumentType::GameProfile
         ));
     }

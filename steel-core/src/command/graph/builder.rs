@@ -155,6 +155,7 @@ impl CommandNodeBuilder {
 
     pub(super) fn build(self) -> Result<CommandNode, CommandGraphError> {
         self.kind.validate()?;
+        self.validate_client_parser_contract()?;
         if !self.dynamic_permissions.is_empty() {
             return Err(CommandGraphError::UnresolvedDynamicPermission {
                 name: self.kind.display_name().to_owned(),
@@ -177,6 +178,20 @@ impl CommandNodeBuilder {
             redirect: self.redirect,
             dynamic_permissions: self.resolved_dynamic_permissions,
         })
+    }
+
+    fn validate_client_parser_contract(&self) -> Result<(), CommandGraphError> {
+        let CommandNodeKind::Argument { name, parser } = &self.kind else {
+            return Ok(());
+        };
+
+        if parser.client_parser().is_greedy_phrase()
+            && (!self.children.is_empty() || self.redirect.is_some())
+        {
+            return Err(CommandGraphError::GreedyClientParserMustBeTerminal { name: name.clone() });
+        }
+
+        Ok(())
     }
 
     pub(crate) fn resolve_subcommand_permissions(

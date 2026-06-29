@@ -26,8 +26,8 @@ pub use arguments::{
 pub use builder::{CommandNodeBuilder, argument, literal};
 use node::{CommandNode, CommandNodeKind, merge_or_push_node};
 pub use primitive_parsers::{
-    AnchorParser, BoolParser, CommandArgumentParser, FloatParser, IntegerParser, LongParser,
-    StringParser,
+    AnchorParser, BoolParser, CommandArgumentClientParser, CommandArgumentParser, FloatParser,
+    IntegerParser, LongParser, StringParser,
 };
 use traversal::{parse_children, suggest_children};
 
@@ -279,6 +279,11 @@ pub enum CommandGraphError {
         /// Type produced by the parser.
         actual: &'static str,
     },
+    /// A client-side greedy string parser was registered with unreachable tail nodes.
+    GreedyClientParserMustBeTerminal {
+        /// Argument node name.
+        name: String,
+    },
 }
 
 impl fmt::Display for CommandGraphError {
@@ -330,6 +335,12 @@ impl fmt::Display for CommandGraphError {
                 write!(
                     f,
                     "dynamic permission on command node '{node}' references argument '{argument}' as {expected}, but parser stores {actual}"
+                )
+            }
+            Self::GreedyClientParserMustBeTerminal { name } => {
+                write!(
+                    f,
+                    "argument '{name}' advertises a greedy client parser and cannot have child nodes or redirects"
                 )
             }
         }
@@ -880,6 +891,42 @@ mod tests {
             CommandGraphError::InvalidArgumentName {
                 name: String::new(),
                 source: CommandNodeNameError::Empty
+            }
+        );
+    }
+
+    #[test]
+    fn registration_rejects_greedy_client_parser_children() {
+        let error = graph_registration_error(
+            literal("root").then(
+                argument("message", StringParser::new(StringMode::GreedyPhrase))
+                    .then(literal("tail").executes(|_, _| Ok(CommandResult::success()))),
+            ),
+        );
+
+        assert_eq!(
+            error,
+            CommandGraphError::GreedyClientParserMustBeTerminal {
+                name: "message".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn registration_rejects_greedy_client_parser_redirects() {
+        let error = graph_registration_error(
+            literal("root").then(
+                argument("message", StringParser::new(StringMode::GreedyPhrase))
+                    .redirects(CommandRedirectTarget::All, |_, _| {
+                        Ok(CommandResult::success())
+                    }),
+            ),
+        );
+
+        assert_eq!(
+            error,
+            CommandGraphError::GreedyClientParserMustBeTerminal {
+                name: "message".to_owned(),
             }
         );
     }

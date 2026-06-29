@@ -88,9 +88,11 @@ impl CommandNode {
 
         buffer[node_index] = match &self.kind {
             CommandNodeKind::Literal(name) => ProtocolCommandNode::new_literal(info, name.clone()),
-            CommandNodeKind::Argument { name, parser } => {
-                ProtocolCommandNode::new_argument(info, name.clone(), parser.usage())
-            }
+            CommandNodeKind::Argument { name, parser } => ProtocolCommandNode::new_argument(
+                info,
+                name.clone(),
+                parser.client_parser().into_protocol_argument(),
+            ),
         };
     }
 
