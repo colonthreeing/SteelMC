@@ -1,6 +1,7 @@
 //! Permission keys, expressions, and effective permission evaluation.
 
 use std::{
+    cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt,
@@ -87,6 +88,7 @@ impl PermissionRuleContext {
                 context => push_unique_context(&mut flattened, context),
             }
         }
+        flattened.sort_by(compare_rule_contexts);
 
         match flattened.len() {
             0 => Self::Global,
@@ -148,6 +150,44 @@ fn push_unique_context(contexts: &mut Vec<PermissionRuleContext>, context: Permi
         return;
     }
     contexts.push(context);
+}
+
+fn compare_rule_contexts(left: &PermissionRuleContext, right: &PermissionRuleContext) -> Ordering {
+    rule_context_rank(left)
+        .cmp(&rule_context_rank(right))
+        .then_with(|| match (left, right) {
+            (PermissionRuleContext::Domain(left), PermissionRuleContext::Domain(right)) => {
+                left.cmp(right)
+            }
+            (PermissionRuleContext::World(left), PermissionRuleContext::World(right)) => left
+                .namespace
+                .cmp(&right.namespace)
+                .then_with(|| left.path.cmp(&right.path)),
+            (
+                PermissionRuleContext::Custom {
+                    key: left_key,
+                    value: left_value,
+                },
+                PermissionRuleContext::Custom {
+                    key: right_key,
+                    value: right_value,
+                },
+            ) => left_key
+                .as_str()
+                .cmp(right_key.as_str())
+                .then_with(|| left_value.cmp(right_value)),
+            _ => Ordering::Equal,
+        })
+}
+
+const fn rule_context_rank(context: &PermissionRuleContext) -> u8 {
+    match context {
+        PermissionRuleContext::Domain(_) => 0,
+        PermissionRuleContext::World(_) => 1,
+        PermissionRuleContext::Custom { .. } => 2,
+        PermissionRuleContext::Global => 3,
+        PermissionRuleContext::All(_) => 4,
+    }
 }
 
 /// Invalid permission rule context.
@@ -2695,6 +2735,14 @@ mod tests {
         )
     }
 
+    fn rule_custom_context(key: &str, value: &str) -> PermissionRuleContext {
+        PermissionRuleContext::custom(
+            PermissionSegment::parse(key).expect("context key parses"),
+            value,
+        )
+        .expect("custom context parses")
+    }
+
     fn config_with_builder_group() -> PermissionGroupsConfig {
         let mut config = PermissionGroupsConfig::default();
         config.groups.insert(
@@ -2893,11 +2941,7 @@ mod tests {
     fn chained_context_specificity_beats_single_context() {
         let fly = key("steel.fly");
         let world = PermissionRuleContext::world(Identifier::new("lobby", "spawn"));
-        let region = PermissionRuleContext::custom(
-            PermissionSegment::parse("region").expect("context key parses"),
-            "spawn",
-        )
-        .expect("custom context parses");
+        let region = rule_custom_context("region", "spawn");
         let permissions = PermissionSet::from_entries([
             PermissionEntry::allow_with_context(fly.clone(), world.clone()),
             PermissionEntry::deny_with_context(
@@ -2914,6 +2958,59 @@ mod tests {
 
         assert!(!permissions.allows_key_in(&fly, &matching_context));
         assert!(permissions.allows_key_in(&fly, &world_context("lobby", "spawn")));
+    }
+
+    #[test]
+    fn chained_rule_contexts_are_canonicalized() {
+        let domain = PermissionRuleContext::domain("lobby");
+        let world = PermissionRuleContext::world(Identifier::new("lobby", "spawn"));
+        let owner = rule_custom_context("owner", "builders");
+        let region = rule_custom_context("region", "spawn");
+
+        let first = PermissionRuleContext::all([
+            region.clone(),
+            world.clone(),
+            domain.clone(),
+            owner.clone(),
+        ]);
+        let second = PermissionRuleContext::all([owner, domain, region, world]);
+
+        assert_eq!(first, second);
+        assert_eq!(
+            first.to_string(),
+            "domain lobby + world lobby:spawn + owner builders + region spawn"
+        );
+    }
+
+    #[test]
+    fn configured_chained_rule_contexts_are_canonicalized() {
+        let config = super::PermissionRuleContextConfig {
+            domain: Some("lobby".to_owned()),
+            world: Some("lobby:spawn".to_owned()),
+            custom: vec![
+                super::PermissionRuleCustomContextConfig {
+                    key: "region".to_owned(),
+                    value: "spawn".to_owned(),
+                },
+                super::PermissionRuleCustomContextConfig {
+                    key: "owner".to_owned(),
+                    value: "builders".to_owned(),
+                },
+            ],
+        };
+        let expected = PermissionRuleContext::all([
+            rule_custom_context("owner", "builders"),
+            PermissionRuleContext::world(Identifier::new("lobby", "spawn")),
+            rule_custom_context("region", "spawn"),
+            PermissionRuleContext::domain("lobby"),
+        ]);
+
+        assert_eq!(
+            config
+                .into_rule_context()
+                .expect("configured context is valid"),
+            expected
+        );
     }
 
     #[test]
