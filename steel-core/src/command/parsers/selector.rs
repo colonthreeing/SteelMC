@@ -23,6 +23,7 @@ use crate::{
         parsers::parse_resource_identifier,
         reader::{CommandReader, StringMode},
         requirement::CommandInputContext,
+        suggestions::matches_suggestion_substr,
     },
     entity::{Entity, SharedEntity},
     player::Player,
@@ -34,6 +35,42 @@ const SORT_NEAREST: &str = "nearest";
 const SORT_FURTHEST: &str = "furthest";
 const SORT_RANDOM: &str = "random";
 const SORT_ARBITRARY: &str = "arbitrary";
+const SELECTOR_OPTION_KEYS: &[&str] = &[
+    "name",
+    "distance",
+    "level",
+    "x",
+    "y",
+    "z",
+    "dx",
+    "dy",
+    "dz",
+    "x_rotation",
+    "y_rotation",
+    "limit",
+    "sort",
+    "gamemode",
+    "type",
+    "tag",
+    "nbt",
+    "scores",
+];
+const SET_ONCE_SELECTOR_OPTIONS: &[&str] = &[
+    "distance",
+    "level",
+    "x",
+    "y",
+    "z",
+    "dx",
+    "dy",
+    "dz",
+    "x_rotation",
+    "y_rotation",
+    "limit",
+    "sort",
+    "scores",
+];
+const GAME_MODE_SUGGESTIONS: &[&str] = &["survival", "creative", "adventure", "spectator"];
 
 #[derive(Clone, Debug)]
 pub(super) struct EntitySelector {
@@ -762,6 +799,200 @@ pub(super) fn selector_suggestions(
         (false, true) => vec!["@p", "@r", "@s", "@n"],
         (false, false) => vec!["@a", "@e", "@p", "@r", "@s", "@n"],
     }
+}
+
+pub(super) fn selector_argument_suggestions(
+    prefix: &str,
+    players_only: bool,
+    single: bool,
+    context: &dyn CommandInputContext,
+) -> Vec<String> {
+    if !allow_selectors(context) {
+        return Vec::new();
+    }
+    if !prefix.starts_with('@') {
+        return selector_root_suggestions(prefix, players_only, single, context);
+    }
+
+    let mut chars = prefix.chars();
+    if chars.next() != Some('@') {
+        return Vec::new();
+    }
+    let Some(selector_type) = chars.next() else {
+        return selector_root_suggestions(prefix, players_only, single, context);
+    };
+    if !selector_type_allowed_for_suggestions(selector_type) {
+        return selector_root_suggestions(prefix, players_only, single, context);
+    }
+    if chars.next().is_some_and(|ch| ch != '[') {
+        return selector_root_suggestions(prefix, players_only, single, context);
+    }
+
+    if let Some(option_start) = prefix.find('[') {
+        return selector_option_suggestions(prefix, selector_type, option_start);
+    }
+
+    let open_options = format!("@{selector_type}[");
+    if open_options.starts_with(prefix) {
+        vec![open_options]
+    } else {
+        selector_root_suggestions(prefix, players_only, single, context)
+    }
+}
+
+fn selector_root_suggestions(
+    prefix: &str,
+    players_only: bool,
+    single: bool,
+    context: &dyn CommandInputContext,
+) -> Vec<String> {
+    selector_suggestions(players_only, single, context)
+        .into_iter()
+        .filter(|selector| selector.starts_with(prefix))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn selector_type_allowed_for_suggestions(selector_type: char) -> bool {
+    matches!(selector_type, 'a' | 'e' | 'n' | 'p' | 'r' | 's')
+}
+
+fn selector_option_suggestions(
+    prefix: &str,
+    selector_type: char,
+    option_start: usize,
+) -> Vec<String> {
+    if prefix[option_start + 1..].contains(']') {
+        return Vec::new();
+    }
+
+    let option_prefix = &prefix[..option_start + 1];
+    let inside = &prefix[option_start + 1..];
+    let (completed_entries, current_entry) = inside
+        .rsplit_once(',')
+        .map_or(("", inside), |(completed, current)| {
+            (&inside[..completed.len() + 1], current)
+        });
+    let expression_prefix = format!("{option_prefix}{completed_entries}");
+    if let Some((key, value_prefix)) = current_entry.split_once('=') {
+        let value_expression_prefix = format!("{expression_prefix}{key}=");
+        return selector_option_value_suggestions(
+            &value_expression_prefix,
+            key.trim(),
+            value_prefix,
+        );
+    }
+
+    let used_set_once_options = completed_set_once_selector_options(completed_entries);
+    SELECTOR_OPTION_KEYS
+        .iter()
+        .copied()
+        .filter(|key| selector_option_available_for_type(key, selector_type))
+        .filter(|key| !used_set_once_options.iter().any(|used| used == key))
+        .filter(|key| key.starts_with(current_entry.trim_start()))
+        .map(|key| format!("{expression_prefix}{key}="))
+        .collect()
+}
+
+fn completed_set_once_selector_options(completed_entries: &str) -> Vec<&str> {
+    completed_entries
+        .split(',')
+        .filter_map(|entry| entry.split_once('=').map(|(key, _)| key.trim()))
+        .filter(|key| SET_ONCE_SELECTOR_OPTIONS.contains(key))
+        .collect()
+}
+
+fn selector_option_available_for_type(key: &str, selector_type: char) -> bool {
+    !matches!((key, selector_type), ("limit" | "sort", 's'))
+}
+
+fn selector_option_value_suggestions(
+    expression_prefix: &str,
+    key: &str,
+    value_prefix: &str,
+) -> Vec<String> {
+    match key {
+        "sort" => prefixed_values(
+            expression_prefix,
+            value_prefix,
+            [SORT_NEAREST, SORT_FURTHEST, SORT_RANDOM, SORT_ARBITRARY],
+        ),
+        "gamemode" => {
+            invertible_prefixed_values(expression_prefix, value_prefix, GAME_MODE_SUGGESTIONS)
+        }
+        "type" => entity_type_suggestions(expression_prefix, value_prefix),
+        _ => Vec::new(),
+    }
+}
+
+fn prefixed_values<const N: usize>(
+    expression_prefix: &str,
+    value_prefix: &str,
+    values: [&'static str; N],
+) -> Vec<String> {
+    values
+        .into_iter()
+        .filter(|value| value.starts_with(value_prefix))
+        .map(|value| format!("{expression_prefix}{value}"))
+        .collect()
+}
+
+fn invertible_prefixed_values(
+    expression_prefix: &str,
+    value_prefix: &str,
+    values: &[&'static str],
+) -> Vec<String> {
+    let mut suggestions = Vec::new();
+    for value in values {
+        push_prefixed_value(&mut suggestions, expression_prefix, value_prefix, value);
+        push_prefixed_value(
+            &mut suggestions,
+            expression_prefix,
+            value_prefix,
+            &format!("!{value}"),
+        );
+    }
+    suggestions
+}
+
+fn push_prefixed_value(
+    suggestions: &mut Vec<String>,
+    expression_prefix: &str,
+    value_prefix: &str,
+    value: &str,
+) {
+    if value.starts_with(value_prefix) {
+        suggestions.push(format!("{expression_prefix}{value}"));
+    }
+}
+
+fn entity_type_suggestions(expression_prefix: &str, value_prefix: &str) -> Vec<String> {
+    let mut suggestions = Vec::new();
+    push_prefixed_value(&mut suggestions, expression_prefix, value_prefix, "#");
+    push_prefixed_value(&mut suggestions, expression_prefix, value_prefix, "!");
+    push_prefixed_value(&mut suggestions, expression_prefix, value_prefix, "!#");
+    if value_prefix.starts_with('#') || value_prefix.starts_with("!#") {
+        return suggestions;
+    }
+
+    let (inversion, resource_prefix) = value_prefix
+        .strip_prefix('!')
+        .map_or(("", value_prefix), |prefix| ("!", prefix));
+    let stripped_prefix = resource_prefix
+        .strip_prefix("minecraft:")
+        .unwrap_or(resource_prefix);
+    suggestions.extend(
+        REGISTRY
+            .entity_types
+            .iter()
+            .map(|(_, entity_type)| entity_type.key.to_string())
+            .filter(|key| {
+                let text = key.strip_prefix("minecraft:").unwrap_or(key);
+                matches_suggestion_substr(stripped_prefix, text)
+            })
+            .map(|key| format!("{expression_prefix}{inversion}{key}")),
+    );
+    suggestions
 }
 
 fn read_selector_argument(reader: &mut CommandReader<'_>) -> Result<String, CommandParseError> {

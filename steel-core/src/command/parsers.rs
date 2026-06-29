@@ -559,6 +559,68 @@ mod tests {
     }
 
     #[test]
+    fn entity_parser_suggests_selector_option_keys() {
+        let suggestions = EntityParser::multiple().suggest(
+            "@e[",
+            &ParsedArguments::default(),
+            &SelectorPermissionContext,
+        );
+        let texts = suggestions
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+
+        assert!(texts.iter().any(|text| text == "@e[type="));
+        assert!(texts.iter().any(|text| text == "@e[sort="));
+        assert!(!texts.iter().any(|text| text == "@e[predicate="));
+    }
+
+    #[test]
+    fn entity_parser_suggests_selector_option_values() {
+        init_test_registry();
+
+        let sort_suggestions = EntityParser::multiple()
+            .suggest(
+                "@e[sort=f",
+                &ParsedArguments::default(),
+                &SelectorPermissionContext,
+            )
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+        let gamemode_suggestions = EntityParser::multiple()
+            .suggest(
+                "@e[gamemode=!s",
+                &ParsedArguments::default(),
+                &SelectorPermissionContext,
+            )
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+        let type_suggestions = EntityParser::multiple()
+            .suggest(
+                "@e[type=pig",
+                &ParsedArguments::default(),
+                &SelectorPermissionContext,
+            )
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+
+        assert_eq!(sort_suggestions, vec!["@e[sort=furthest"]);
+        assert!(
+            gamemode_suggestions
+                .iter()
+                .any(|text| text == "@e[gamemode=!survival")
+        );
+        assert!(
+            type_suggestions
+                .iter()
+                .any(|text| text == "@e[type=minecraft:pig")
+        );
+    }
+
+    #[test]
     fn entity_summon_parser_resolves_default_namespace() {
         init_test_entities();
 

@@ -13,7 +13,9 @@ use crate::{
             CommandArgumentClientParser, CommandArgumentParser, CommandParseError,
             CommandParseErrorKind, ParsedArgument, ParsedArguments, PermissionTarget,
         },
-        parsers::selector::{parse_entity_selector, parse_player_selector, selector_suggestions},
+        parsers::selector::{
+            parse_entity_selector, parse_player_selector, selector_argument_suggestions,
+        },
         reader::CommandReader,
         requirement::CommandInputContext,
     },
@@ -71,18 +73,18 @@ impl CommandArgumentParser for PlayerParser {
         context: &dyn CommandInputContext,
     ) -> Vec<SuggestionEntry> {
         let mut suggestions = Vec::new();
-        push_selector_suggestions(&mut suggestions, true, self.one, context);
+        push_selector_suggestions(&mut suggestions, prefix, true, self.one, context);
 
         if let Some(server) = context.server() {
             let players = server.get_players();
             suggestions.extend(
                 players
                     .iter()
+                    .filter(|player| player.gameprofile.name.starts_with(prefix))
                     .map(|player| SuggestionEntry::new(player.gameprofile.name.clone())),
             );
         }
 
-        suggestions.retain(|suggestion| suggestion.text.starts_with(prefix));
         suggestions
     }
 }
@@ -156,18 +158,22 @@ impl CommandArgumentParser for PermissionTargetParser {
         context: &dyn CommandInputContext,
     ) -> Vec<SuggestionEntry> {
         let mut suggestions = vec![];
-        push_selector_suggestions(&mut suggestions, true, false, context);
+        push_selector_suggestions(&mut suggestions, prefix, true, false, context);
 
         if let Some(server) = context.server() {
             for player in server.get_players() {
-                push_unique_suggestion(&mut suggestions, player.gameprofile.name.clone());
+                if player.gameprofile.name.starts_with(prefix) {
+                    push_unique_suggestion(&mut suggestions, player.gameprofile.name.clone());
+                }
             }
             for known in server.known_players().entries() {
-                push_unique_suggestion(&mut suggestions, known.last_known_name().to_owned());
+                let name = known.last_known_name();
+                if name.starts_with(prefix) {
+                    push_unique_suggestion(&mut suggestions, name.to_owned());
+                }
             }
         }
 
-        suggestions.retain(|suggestion| suggestion.text.starts_with(prefix));
         suggestions
     }
 }
@@ -233,30 +239,31 @@ impl CommandArgumentParser for EntityParser {
         context: &dyn CommandInputContext,
     ) -> Vec<SuggestionEntry> {
         let mut suggestions = Vec::new();
-        push_selector_suggestions(&mut suggestions, false, self.one, context);
+        push_selector_suggestions(&mut suggestions, prefix, false, self.one, context);
 
         if let Some(server) = context.server() {
             let players = server.get_players();
             suggestions.extend(
                 players
                     .iter()
+                    .filter(|player| player.gameprofile.name.starts_with(prefix))
                     .map(|player| SuggestionEntry::new(player.gameprofile.name.clone())),
             );
         }
 
-        suggestions.retain(|suggestion| suggestion.text.starts_with(prefix));
         suggestions
     }
 }
 
 fn push_selector_suggestions(
     suggestions: &mut Vec<SuggestionEntry>,
+    prefix: &str,
     players_only: bool,
     single: bool,
     context: &dyn CommandInputContext,
 ) {
-    for selector in selector_suggestions(players_only, single, context) {
-        match selector {
+    for selector in selector_argument_suggestions(prefix, players_only, single, context) {
+        match selector.as_str() {
             "@a" => suggestions.push(SuggestionEntry::with_tooltip(
                 "@a",
                 &ARGUMENT_ENTITY_SELECTOR_ALL_PLAYERS,
@@ -274,7 +281,7 @@ fn push_selector_suggestions(
                 &ARGUMENT_ENTITY_SELECTOR_SELF,
             )),
             "@e" | "@n" => suggestions.push(SuggestionEntry::new(selector)),
-            _ => {}
+            _ => suggestions.push(SuggestionEntry::new(selector)),
         }
     }
 }
