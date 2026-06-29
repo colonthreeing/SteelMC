@@ -18,7 +18,7 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 
 /// Handler for the "difficulty" command
 #[must_use]
-pub fn command() -> CommandNodeBuilder {
+pub(crate) fn command() -> CommandNodeBuilder {
     literal("difficulty")
         .executes(query_difficulty)
         .then(difficulty_literal("peaceful", Difficulty::Peaceful))

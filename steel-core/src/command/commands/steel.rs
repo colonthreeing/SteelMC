@@ -20,7 +20,7 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 
 /// Handler for the "steel" command group.
 #[must_use]
-pub fn command() -> CommandNodeBuilder {
+pub(crate) fn command() -> CommandNodeBuilder {
     literal("steel").then(
         literal("tp").then(
             argument("targets", PlayerParser::multiple())

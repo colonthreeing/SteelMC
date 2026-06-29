@@ -24,7 +24,7 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 
 /// Handler for the "clear" command.
 #[must_use]
-pub fn command() -> CommandNodeBuilder {
+pub(crate) fn command() -> CommandNodeBuilder {
     literal("clear").executes(clear_self).then(
         argument("targets", PlayerParser::multiple())
             .executes(clear_targets)

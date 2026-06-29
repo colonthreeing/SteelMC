@@ -24,7 +24,7 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 
 /// Handler for the "give" command.
 #[must_use]
-pub fn command() -> CommandNodeBuilder {
+pub(crate) fn command() -> CommandNodeBuilder {
     literal("give").then(
         argument("targets", PlayerParser::multiple()).then(
             argument("item", ItemParser) // FIXME: should be item predicate instead to also handle tags and components

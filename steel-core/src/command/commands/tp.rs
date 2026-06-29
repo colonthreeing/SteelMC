@@ -24,7 +24,7 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 
 /// Handler for the "teleport" command.
 #[must_use]
-pub fn command() -> CommandNodeBuilder {
+pub(crate) fn command() -> CommandNodeBuilder {
     literal("tp")
         .then(
             argument("targets", PlayerParser::multiple())

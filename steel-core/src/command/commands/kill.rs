@@ -22,7 +22,7 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 
 /// Creates the `/kill` command handler.
 #[must_use]
-pub fn command() -> CommandNodeBuilder {
+pub(crate) fn command() -> CommandNodeBuilder {
     literal("kill")
         .executes(kill_self)
         .then(argument("targets", EntityParser::multiple()).executes(kill_targets))

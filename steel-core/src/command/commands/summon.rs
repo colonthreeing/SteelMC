@@ -26,7 +26,7 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 
 /// Handler for the "summon" command.
 #[must_use]
-pub fn command() -> CommandNodeBuilder {
+pub(crate) fn command() -> CommandNodeBuilder {
     literal("summon").then(
         argument("entity", EntitySummonParser)
             .executes(summon_at_source)

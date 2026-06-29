@@ -1,8 +1,8 @@
 //! Code generation for built-in command registration.
 //!
 //! Scans `src/command/commands/*.rs` for modules exposing
-//! `pub(crate) const REGISTRATION` and `pub fn command()`, then generates the
-//! built-in command module declarations plus registration factory list.
+//! `pub(crate) const REGISTRATION` and `pub(crate) fn command()`, then generates
+//! the built-in command module declarations plus registration factory list.
 
 use std::{
     env, fs,
@@ -57,7 +57,7 @@ pub fn build() -> String {
         .map(|command| {
             let name = &command.name;
             let path = &command.path;
-            format!("#[path = {path:?}]\npub mod {name};")
+            format!("#[path = {path:?}]\npub(crate) mod {name};")
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -131,7 +131,7 @@ fn command_module_metadata(path: &Path) -> CommandModuleMetadata {
                 metadata.has_registration_spec = true;
             }
             syn::Item::Fn(function)
-                if function.sig.ident == "command" && is_visible_to_crate(&function.vis) =>
+                if function.sig.ident == "command" && matches_crate_visibility(&function.vis) =>
             {
                 metadata.has_command_builder = true;
             }
@@ -146,14 +146,6 @@ fn parse_file(path: &Path) -> syn::File {
         .unwrap_or_else(|error| panic!("Failed to read {}: {error}", path.display()));
     syn::parse_file(&content)
         .unwrap_or_else(|error| panic!("Failed to parse {}: {error}", path.display()))
-}
-
-fn is_visible_to_crate(visibility: &syn::Visibility) -> bool {
-    match visibility {
-        syn::Visibility::Public(_) => true,
-        syn::Visibility::Restricted(restricted) => restricted.path.is_ident("crate"),
-        syn::Visibility::Inherited => false,
-    }
 }
 
 fn matches_crate_visibility(visibility: &syn::Visibility) -> bool {

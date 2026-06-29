@@ -27,7 +27,7 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 
 /// Creates the `/op` command handler.
 #[must_use]
-pub fn command() -> CommandNodeBuilder {
+pub(crate) fn command() -> CommandNodeBuilder {
     literal("op").then(argument("targets", OpTargetsParser).executes(op_targets))
 }
 

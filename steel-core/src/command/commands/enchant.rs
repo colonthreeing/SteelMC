@@ -27,7 +27,7 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 
 /// Handler for the `/enchant` command.
 #[must_use]
-pub fn command() -> CommandNodeBuilder {
+pub(crate) fn command() -> CommandNodeBuilder {
     literal("enchant").then(
         argument("targets", PlayerParser::multiple()).then(
             argument("enchantment", EnchantmentParser)

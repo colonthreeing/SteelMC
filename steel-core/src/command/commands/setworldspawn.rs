@@ -20,7 +20,7 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 
 /// Handler for the `setworldspawn` command.
 #[must_use]
-pub fn command() -> CommandNodeBuilder {
+pub(crate) fn command() -> CommandNodeBuilder {
     literal("setworldspawn").executes(set_default_spawn).then(
         argument("pos", BlockPosParser)
             .executes(set_spawn_at_pos)

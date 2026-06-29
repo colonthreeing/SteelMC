@@ -12,7 +12,7 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 
 /// Handler for the "weather" command.
 #[must_use]
-pub fn command() -> CommandNodeBuilder {
+pub(crate) fn command() -> CommandNodeBuilder {
     literal("weather")
         .then(weather_literal("rain", WeatherCommand::Rain))
         .then(weather_literal("thunder", WeatherCommand::Thunder))

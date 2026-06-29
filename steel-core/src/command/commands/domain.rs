@@ -13,7 +13,7 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 
 /// Handler for switching to another configured domain.
 #[must_use]
-pub fn command() -> CommandNodeBuilder {
+pub(crate) fn command() -> CommandNodeBuilder {
     literal("domain").then(argument("domain", DomainParser).executes(switch_domain))
 }
 

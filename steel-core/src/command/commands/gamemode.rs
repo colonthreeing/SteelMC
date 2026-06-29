@@ -23,7 +23,7 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 
 /// Handler for the "gamemode" command.
 #[must_use]
-pub fn command() -> CommandNodeBuilder {
+pub(crate) fn command() -> CommandNodeBuilder {
     literal("gamemode").then(
         argument("gamemode", GameModeParser)
             .requires_argument_permission::<GameType>("gamemode")

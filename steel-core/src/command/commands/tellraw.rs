@@ -15,7 +15,7 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 
 /// Handler for the "tellraw" command.
 #[must_use]
-pub fn command() -> CommandNodeBuilder {
+pub(crate) fn command() -> CommandNodeBuilder {
     literal("tellraw").then(
         argument("targets", PlayerParser::multiple())
             .then(argument("message", ComponentParser).executes(send_tellraw)),

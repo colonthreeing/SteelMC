@@ -15,7 +15,7 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 
 /// Returns the handler for the "gamerule" command.
 #[must_use]
-pub fn command() -> CommandNodeBuilder {
+pub(crate) fn command() -> CommandNodeBuilder {
     let mut command = literal("gamerule");
 
     for (_, rule) in REGISTRY.game_rules.iter() {

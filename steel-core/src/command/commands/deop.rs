@@ -27,7 +27,7 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 
 /// Creates the `/deop` command handler.
 #[must_use]
-pub fn command() -> CommandNodeBuilder {
+pub(crate) fn command() -> CommandNodeBuilder {
     literal("deop").then(argument("targets", DeOpTargetsParser).executes(deop_targets))
 }
 

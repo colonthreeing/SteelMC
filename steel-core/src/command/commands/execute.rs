@@ -25,7 +25,7 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 
 /// Handler for the "execute" command.
 #[must_use]
-pub fn command() -> CommandNodeBuilder {
+pub(crate) fn command() -> CommandNodeBuilder {
     literal("execute")
         .then(literal("anchored").then(
             argument("anchor", AnchorParser).redirects(CommandRedirectTarget::Current, set_anchor),

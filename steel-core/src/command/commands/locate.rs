@@ -31,7 +31,7 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 
 /// Handler for the "locate" command.
 #[must_use]
-pub fn command() -> CommandNodeBuilder {
+pub(crate) fn command() -> CommandNodeBuilder {
     literal("locate").then(
         literal("structure")
             .then(argument("structure", StructureParser).executes(locate_structure_argument)),
