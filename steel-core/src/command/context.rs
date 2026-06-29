@@ -5,7 +5,9 @@ use glam::DVec3;
 
 use crate::command::sender::CommandSender;
 use crate::entity::Entity;
-use crate::permission::{PermissionCatalog, PermissionContext, PermissionMetadataCatalog};
+use crate::permission::{
+    PermissionCatalog, PermissionContext, PermissionContextCatalog, PermissionMetadataCatalog,
+};
 use crate::player::Player;
 use crate::server::Server;
 use crate::world::World;
@@ -29,6 +31,7 @@ pub struct CommandContext {
     pub anchor: EntityAnchor,
     permission_catalog: Option<PermissionCatalog>,
     permission_metadata_catalog: Option<PermissionMetadataCatalog>,
+    permission_context_catalog: Option<PermissionContextCatalog>,
 }
 
 /// The position anchor to use for an entity.
@@ -75,6 +78,7 @@ impl CommandContext {
             anchor: EntityAnchor::default(),
             permission_catalog: None,
             permission_metadata_catalog: None,
+            permission_context_catalog: None,
         }
     }
 
@@ -92,12 +96,23 @@ impl CommandContext {
         self
     }
 
+    /// Adds a permission context catalog available to command suggestion providers.
+    #[must_use]
+    pub fn with_permission_context_catalog(mut self, catalog: PermissionContextCatalog) -> Self {
+        self.permission_context_catalog = Some(catalog);
+        self
+    }
+
     pub(crate) fn permission_catalog(&self) -> Option<&PermissionCatalog> {
         self.permission_catalog.as_ref()
     }
 
     pub(crate) fn permission_metadata_catalog(&self) -> Option<&PermissionMetadataCatalog> {
         self.permission_metadata_catalog.as_ref()
+    }
+
+    pub(crate) fn permission_context_catalog(&self) -> Option<&PermissionContextCatalog> {
+        self.permission_context_catalog.as_ref()
     }
 
     pub(crate) fn permission_check_context(&self) -> PermissionContext {

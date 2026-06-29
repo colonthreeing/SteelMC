@@ -15,7 +15,8 @@ use crate::{
 };
 
 pub use crate::permission::{
-    PermissionCatalog, PermissionExpr, PermissionKey, PermissionKeyError, PermissionMetadataCatalog,
+    PermissionCatalog, PermissionContextCatalog, PermissionExpr, PermissionKey, PermissionKeyError,
+    PermissionMetadataCatalog,
 };
 
 /// The kind of source attempting to use a command.
@@ -77,6 +78,11 @@ pub trait CommandInputContext: RequirementContext {
 
     /// Returns the permission metadata catalog available for command suggestions.
     fn permission_metadata_catalog(&self) -> Option<&PermissionMetadataCatalog> {
+        None
+    }
+
+    /// Returns the permission context catalog available for command suggestions.
+    fn permission_context_catalog(&self) -> Option<&PermissionContextCatalog> {
         None
     }
 }
@@ -199,6 +205,10 @@ impl CommandInputContext for CommandContext {
 
     fn permission_metadata_catalog(&self) -> Option<&PermissionMetadataCatalog> {
         self.permission_metadata_catalog()
+    }
+
+    fn permission_context_catalog(&self) -> Option<&PermissionContextCatalog> {
+        self.permission_context_catalog()
     }
 }
 

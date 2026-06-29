@@ -278,7 +278,7 @@ fn user_custom_context_argument() -> CommandNodeBuilder {
         argument("context_custom_key", PermissionContextKeyParser).then(user_context_actions(
             argument(
                 "context_custom_value",
-                StringParser::new(StringMode::SingleWord),
+                PermissionContextValueParser::new("context_custom_key"),
             ),
         )),
     )
@@ -333,7 +333,7 @@ fn group_custom_context_argument() -> CommandNodeBuilder {
         argument("context_custom_key", PermissionContextKeyParser).then(group_context_actions(
             argument(
                 "context_custom_value",
-                StringParser::new(StringMode::SingleWord),
+                PermissionContextValueParser::new("context_custom_key"),
             ),
         )),
     )
@@ -589,12 +589,88 @@ impl CommandArgumentParser for PermissionContextKeyParser {
             ArgumentType::String {
                 behavior: steel_protocol::packets::game::ArgumentStringTypeBehavior::SingleWord,
             },
-            None,
+            Some(SuggestionType::AskServer),
         )
     }
 
     fn parsed_type(&self) -> &'static str {
         "string"
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        _arguments: &ParsedArguments,
+        context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        let Some(catalog) = context.permission_context_catalog() else {
+            return Vec::new();
+        };
+
+        catalog
+            .key_suggestions(prefix)
+            .into_iter()
+            .map(SuggestionEntry::new)
+            .collect()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PermissionContextValueParser {
+    key_argument: &'static str,
+}
+
+impl PermissionContextValueParser {
+    const fn new(key_argument: &'static str) -> Self {
+        Self { key_argument }
+    }
+}
+
+impl CommandArgumentParser for PermissionContextValueParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        reader
+            .read_string(StringMode::SingleWord)
+            .map(ParsedArgument::String)
+    }
+
+    fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
+        (
+            ArgumentType::String {
+                behavior: steel_protocol::packets::game::ArgumentStringTypeBehavior::SingleWord,
+            },
+            Some(SuggestionType::AskServer),
+        )
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "string"
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        arguments: &ParsedArguments,
+        context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        let Ok(key) = arguments.get::<String>(self.key_argument) else {
+            return Vec::new();
+        };
+        let Ok(key) = PermissionSegment::parse(key) else {
+            return Vec::new();
+        };
+        let Some(catalog) = context.permission_context_catalog() else {
+            return Vec::new();
+        };
+
+        catalog
+            .value_suggestions(&key, prefix)
+            .into_iter()
+            .map(SuggestionEntry::new)
+            .collect()
     }
 }
 
@@ -2996,17 +3072,17 @@ fn command_result(count: usize) -> CommandResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        PermissionAssignedGroupParser, PermissionContextKeyParser, PermissionGroupEditError,
-        PermissionGroupNameParser, PermissionMetadataKeyParser, add_default_group_config,
-        assigned_group_suggestions, can_manage_group, can_manage_metadata, can_manage_permission,
-        delete_group_config, direct_metadata_override_suggestions,
-        direct_permission_override_suggestions, group_config_metadata_value,
-        group_config_permission_states, group_metadata_suggestions, group_permission_suggestions,
-        metadata_catalog_suggestions, metadata_management_key, metadata_resolution_text,
-        permission_check_result_text, permission_context, permission_resolution_source_text,
-        permission_rule_context, permission_rule_context_suffix, remove_default_group_config,
-        set_group_config_metadata, set_group_config_permission, set_group_config_priority,
-        unset_group_config_metadata, unset_group_config_permission,
+        PermissionAssignedGroupParser, PermissionContextKeyParser, PermissionContextValueParser,
+        PermissionGroupEditError, PermissionGroupNameParser, PermissionMetadataKeyParser,
+        add_default_group_config, assigned_group_suggestions, can_manage_group,
+        can_manage_metadata, can_manage_permission, delete_group_config,
+        direct_metadata_override_suggestions, direct_permission_override_suggestions,
+        group_config_metadata_value, group_config_permission_states, group_metadata_suggestions,
+        group_permission_suggestions, metadata_catalog_suggestions, metadata_management_key,
+        metadata_resolution_text, permission_check_result_text, permission_context,
+        permission_resolution_source_text, permission_rule_context, permission_rule_context_suffix,
+        remove_default_group_config, set_group_config_metadata, set_group_config_permission,
+        set_group_config_priority, unset_group_config_metadata, unset_group_config_permission,
     };
     use crate::command::graph::{
         CommandArgumentParser, CommandParseErrorKind, ParsedArgument, ParsedArguments,
@@ -3016,11 +3092,12 @@ mod tests {
         CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext,
     };
     use crate::permission::{
-        PermissionContext, PermissionEntry, PermissionGroupConfig, PermissionGroupsConfig,
-        PermissionKey, PermissionMetadataCatalog, PermissionMetadataCatalogSource,
-        PermissionResolutionSource, PermissionRuleConfig, PermissionRuleContext,
-        PermissionRuleContextConfig, PermissionRuleCustomContextConfig, PermissionRuleStateConfig,
-        PermissionSegment, PermissionSet, PermissionState, PermissionValue, PermissionValueEntry,
+        PermissionContext, PermissionContextCatalog, PermissionContextCatalogSource,
+        PermissionEntry, PermissionGroupConfig, PermissionGroupsConfig, PermissionKey,
+        PermissionMetadataCatalog, PermissionMetadataCatalogSource, PermissionResolutionSource,
+        PermissionRuleConfig, PermissionRuleContext, PermissionRuleContextConfig,
+        PermissionRuleCustomContextConfig, PermissionRuleStateConfig, PermissionSegment,
+        PermissionSet, PermissionState, PermissionValue, PermissionValueEntry,
         PermissionValueRuleConfig, PermissionValueSet, parse_permission_value_key,
     };
     use steel_utils::Identifier;
@@ -3028,6 +3105,7 @@ mod tests {
     struct TestContext {
         permissions: PermissionSet,
         metadata_catalog: PermissionMetadataCatalog,
+        context_catalog: PermissionContextCatalog,
     }
 
     impl TestContext {
@@ -3035,6 +3113,7 @@ mod tests {
             Self {
                 permissions: PermissionSet::new(),
                 metadata_catalog: PermissionMetadataCatalog::new(),
+                context_catalog: PermissionContextCatalog::new(),
             }
         }
 
@@ -3044,6 +3123,7 @@ mod tests {
                     permissions.map(|permission| PermissionEntry::allow(key(permission))),
                 ),
                 metadata_catalog: PermissionMetadataCatalog::new(),
+                context_catalog: PermissionContextCatalog::new(),
             }
         }
     }
@@ -3062,6 +3142,10 @@ mod tests {
         fn permission_metadata_catalog(&self) -> Option<&PermissionMetadataCatalog> {
             Some(&self.metadata_catalog)
         }
+
+        fn permission_context_catalog(&self) -> Option<&PermissionContextCatalog> {
+            Some(&self.context_catalog)
+        }
     }
 
     fn key(value: &str) -> PermissionKey {
@@ -3072,12 +3156,12 @@ mod tests {
         parse_permission_value_key(value).expect("metadata key parses")
     }
 
+    fn segment(value: &str) -> PermissionSegment {
+        PermissionSegment::parse(value).expect("segment parses")
+    }
+
     fn custom_context(key: &str, value: &str) -> PermissionRuleContext {
-        PermissionRuleContext::custom(
-            PermissionSegment::parse(key).expect("context key parses"),
-            value,
-        )
-        .expect("custom context parses")
+        PermissionRuleContext::custom(segment(key), value).expect("custom context parses")
     }
 
     fn suggestion_texts(
@@ -3186,6 +3270,61 @@ mod tests {
             PermissionMetadataKeyParser.usage().1,
             Some(steel_protocol::packets::game::SuggestionType::AskServer)
         ));
+    }
+
+    #[test]
+    fn context_key_and_value_parsers_request_server_suggestions() {
+        assert!(matches!(
+            PermissionContextKeyParser.usage().1,
+            Some(steel_protocol::packets::game::SuggestionType::AskServer)
+        ));
+        assert!(matches!(
+            PermissionContextValueParser::new("context_custom_key")
+                .usage()
+                .1,
+            Some(steel_protocol::packets::game::SuggestionType::AskServer)
+        ));
+    }
+
+    #[test]
+    fn context_catalog_suggestions_include_known_keys_and_values() {
+        let mut context = TestContext::empty();
+        context.context_catalog.insert_value(
+            segment("region"),
+            "spawn",
+            PermissionContextCatalogSource::Config,
+        );
+        context.context_catalog.insert_value(
+            segment("region"),
+            "market",
+            PermissionContextCatalogSource::Config,
+        );
+        context.context_catalog.insert_value(
+            segment("arena"),
+            "duel",
+            PermissionContextCatalogSource::Config,
+        );
+        let mut arguments = ParsedArguments::default();
+        arguments.insert(
+            "context_custom_key",
+            ParsedArgument::String("region".to_owned()),
+        );
+
+        assert_eq!(
+            suggestion_texts(PermissionContextKeyParser.suggest(
+                "r",
+                &ParsedArguments::default(),
+                &context
+            )),
+            vec!["region"]
+        );
+        assert_eq!(
+            suggestion_texts(
+                PermissionContextValueParser::new("context_custom_key")
+                    .suggest("s", &arguments, &context)
+            ),
+            vec!["spawn"]
+        );
     }
 
     #[test]

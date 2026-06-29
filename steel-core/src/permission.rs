@@ -634,6 +634,147 @@ impl PermissionMetadataCatalog {
     }
 }
 
+/// Source that registered a custom permission context for discovery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PermissionContextCatalogSource {
+    /// Custom context already present in resolved group configuration.
+    Config,
+}
+
+/// One discoverable custom permission context key and its known values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PermissionContextCatalogEntry {
+    key: PermissionSegment,
+    sources: BTreeSet<PermissionContextCatalogSource>,
+    values: BTreeMap<String, BTreeSet<PermissionContextCatalogSource>>,
+}
+
+impl PermissionContextCatalogEntry {
+    fn new(key: PermissionSegment, source: PermissionContextCatalogSource) -> Self {
+        let mut sources = BTreeSet::new();
+        sources.insert(source);
+        Self {
+            key,
+            sources,
+            values: BTreeMap::new(),
+        }
+    }
+
+    /// Returns the custom context key.
+    #[must_use]
+    pub const fn key(&self) -> &PermissionSegment {
+        &self.key
+    }
+
+    /// Returns the sources that registered this key.
+    #[must_use]
+    pub const fn sources(&self) -> &BTreeSet<PermissionContextCatalogSource> {
+        &self.sources
+    }
+
+    /// Returns known values for this key sorted by value.
+    pub fn values(
+        &self,
+    ) -> impl Iterator<Item = (&str, &BTreeSet<PermissionContextCatalogSource>)> {
+        self.values
+            .iter()
+            .map(|(value, sources)| (value.as_str(), sources))
+    }
+}
+
+/// Registry of custom permission contexts available for discovery and autocomplete.
+///
+/// The catalog is not an enforcement boundary. Permission checks and edits still
+/// accept any syntactically valid custom context so plugins and config can
+/// introduce contexts before Steel has metadata for them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PermissionContextCatalog {
+    entries: BTreeMap<String, PermissionContextCatalogEntry>,
+}
+
+impl PermissionContextCatalog {
+    /// Creates an empty permission context catalog.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+        }
+    }
+
+    /// Registers one custom context key for discovery.
+    pub fn insert_key(&mut self, key: PermissionSegment, source: PermissionContextCatalogSource) {
+        self.entries
+            .entry(key.as_str().to_owned())
+            .and_modify(|entry| {
+                entry.sources.insert(source);
+            })
+            .or_insert_with(|| PermissionContextCatalogEntry::new(key, source));
+    }
+
+    /// Registers one custom context value for discovery.
+    pub fn insert_value(
+        &mut self,
+        key: PermissionSegment,
+        value: impl Into<String>,
+        source: PermissionContextCatalogSource,
+    ) {
+        let value = value.into();
+        self.insert_key(key.clone(), source);
+        if let Some(entry) = self.entries.get_mut(key.as_str()) {
+            entry
+                .values
+                .entry(value)
+                .or_insert_with(BTreeSet::new)
+                .insert(source);
+        }
+    }
+
+    /// Merges another catalog into this one.
+    pub fn extend(&mut self, other: &Self) {
+        for entry in other.entries.values() {
+            for source in &entry.sources {
+                self.insert_key(entry.key.clone(), *source);
+            }
+            for (value, sources) in entry.values() {
+                for source in sources {
+                    self.insert_value(entry.key.clone(), value, *source);
+                }
+            }
+        }
+    }
+
+    /// Returns all catalog entries sorted by custom context key.
+    pub fn entries(&self) -> impl Iterator<Item = &PermissionContextCatalogEntry> {
+        self.entries.values()
+    }
+
+    /// Returns suggestion text for keys matching `prefix`.
+    #[must_use]
+    pub fn key_suggestions(&self, prefix: &str) -> Vec<String> {
+        self.entries
+            .keys()
+            .filter(|key| key.starts_with(prefix))
+            .cloned()
+            .collect()
+    }
+
+    /// Returns suggestion text for values of `key` matching `prefix`.
+    #[must_use]
+    pub fn value_suggestions(&self, key: &PermissionSegment, prefix: &str) -> Vec<String> {
+        self.entries
+            .get(key.as_str())
+            .map(|entry| {
+                entry
+                    .values
+                    .keys()
+                    .filter(|value| value.starts_with(prefix))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
 /// Persisted permission state for one player.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PermissionSubjectState {
@@ -2166,6 +2307,14 @@ impl PermissionGroupManager {
             .register_metadata_catalog_entries(catalog);
     }
 
+    /// Adds configured custom permission contexts to a discovery catalog.
+    pub fn register_context_catalog_entries(&self, catalog: &mut PermissionContextCatalog) {
+        self.state
+            .read()
+            .groups
+            .register_context_catalog_entries(catalog);
+    }
+
     /// Builds an effective permission set from defaults, assigned groups, and player overrides.
     #[must_use]
     pub fn effective_permissions(
@@ -2436,6 +2585,18 @@ impl PermissionGroups {
         }
     }
 
+    /// Adds configured custom permission contexts to a discovery catalog.
+    pub fn register_context_catalog_entries(&self, catalog: &mut PermissionContextCatalog) {
+        for group in self.groups.values() {
+            for entry in group.permissions.entries() {
+                register_context_catalog_entry(entry.context(), catalog);
+            }
+            for entry in group.values.entries() {
+                register_context_catalog_entry(entry.context(), catalog);
+            }
+        }
+    }
+
     /// Builds an effective permission set from default groups, assigned groups,
     /// and player-level overrides.
     ///
@@ -2504,6 +2665,29 @@ impl PermissionGroups {
         for entry in group.values.entries() {
             effective.push_group(entry.clone(), group_name, group.priority);
         }
+    }
+}
+
+fn register_context_catalog_entry(
+    context: &PermissionRuleContext,
+    catalog: &mut PermissionContextCatalog,
+) {
+    match context {
+        PermissionRuleContext::Custom { key, value } => {
+            catalog.insert_value(
+                key.clone(),
+                value.clone(),
+                PermissionContextCatalogSource::Config,
+            );
+        }
+        PermissionRuleContext::All(contexts) => {
+            for context in contexts {
+                register_context_catalog_entry(context, catalog);
+            }
+        }
+        PermissionRuleContext::Global
+        | PermissionRuleContext::Domain(_)
+        | PermissionRuleContext::World(_) => {}
     }
 }
 
@@ -2674,12 +2858,13 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        PermissionCatalog, PermissionCatalogSource, PermissionEntry, PermissionExpr,
-        PermissionGroupManager, PermissionGroupManagerError, PermissionGroups,
-        PermissionGroupsConfig, PermissionKey, PermissionKeyError, PermissionMetadataCatalog,
-        PermissionMetadataCatalogSource, PermissionResolutionSource, PermissionRuleContext,
-        PermissionSegment, PermissionSet, PermissionState, PermissionValue, PermissionValueEntry,
-        PermissionValueKeyError, PermissionValueSet, parse_permission_value_key,
+        PermissionCatalog, PermissionCatalogSource, PermissionContextCatalog,
+        PermissionContextCatalogSource, PermissionEntry, PermissionExpr, PermissionGroupManager,
+        PermissionGroupManagerError, PermissionGroups, PermissionGroupsConfig, PermissionKey,
+        PermissionKeyError, PermissionMetadataCatalog, PermissionMetadataCatalogSource,
+        PermissionResolutionSource, PermissionRuleContext, PermissionSegment, PermissionSet,
+        PermissionState, PermissionValue, PermissionValueEntry, PermissionValueKeyError,
+        PermissionValueSet, parse_permission_value_key,
     };
     use steel_utils::Identifier;
     use steel_utils::locks::SyncMutex;
@@ -2726,6 +2911,10 @@ mod tests {
 
     fn value_key(value: &str) -> Identifier {
         parse_permission_value_key(value).expect("metadata key parses")
+    }
+
+    fn segment(value: &str) -> PermissionSegment {
+        PermissionSegment::parse(value).expect("segment parses")
     }
 
     fn world_context(domain: &str, world: &str) -> super::PermissionContext {
@@ -3274,6 +3463,41 @@ mod tests {
     }
 
     #[test]
+    fn permission_context_catalog_suggests_keys_and_values() {
+        let mut catalog = PermissionContextCatalog::new();
+        catalog.insert_value(
+            segment("region"),
+            "spawn",
+            PermissionContextCatalogSource::Config,
+        );
+        catalog.insert_value(
+            segment("region"),
+            "market",
+            PermissionContextCatalogSource::Config,
+        );
+        catalog.insert_value(
+            segment("arena"),
+            "duel",
+            PermissionContextCatalogSource::Config,
+        );
+
+        assert_eq!(catalog.key_suggestions("r"), vec!["region"]);
+        assert_eq!(
+            catalog.value_suggestions(&segment("region"), ""),
+            vec!["market", "spawn"]
+        );
+        let entry = catalog
+            .entries()
+            .find(|entry| entry.key().as_str() == "region")
+            .expect("catalog entry exists");
+        assert!(
+            entry
+                .sources()
+                .contains(&PermissionContextCatalogSource::Config)
+        );
+    }
+
+    #[test]
     fn default_group_config_contains_editable_op_group() {
         let groups = PermissionGroups::from_config(PermissionGroupsConfig::default())
             .expect("default groups config is valid");
@@ -3354,6 +3578,54 @@ mod tests {
             entry
                 .sources()
                 .contains(&PermissionMetadataCatalogSource::Config)
+        }));
+    }
+
+    #[test]
+    fn groups_register_config_contexts_in_catalog() {
+        let mut config = PermissionGroupsConfig::default();
+        let default_group = config
+            .groups
+            .get_mut("default")
+            .expect("default group exists");
+        default_group.rules.push(super::PermissionRuleConfig {
+            key: "plugin.region.build".to_owned(),
+            state: super::PermissionRuleStateConfig::Allow,
+            context: Some(super::PermissionRuleContextConfig {
+                domain: None,
+                world: None,
+                custom: vec![super::PermissionRuleCustomContextConfig {
+                    key: "region".to_owned(),
+                    value: "spawn".to_owned(),
+                }],
+            }),
+        });
+        default_group.values.push(super::PermissionValueRuleConfig {
+            key: "plugin:homes".to_owned(),
+            value: PermissionValue::Integer(5),
+            context: Some(super::PermissionRuleContextConfig {
+                domain: None,
+                world: None,
+                custom: vec![super::PermissionRuleCustomContextConfig {
+                    key: "region".to_owned(),
+                    value: "market".to_owned(),
+                }],
+            }),
+        });
+        let groups = PermissionGroups::from_config(config).expect("groups config is valid");
+        let mut catalog = PermissionContextCatalog::new();
+
+        groups.register_context_catalog_entries(&mut catalog);
+
+        assert_eq!(catalog.key_suggestions("r"), vec!["region"]);
+        assert_eq!(
+            catalog.value_suggestions(&segment("region"), ""),
+            vec!["market", "spawn"]
+        );
+        assert!(catalog.entries().all(|entry| {
+            entry
+                .sources()
+                .contains(&PermissionContextCatalogSource::Config)
         }));
     }
 

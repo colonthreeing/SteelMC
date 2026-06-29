@@ -22,8 +22,8 @@ use crate::command::graph::{
 use crate::command::requirement::RequirementContext;
 use crate::command::sender::CommandSender;
 use crate::permission::{
-    PermissionCatalog, PermissionCatalogSource, PermissionKey, PermissionKeyError,
-    PermissionMetadataCatalog, PermissionSegment,
+    PermissionCatalog, PermissionCatalogSource, PermissionContextCatalog, PermissionKey,
+    PermissionKeyError, PermissionMetadataCatalog, PermissionSegment,
 };
 use crate::player::Player;
 use crate::server::Server;
@@ -38,6 +38,7 @@ pub struct CommandDispatcher {
     graph: CommandGraph,
     permission_catalog: PermissionCatalog,
     permission_metadata_catalog: PermissionMetadataCatalog,
+    permission_context_catalog: PermissionContextCatalog,
 }
 
 pub(crate) struct CommandRegistration {
@@ -188,6 +189,7 @@ impl CommandDispatcher {
             graph: CommandGraph::new(),
             permission_catalog: PermissionCatalog::new(),
             permission_metadata_catalog: PermissionMetadataCatalog::new(),
+            permission_context_catalog: PermissionContextCatalog::new(),
         }
     }
 
@@ -451,9 +453,14 @@ impl CommandDispatcher {
         server
             .permission_groups
             .register_metadata_catalog_entries(&mut metadata_catalog);
+        let mut context_catalog = self.permission_context_catalog.clone();
+        server
+            .permission_groups
+            .register_context_catalog_entries(&mut context_catalog);
         let context = CommandContext::new(sender, server)
             .with_permission_catalog(catalog)
-            .with_permission_metadata_catalog(metadata_catalog);
+            .with_permission_metadata_catalog(metadata_catalog)
+            .with_permission_context_catalog(context_catalog);
 
         self.graph
             .suggest(command, &context)
