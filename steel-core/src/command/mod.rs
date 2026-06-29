@@ -28,7 +28,7 @@ use crate::permission::{
 };
 use crate::player::Player;
 use crate::server::Server;
-use std::{error::Error, fmt, sync::Arc};
+use std::{collections::VecDeque, error::Error, fmt, sync::Arc};
 use steel_registry::{game_rules::GameRuleValue, vanilla_game_rules::MAX_COMMAND_SEQUENCE_LENGTH};
 
 pub(crate) use executor::CommandQueue;
@@ -367,32 +367,47 @@ impl CommandDispatcher {
 
     pub(crate) fn dispatch_with_budget(
         &self,
-        mut command: String,
+        command: String,
         context: &mut CommandContext,
         budget: &mut CommandExecutionBudget,
     ) -> Result<CommandResult, CommandError> {
-        let mut redirected_context = None;
+        let mut queue = VecDeque::new();
+        let mut active = ActiveCommand::Borrowed { command, context };
+        let mut total_success_count = 0_i32;
+
         loop {
             budget.consume()?;
             let step = {
-                let active_context = match &mut redirected_context {
-                    Some(context) => context,
-                    None => &mut *context,
-                };
+                let (command, active_context) = active.parts();
                 self.graph
-                    .parse(&command, active_context)
-                    .map_err(|error| Self::parse_error_to_command_error(&command, error))?
+                    .parse(command, active_context)
+                    .map_err(|error| Self::parse_error_to_command_error(command, error))?
                     .execute_step(active_context)?
             };
 
             match step {
-                CommandExecutionStep::Complete(result) => return Ok(result),
+                CommandExecutionStep::Complete(result) => {
+                    total_success_count = total_success_count.saturating_add(result.success_count);
+                    let Some(next) = queue.pop_front() else {
+                        return Ok(CommandResult {
+                            success_count: total_success_count,
+                        });
+                    };
+                    active = ActiveCommand::Owned(next);
+                }
                 CommandExecutionStep::Redirect {
                     command: next_command,
-                    context: next_context,
+                    contexts,
                 } => {
-                    command = next_command;
-                    redirected_context = Some(next_context);
+                    for context in contexts {
+                        queue.push_back((next_command.clone(), context));
+                    }
+                    let Some(next) = queue.pop_front() else {
+                        return Ok(CommandResult {
+                            success_count: total_success_count,
+                        });
+                    };
+                    active = ActiveCommand::Owned(next);
                 }
             }
         }
@@ -519,6 +534,9 @@ impl CommandDispatcher {
             CommandParseErrorKind::InvalidRotation(value) => {
                 TextComponent::plain(format!("Invalid rotation '{value}'"))
             }
+            CommandParseErrorKind::InvalidSwizzle(value) => {
+                TextComponent::plain(format!("Invalid swizzle '{value}'"))
+            }
             CommandParseErrorKind::InvalidTime(value) => {
                 TextComponent::plain(format!("Invalid time '{value}'"))
             }
@@ -607,6 +625,23 @@ impl CommandDispatcher {
             .map_or((Vec::new(), 0, 0), |result| {
                 (result.suggestions, result.start, result.length)
             })
+    }
+}
+
+enum ActiveCommand<'a> {
+    Borrowed {
+        command: String,
+        context: &'a mut CommandContext,
+    },
+    Owned((String, CommandContext)),
+}
+
+impl ActiveCommand<'_> {
+    fn parts(&mut self) -> (&str, &mut CommandContext) {
+        match self {
+            Self::Borrowed { command, context } => (command, context),
+            Self::Owned((command, context)) => (command, context),
+        }
     }
 }
 

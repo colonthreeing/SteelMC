@@ -377,7 +377,7 @@ mod tests {
             .map(|suggestion| suggestion.text)
             .collect::<Vec<_>>();
 
-        assert_eq!(texts, vec!["@a", "@p", "@r", "@s"]);
+        assert_eq!(texts, vec!["@a", "@e", "@p", "@r", "@s"]);
     }
 
     #[test]

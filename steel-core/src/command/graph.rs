@@ -159,6 +159,8 @@ pub enum CommandParseErrorKind {
     InvalidBlockPos(String),
     /// A rotation argument was invalid.
     InvalidRotation(String),
+    /// A swizzle argument was invalid.
+    InvalidSwizzle(String),
     /// A text component argument was invalid.
     InvalidComponent(String),
     /// A time argument was invalid.
@@ -211,6 +213,7 @@ impl CommandParseErrorKind {
             | Self::InvalidVec3(_)
             | Self::InvalidBlockPos(_)
             | Self::InvalidRotation(_)
+            | Self::InvalidSwizzle(_)
             | Self::InvalidComponent(_)
             | Self::InvalidTime(_)
             | Self::InvalidPermissionKey(_)
@@ -491,6 +494,11 @@ type CommandExecutor = Arc<
         + Send
         + Sync,
 >;
+type CommandForkExecutor = Arc<
+    dyn Fn(&mut CommandContext, &ParsedArguments) -> Result<Vec<CommandContext>, CommandError>
+        + Send
+        + Sync,
+>;
 type UnresolvedDynamicPermissionResolver = Arc<
     dyn Fn(&PermissionKey, &ParsedArguments) -> Result<PermissionKey, DynamicPermissionError>
         + Send
@@ -591,14 +599,20 @@ struct ParsedRedirect {
     target: CommandRedirectTarget,
     current_root: String,
     command: String,
-    executor: CommandExecutor,
+    modifier: ParsedRedirectModifier,
+}
+
+#[derive(Clone)]
+enum ParsedRedirectModifier {
+    Single(CommandExecutor),
+    Fork(CommandForkExecutor),
 }
 
 pub(crate) enum CommandExecutionStep {
     Complete(CommandResult),
     Redirect {
         command: String,
-        context: CommandContext,
+        contexts: Vec<CommandContext>,
     },
 }
 
@@ -670,18 +684,24 @@ impl ParseResults {
                 executor(context, &self.arguments).map(CommandExecutionStep::Complete)
             }
             ParsedCommandAction::Redirect(redirect) => {
-                let mut redirect_context = context.clone();
-                (redirect.executor)(&mut redirect_context, &self.arguments)?;
+                let contexts = match &redirect.modifier {
+                    ParsedRedirectModifier::Single(executor) => {
+                        let mut redirect_context = context.clone();
+                        executor(&mut redirect_context, &self.arguments)?;
+                        vec![redirect_context]
+                    }
+                    ParsedRedirectModifier::Fork(executor) => {
+                        let mut redirect_context = context.clone();
+                        executor(&mut redirect_context, &self.arguments)?
+                    }
+                };
                 let command = match redirect.target {
                     CommandRedirectTarget::Current => {
                         format!("{} {}", redirect.current_root, redirect.command)
                     }
                     CommandRedirectTarget::All => redirect.command.clone(),
                 };
-                Ok(CommandExecutionStep::Redirect {
-                    command,
-                    context: redirect_context,
-                })
+                Ok(CommandExecutionStep::Redirect { command, contexts })
             }
         }
     }

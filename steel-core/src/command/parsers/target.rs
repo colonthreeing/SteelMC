@@ -19,7 +19,7 @@ use crate::{
         reader::CommandReader,
         requirement::CommandInputContext,
     },
-    entity::{Entity, LivingEntity},
+    entity::{Entity, SharedEntity},
 };
 
 /// Player target argument parser.
@@ -338,8 +338,23 @@ impl CommandArgumentParser for EntityParser {
             }
             "@a" => players
                 .into_iter()
-                .map(|player| player as Arc<dyn LivingEntity + Send + Sync>)
+                .map(|player| player as SharedEntity)
                 .collect(),
+            "@e" if self.one => {
+                return Err(CommandParseError::new(
+                    CommandParseErrorKind::InvalidEntity(value),
+                    cursor,
+                ));
+            }
+            "@e" => {
+                let Some(world) = context.world() else {
+                    return Err(CommandParseError::new(
+                        CommandParseErrorKind::MissingCommandContext("world"),
+                        cursor,
+                    ));
+                };
+                world.get_accessible_entities()
+            }
             "@p" => {
                 let Some(position) = context.position() else {
                     return Err(CommandParseError::new(
@@ -358,17 +373,17 @@ impl CommandArgumentParser for EntityParser {
                         nearest = (distance, player);
                     }
                 }
-                vec![nearest.1 as Arc<dyn LivingEntity + Send + Sync>]
+                vec![nearest.1 as SharedEntity]
             }
             "@r" => {
                 let Some(player) = players.into_iter().choose(&mut rand::rng()) else {
                     return Ok(ParsedArgument::Entities(Vec::new()));
                 };
-                vec![player as Arc<dyn LivingEntity + Send + Sync>]
+                vec![player as SharedEntity]
             }
-            "@s" => context.player().map_or_else(Vec::new, |player| {
-                vec![Arc::clone(player) as Arc<dyn LivingEntity + Send + Sync>]
-            }),
+            "@s" => context
+                .entity()
+                .map_or_else(Vec::new, |entity| vec![Arc::clone(entity)]),
             selector if selector.starts_with('@') => {
                 return Err(CommandParseError::new(
                     CommandParseErrorKind::InvalidEntity(value),
@@ -386,7 +401,7 @@ impl CommandArgumentParser for EntityParser {
                         cursor,
                     ));
                 };
-                vec![player as Arc<dyn LivingEntity + Send + Sync>]
+                vec![player as SharedEntity]
             }
         };
         if self.one && targets.len() != 1 {
@@ -402,7 +417,7 @@ impl CommandArgumentParser for EntityParser {
     fn client_parser(&self) -> CommandArgumentClientParser {
         CommandArgumentClientParser::new(
             ArgumentType::Entity {
-                flags: 2 | u8::from(self.one),
+                flags: u8::from(self.one),
             },
             Some(SuggestionType::AskServer),
         )
@@ -424,6 +439,7 @@ impl CommandArgumentParser for EntityParser {
                 "@a",
                 &ARGUMENT_ENTITY_SELECTOR_ALL_PLAYERS,
             ));
+            suggestions.push(SuggestionEntry::new("@e"));
         }
         suggestions.extend([
             SuggestionEntry::with_tooltip("@p", &ARGUMENT_ENTITY_SELECTOR_NEAREST_PLAYER),

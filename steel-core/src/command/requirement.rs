@@ -9,6 +9,7 @@ use crate::{
         context::{CommandContext, EntityAnchor},
         sender::CommandSender,
     },
+    entity::SharedEntity,
     player::Player,
     server::Server,
     world::World,
@@ -53,6 +54,11 @@ pub trait CommandInputContext: RequirementContext {
 
     /// Returns the player source when available.
     fn player(&self) -> Option<&Arc<Player>> {
+        None
+    }
+
+    /// Returns the active command source entity when available.
+    fn entity(&self) -> Option<&SharedEntity> {
         None
     }
 
@@ -185,6 +191,10 @@ impl CommandInputContext for CommandContext {
 
     fn player(&self) -> Option<&Arc<Player>> {
         self.player.as_ref()
+    }
+
+    fn entity(&self) -> Option<&SharedEntity> {
+        self.entity.as_ref()
     }
 
     fn position(&self) -> Option<DVec3> {

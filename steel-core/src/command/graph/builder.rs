@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::node::{CommandNode, CommandNodeKind, CommandRedirect};
+use super::node::{CommandNode, CommandNodeKind, CommandRedirect, CommandRedirectModifier};
 use super::{
     CommandArgumentParser, CommandExecutor, CommandGraphError, CommandPermissionArgument,
     CommandRedirectTarget, CommandResult, DynamicPermission, ParsedArguments,
@@ -155,7 +155,27 @@ impl CommandNodeBuilder {
     ) -> Self {
         self.redirect = Some(CommandRedirect {
             target,
-            executor: Arc::new(executor),
+            modifier: CommandRedirectModifier::Single(Arc::new(executor)),
+        });
+        self
+    }
+
+    /// Forks from this node to zero or more command sources.
+    #[must_use]
+    pub fn forks(
+        mut self,
+        target: CommandRedirectTarget,
+        executor: impl Fn(
+            &mut CommandContext,
+            &ParsedArguments,
+        ) -> Result<Vec<CommandContext>, CommandError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.redirect = Some(CommandRedirect {
+            target,
+            modifier: CommandRedirectModifier::Fork(Arc::new(executor)),
         });
         self
     }

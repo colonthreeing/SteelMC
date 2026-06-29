@@ -74,7 +74,7 @@ fn summon_entity(
     Ok(CommandResult::success())
 }
 
-fn create_entity(
+pub(super) fn create_entity(
     context: &CommandContext,
     entity_type: EntityTypeRef,
     pos: DVec3,

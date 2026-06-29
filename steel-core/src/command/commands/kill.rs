@@ -1,8 +1,6 @@
 //! Handler for the "kill" command.
 //! Mirrors `net.minecraft.server.commands.KillCommand`.
 
-use std::sync::Arc;
-
 use text_components::TextComponent;
 
 use crate::command::context::CommandContext;
@@ -13,7 +11,7 @@ use crate::command::graph::{
 use crate::command::parsers::EntityParser;
 use crate::command::CommandRegistrationSpec;
 use crate::entity::damage::DamageSource;
-use crate::entity::{Entity, LivingEntity};
+use crate::entity::{Entity, SharedEntity};
 use crate::player::Player;
 use steel_registry::vanilla_damage_types;
 use steel_utils::translations;
@@ -62,7 +60,7 @@ fn kill_targets(
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
     let targets = arguments
-        .get::<Vec<Arc<dyn LivingEntity + Send + Sync>>>("targets")
+        .get::<Vec<SharedEntity>>("targets")
         .map_err(super::invalid_parsed_argument)?;
 
     if targets.is_empty() {

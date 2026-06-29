@@ -4,7 +4,7 @@ use std::sync::Arc;
 use glam::DVec3;
 
 use crate::command::sender::CommandSender;
-use crate::entity::Entity;
+use crate::entity::{Entity, SharedEntity};
 use crate::permission::{
     PermissionCatalog, PermissionContext, PermissionContextCatalog, PermissionMetadataCatalog,
 };
@@ -19,6 +19,8 @@ pub struct CommandContext {
     pub sender: CommandSender,
     /// The player targeted by the command.
     pub player: Option<Arc<Player>>,
+    /// The entity the command is executing as.
+    pub entity: Option<SharedEntity>,
     /// The world the command is executing in.
     pub world: Arc<World>,
     /// The server where the command has been run.
@@ -53,7 +55,10 @@ impl CommandContext {
             .as_ref()
             .map_or(server.overworld().clone(), |p| p.get_world());
         let world_spawn = world.level_data.read().data().spawn.clone();
-        let position = player
+        let entity = player
+            .as_ref()
+            .map(|player| Arc::clone(player) as SharedEntity);
+        let position = entity
             .as_ref()
             // TODO: Check this. The default position is the surface of the world center
             // (Where the compass should point to)
@@ -63,14 +68,17 @@ impl CommandContext {
                     f64::from(world_spawn.y),
                     f64::from(world_spawn.z),
                 ),
-                |p| p.position(),
+                |entity| entity.position(),
             );
 
-        let rotation = player.as_ref().map_or((0.0, 0.0), |p| p.rotation());
+        let rotation = entity
+            .as_ref()
+            .map_or((0.0, 0.0), |entity| entity.rotation());
 
         Self {
             sender,
             player,
+            entity,
             world,
             server,
             position,
@@ -118,4 +126,96 @@ impl CommandContext {
     pub(crate) fn permission_check_context(&self) -> PermissionContext {
         PermissionContext::for_world(self.world.domain().to_owned(), self.world.key.clone())
     }
+
+    /// Returns this context with a different source entity.
+    #[must_use]
+    pub fn with_entity(mut self, entity: SharedEntity) -> Self {
+        self.player = self
+            .server
+            .get_players()
+            .into_iter()
+            .find(|player| player.uuid() == entity.uuid());
+        self.entity = Some(entity);
+        self
+    }
+
+    /// Returns this context with a different execution world.
+    #[must_use]
+    pub fn with_world(mut self, world: Arc<World>) -> Self {
+        if self.world.key != world.key {
+            let scale =
+                self.world.dimension_type.coordinate_scale / world.dimension_type.coordinate_scale;
+            self.position.x *= scale;
+            self.position.z *= scale;
+        }
+        self.world = world;
+        self
+    }
+
+    /// Returns this context with a different execution position.
+    #[must_use]
+    pub fn with_position(mut self, position: DVec3) -> Self {
+        self.position = position;
+        self
+    }
+
+    /// Returns this context with a different execution rotation.
+    #[must_use]
+    pub fn with_rotation(mut self, rotation: (f32, f32)) -> Self {
+        self.rotation = Some(normalize_rotation(rotation));
+        self
+    }
+
+    /// Returns this context with a different local-coordinate anchor.
+    #[must_use]
+    pub const fn with_anchor(mut self, anchor: EntityAnchor) -> Self {
+        self.anchor = anchor;
+        self
+    }
+
+    /// Returns this context facing `target`.
+    #[must_use]
+    pub fn facing_position(self, target: DVec3) -> Self {
+        let from = self.anchor_position();
+        let delta = target - from;
+        let horizontal = delta.x.hypot(delta.z);
+        let pitch = -delta.y.atan2(horizontal).to_degrees() as f32;
+        let yaw = delta.z.atan2(delta.x).to_degrees() as f32 - 90.0;
+        self.with_rotation((yaw, pitch))
+    }
+
+    /// Returns the current source position after applying the command anchor.
+    #[must_use]
+    pub fn anchor_position(&self) -> DVec3 {
+        anchored_position(self.position, self.entity.as_deref(), self.anchor)
+    }
+}
+
+/// Returns the position of `entity` after applying `anchor`.
+#[must_use]
+pub fn anchored_position(
+    position: DVec3,
+    entity: Option<&dyn Entity>,
+    anchor: EntityAnchor,
+) -> DVec3 {
+    if matches!(anchor, EntityAnchor::Eyes)
+        && let Some(entity) = entity
+    {
+        return DVec3::new(position.x, position.y + entity.get_eye_height(), position.z);
+    }
+
+    position
+}
+
+fn normalize_rotation((mut yaw, mut pitch): (f32, f32)) -> (f32, f32) {
+    yaw = yaw.rem_euclid(360.0);
+    if yaw >= 180.0 {
+        yaw -= 360.0;
+    }
+    pitch = pitch.rem_euclid(360.0);
+    if pitch >= 180.0 {
+        pitch -= 360.0;
+    }
+
+    (yaw, pitch)
 }

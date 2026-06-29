@@ -3,8 +3,8 @@ use std::sync::Arc;
 use steel_protocol::packets::game::{CommandNode as ProtocolCommandNode, CommandNodeInfo};
 
 use super::{
-    CommandArgumentParser, CommandExecutor, CommandGraphAmbiguity, CommandGraphError,
-    CommandRedirectTarget, DynamicPermission, validate_command_node_name,
+    CommandArgumentParser, CommandExecutor, CommandForkExecutor, CommandGraphAmbiguity,
+    CommandGraphError, CommandRedirectTarget, DynamicPermission, validate_command_node_name,
 };
 use crate::command::reader::CommandReader;
 use crate::command::requirement::{
@@ -28,7 +28,13 @@ impl RequirementContext for NoPermissionContext {
 #[derive(Clone)]
 pub(super) struct CommandRedirect {
     pub(super) target: CommandRedirectTarget,
-    pub(super) executor: CommandExecutor,
+    pub(super) modifier: CommandRedirectModifier,
+}
+
+#[derive(Clone)]
+pub(super) enum CommandRedirectModifier {
+    Single(CommandExecutor),
+    Fork(CommandForkExecutor),
 }
 
 #[derive(Clone)]
@@ -80,7 +86,7 @@ impl CommandNode {
                 })
             },
         );
-        if self.redirect.is_none() && self.executor.is_some() {
+        if self.executor.is_some() {
             info = info.chain(CommandNodeInfo::new_executable());
         }
         if self.is_restricted(context) {

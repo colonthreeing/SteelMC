@@ -10,7 +10,7 @@ use text_components::TextComponent;
 use uuid::Uuid;
 
 use crate::command::context::EntityAnchor;
-use crate::entity::LivingEntity;
+use crate::entity::SharedEntity;
 use crate::permission::{
     PermissionKey, PermissionKeyError, PermissionMetadataExpression, PermissionRuleExpression,
     PermissionSegment,
@@ -48,7 +48,7 @@ pub enum ParsedArgument {
     /// Permission-management player target argument.
     PermissionTargets(Vec<PermissionTarget>),
     /// Living entity target argument.
-    Entities(Vec<Arc<dyn LivingEntity + Send + Sync>>),
+    Entities(Vec<SharedEntity>),
     /// Entity type argument.
     EntityType(EntityTypeRef),
     /// Item argument.
@@ -479,7 +479,7 @@ impl FromParsedArgument for Vec<PermissionTarget> {
     }
 }
 
-impl FromParsedArgument for Vec<Arc<dyn LivingEntity + Send + Sync>> {
+impl FromParsedArgument for Vec<SharedEntity> {
     const TYPE_NAME: &'static str = "entities";
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {

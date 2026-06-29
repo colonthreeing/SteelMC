@@ -1081,6 +1081,18 @@ impl WorldEntityManager {
         result
     }
 
+    /// Gets all live entities visible to vanilla gameplay lookups.
+    #[must_use]
+    pub fn get_accessible_entities(&self) -> Vec<SharedEntity> {
+        let state = self.state.read();
+        state
+            .live_by_id
+            .values()
+            .filter(|entry| Self::is_accessible(&state, entry))
+            .map(|entry| Arc::clone(&entry.entity))
+            .collect()
+    }
+
     fn entity_query_section_bounds(aabb: &WorldAabb) -> (SectionPos, SectionPos) {
         let min_section = SectionPos::from_entity_pos(DVec3::new(
             aabb.min_x() - 2.0,

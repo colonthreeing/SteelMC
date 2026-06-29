@@ -10,8 +10,8 @@ use crate::command::{
         AnchorParser, BoolParser, CommandArgumentClientParser, CommandArgumentParser, CommandGraph,
         CommandGraphAmbiguity, CommandGraphError, CommandNodeBuilder, CommandNodeNameError,
         CommandParseError, CommandParseErrorKind, CommandRedirectTarget, CommandResult,
-        FloatParser, IntegerParser, LongParser, ParsedArgument, ParsedCommandAction, StringParser,
-        SuggestionResult, argument, literal,
+        FloatParser, IntegerParser, LongParser, ParsedArgument, ParsedCommandAction,
+        ParsedRedirectModifier, StringParser, SuggestionResult, argument, literal,
     },
     reader::{CommandReader, StringMode},
     requirement::{
@@ -724,6 +724,60 @@ fn redirect_node_captures_remaining_command_tail() {
     assert_eq!(redirect.target, CommandRedirectTarget::All);
     assert_eq!(redirect.command, "say hello");
     assert_eq!(redirect.current_root, "execute");
+}
+
+#[test]
+fn fork_redirect_node_captures_remaining_command_tail() {
+    let graph = graph_with_root(literal("execute").then(
+        literal("as").forks(CommandRedirectTarget::Current, |context, _| {
+            Ok(vec![context.clone()])
+        }),
+    ));
+
+    let result = graph
+        .parse("execute as run say hello", &player_context())
+        .expect("fork redirect parses");
+
+    assert_eq!(result.path(), ["execute", "as"]);
+    let ParsedCommandAction::Redirect(redirect) = &result.action else {
+        panic!("expected redirect action");
+    };
+    assert_eq!(redirect.target, CommandRedirectTarget::Current);
+    assert_eq!(redirect.command, "run say hello");
+    assert_eq!(redirect.current_root, "execute");
+    assert!(matches!(redirect.modifier, ParsedRedirectModifier::Fork(_)));
+}
+
+#[test]
+fn usage_marks_redirect_nodes_with_executors_executable() {
+    const EXECUTABLE_FLAG: u8 = 4;
+    const REDIRECT_FLAG: u8 = 8;
+
+    let graph = graph_with_root(
+        literal("execute").then(
+            literal("if").then(
+                literal("entity")
+                    .executes(|_, _| Ok(CommandResult::success()))
+                    .redirects(CommandRedirectTarget::Current, |_, _| {
+                        Ok(CommandResult::success())
+                    }),
+            ),
+        ),
+    );
+    let mut nodes = vec![ProtocolCommandNode::new_root()];
+    let mut root_children = Vec::new();
+
+    graph.usage(&mut nodes, &mut root_children, &player_context());
+
+    let entity = nodes
+        .iter()
+        .position(
+            |node| matches!(node, ProtocolCommandNode::Literal { name, .. } if name == "entity"),
+        )
+        .expect("entity node is present");
+    let flags = node_flag_byte(&nodes[entity]);
+    assert_ne!(flags & EXECUTABLE_FLAG, 0);
+    assert_ne!(flags & REDIRECT_FLAG, 0);
 }
 
 #[test]

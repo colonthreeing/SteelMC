@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use steel_protocol::packets::game::SuggestionEntry;
 
-use super::node::{CommandNode, CommandNodeKind};
+use super::node::{CommandNode, CommandNodeKind, CommandRedirectModifier};
 use super::{
     CommandArgumentParser, CommandParseError, CommandParseErrorKind, CommandRedirectTarget,
     DynamicPermission, ParseResults, ParsedArgument, ParsedArguments, ParsedCommandAction,
@@ -383,7 +383,14 @@ impl CommandNode {
                 target: redirect.target,
                 current_root,
                 command,
-                executor: Arc::clone(&redirect.executor),
+                modifier: match &redirect.modifier {
+                    CommandRedirectModifier::Single(executor) => {
+                        super::ParsedRedirectModifier::Single(Arc::clone(executor))
+                    }
+                    CommandRedirectModifier::Fork(executor) => {
+                        super::ParsedRedirectModifier::Fork(Arc::clone(executor))
+                    }
+                },
             }),
         })
     }

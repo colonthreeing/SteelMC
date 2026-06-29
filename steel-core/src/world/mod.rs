@@ -3852,6 +3852,12 @@ impl World {
         self.entity_manager.get_entities_in_aabb(aabb)
     }
 
+    /// Gets all entities visible to vanilla gameplay lookups.
+    #[must_use]
+    pub fn get_accessible_entities(&self) -> Vec<SharedEntity> {
+        self.entity_manager.get_accessible_entities()
+    }
+
     /// Gets entities intersecting the given bounding box and matching `predicate`.
     ///
     /// Only returns entities in loaded chunks.

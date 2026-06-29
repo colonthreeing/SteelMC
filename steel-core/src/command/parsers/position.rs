@@ -7,7 +7,7 @@ use steel_protocol::packets::game::ArgumentType;
 use steel_utils::BlockPos;
 
 use crate::command::{
-    context::EntityAnchor,
+    context::anchored_position,
     graph::{
         CommandArgumentClientParser, CommandArgumentParser, CommandParseError,
         CommandParseErrorKind, ParsedArgument,
@@ -15,7 +15,6 @@ use crate::command::{
     reader::CommandReader,
     requirement::CommandInputContext,
 };
-use crate::entity::Entity;
 
 /// 3D position argument parser.
 #[derive(Clone, Copy, Debug, Default)]
@@ -358,13 +357,11 @@ fn local_coordinates_to_anchor_position(
 
 fn anchor_position(context: &dyn CommandInputContext) -> Option<DVec3> {
     let position = context.position()?;
-    if matches!(context.anchor(), EntityAnchor::Eyes)
-        && let Some(player) = context.player()
-    {
-        return Some(DVec3::new(position.x, player.get_eye_y(), position.z));
-    }
-
-    Some(position)
+    Some(anchored_position(
+        position,
+        context.entity().map(AsRef::as_ref),
+        context.anchor(),
+    ))
 }
 
 fn parse_rotation_coordinate(value: &str, origin: f32) -> Option<f32> {
