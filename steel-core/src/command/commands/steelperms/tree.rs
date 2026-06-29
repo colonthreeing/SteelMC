@@ -3,19 +3,18 @@
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    BoolParser, CommandArgumentParser, CommandNodeBuilder, CommandResult, IntegerParser,
-    LongParser, ParsedArguments, StringParser, argument, literal,
+    BoolParser, CommandNodeBuilder, CommandResult, IntegerParser, LongParser, ParsedArguments,
+    StringParser, argument, literal,
 };
 use crate::command::parsers::{
-    DomainParser, PermissionGroupParser, PermissionRuleExpressionParser, PermissionTargetParser,
-    WorldParser,
+    PermissionGroupParser, PermissionRuleExpressionParser, PermissionTargetParser,
 };
 use crate::command::reader::StringMode;
 
 use super::parsers::{
-    PermissionAssignedGroupParser, PermissionContextKeyParser, PermissionContextValueParser,
-    PermissionGroupMetadataParser, PermissionGroupNameParser, PermissionGroupRuleParser,
-    PermissionMetadataKeyParser, PermissionMetadataOverrideParser, PermissionOverrideParser,
+    PermissionAssignedGroupParser, PermissionGroupMetadataParser, PermissionGroupNameParser,
+    PermissionGroupRuleParser, PermissionMetadataExpressionParser, PermissionMetadataOverrideParser,
+    PermissionOverrideParser,
 };
 use super::{
     add_default_group, add_group, allow_group_permission, allow_permission, check_metadata,
@@ -48,7 +47,6 @@ fn user_command() -> CommandNodeBuilder {
                 .requires_subcommand_permission()
                 .then(permission_key_argument(check_permission)),
             user_metadata_arguments(),
-            contextual_user_permission_arguments(),
             literal("group").then_all([
                 literal("add")
                     .requires_additional_subcommand_permission()
@@ -89,7 +87,6 @@ fn group_command() -> CommandNodeBuilder {
                 .requires_additional_subcommand_permission()
                 .then(argument("priority", IntegerParser::new()).executes(set_group_priority)),
             group_metadata_arguments(),
-            contextual_group_permission_arguments(),
         ]),
     )
 }
@@ -131,24 +128,20 @@ fn group_permission_argument(
 fn metadata_override_argument(
     executor: fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>,
 ) -> CommandNodeBuilder {
-    argument(
-        "metadata_key",
-        PermissionMetadataOverrideParser::new("targets"),
-    )
-    .executes(executor)
+    argument("metadata", PermissionMetadataOverrideParser::new("targets")).executes(executor)
 }
 
 fn group_metadata_argument(
     executor: fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>,
 ) -> CommandNodeBuilder {
-    argument("metadata_key", PermissionGroupMetadataParser::new("group")).executes(executor)
+    argument("metadata", PermissionGroupMetadataParser::new("group")).executes(executor)
 }
 
 fn user_metadata_arguments() -> CommandNodeBuilder {
     literal("metadata").then_all([
         metadata_set_arguments(set_metadata),
         literal("check").requires_subcommand_permission().then(
-            argument("metadata_key", PermissionMetadataKeyParser).executes(check_metadata),
+            argument("metadata", PermissionMetadataExpressionParser).executes(check_metadata),
         ),
         literal("unset")
             .requires_additional_subcommand_permission()
@@ -172,118 +165,25 @@ fn metadata_set_arguments(
         .requires_additional_subcommand_permission()
         .then_all([
             literal("int").then(
-                argument("metadata_key", PermissionMetadataKeyParser)
-                    .then(argument("metadata_int_value", LongParser::new()).executes(executor)),
+                argument("metadata_int_value", LongParser::new())
+                    .then(metadata_expression_argument(executor)),
             ),
             literal("bool").then(
-                argument("metadata_key", PermissionMetadataKeyParser)
-                    .then(argument("metadata_bool_value", BoolParser).executes(executor)),
+                argument("metadata_bool_value", BoolParser)
+                    .then(metadata_expression_argument(executor)),
             ),
             literal("string").then(
-                argument("metadata_key", PermissionMetadataKeyParser).then(
-                    argument(
-                        "metadata_string_value",
-                        StringParser::new(StringMode::QuotablePhrase),
-                    )
-                    .executes(executor),
-                ),
+                argument(
+                    "metadata_string_value",
+                    StringParser::new(StringMode::QuotablePhrase),
+                )
+                .then(metadata_expression_argument(executor)),
             ),
         ])
 }
 
-fn contextual_user_permission_arguments() -> CommandNodeBuilder {
-    literal("context").then_all([
-        literal("domain").then(user_permission_context_argument(
-            "context_domain",
-            DomainParser,
-        )),
-        literal("world").then(user_permission_context_argument(
-            "context_world",
-            WorldParser,
-        )),
-        user_custom_context_argument(),
-    ])
-}
-
-fn user_permission_context_argument(
-    name: &'static str,
-    parser: impl CommandArgumentParser + Clone + 'static,
+fn metadata_expression_argument(
+    executor: fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>,
 ) -> CommandNodeBuilder {
-    user_context_actions(argument(name, parser)).then(user_custom_context_argument())
-}
-
-fn user_custom_context_argument() -> CommandNodeBuilder {
-    literal("custom").then(
-        argument("context_custom_key", PermissionContextKeyParser).then(user_context_actions(
-            argument(
-                "context_custom_value",
-                PermissionContextValueParser::new("context_custom_key"),
-            ),
-        )),
-    )
-}
-
-fn user_context_actions(node: CommandNodeBuilder) -> CommandNodeBuilder {
-    node.then_all([
-        literal("allow")
-            .requires_additional_subcommand_permission()
-            .then(permission_key_argument(allow_permission)),
-        literal("deny")
-            .requires_additional_subcommand_permission()
-            .then(permission_key_argument(deny_permission)),
-        literal("unset")
-            .requires_additional_subcommand_permission()
-            .then(permission_override_argument(unset_permission)),
-        literal("check")
-            .requires_subcommand_permission()
-            .then(permission_key_argument(check_permission)),
-        user_metadata_arguments(),
-    ])
-}
-
-fn contextual_group_permission_arguments() -> CommandNodeBuilder {
-    literal("context").then_all([
-        literal("domain").then(group_permission_context_argument(
-            "context_domain",
-            DomainParser,
-        )),
-        literal("world").then(group_permission_context_argument(
-            "context_world",
-            WorldParser,
-        )),
-        group_custom_context_argument(),
-    ])
-}
-
-fn group_permission_context_argument(
-    name: &'static str,
-    parser: impl CommandArgumentParser + Clone + 'static,
-) -> CommandNodeBuilder {
-    group_context_actions(argument(name, parser)).then(group_custom_context_argument())
-}
-
-fn group_custom_context_argument() -> CommandNodeBuilder {
-    literal("custom").then(
-        argument("context_custom_key", PermissionContextKeyParser).then(group_context_actions(
-            argument(
-                "context_custom_value",
-                PermissionContextValueParser::new("context_custom_key"),
-            ),
-        )),
-    )
-}
-
-fn group_context_actions(node: CommandNodeBuilder) -> CommandNodeBuilder {
-    node.then_all([
-        literal("allow")
-            .requires_additional_subcommand_permission()
-            .then(permission_key_argument(allow_group_permission)),
-        literal("deny")
-            .requires_additional_subcommand_permission()
-            .then(permission_key_argument(deny_group_permission)),
-        literal("unset")
-            .requires_additional_subcommand_permission()
-            .then(group_permission_argument(unset_group_permission)),
-        group_metadata_arguments(),
-    ])
+    argument("metadata", PermissionMetadataExpressionParser).executes(executor)
 }

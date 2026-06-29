@@ -303,7 +303,8 @@ impl PermissionRuleExpression {
         })?;
 
         let context_value = &value[context_start + 1..value.len() - 1];
-        let context = parse_permission_rule_expression_context(context_value)?;
+        let context = parse_permission_expression_context(context_value)
+            .map_err(PermissionRuleExpressionError::from_context_error)?;
         Ok(Self::new(key, context))
     }
 
@@ -333,23 +334,95 @@ impl fmt::Display for PermissionRuleExpression {
     }
 }
 
-fn parse_permission_rule_expression_context(
+/// A permission metadata key plus the rule context embedded in command/config syntax.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PermissionMetadataExpression {
+    key: Identifier,
+    context: PermissionRuleContext,
+}
+
+impl PermissionMetadataExpression {
+    /// Creates a permission metadata expression.
+    #[must_use]
+    pub const fn new(key: Identifier, context: PermissionRuleContext) -> Self {
+        Self { key, context }
+    }
+
+    /// Parses `namespace:key` or `namespace:key{context=value,...}` syntax.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the metadata key or context selector is invalid.
+    pub fn parse(value: impl Into<String>) -> Result<Self, PermissionMetadataExpressionError> {
+        let value = value.into();
+        let Some(context_start) = value.find('{') else {
+            let key = parse_permission_value_key(value.clone()).map_err(|source| {
+                PermissionMetadataExpressionError::InvalidMetadataKey { value, source }
+            })?;
+            return Ok(Self::new(key, PermissionRuleContext::Global));
+        };
+
+        if !value.ends_with('}') {
+            return Err(PermissionMetadataExpressionError::UnclosedContext);
+        }
+
+        let key_value = &value[..context_start];
+        let key = parse_permission_value_key(key_value.to_owned()).map_err(|source| {
+            PermissionMetadataExpressionError::InvalidMetadataKey {
+                value: key_value.to_owned(),
+                source,
+            }
+        })?;
+
+        let context_value = &value[context_start + 1..value.len() - 1];
+        let context = parse_permission_expression_context(context_value)
+            .map_err(PermissionMetadataExpressionError::from_context_error)?;
+        Ok(Self::new(key, context))
+    }
+
+    /// Returns the metadata key.
+    #[must_use]
+    pub const fn key(&self) -> &Identifier {
+        &self.key
+    }
+
+    /// Returns the rule context.
+    #[must_use]
+    pub const fn context(&self) -> &PermissionRuleContext {
+        &self.context
+    }
+
+    /// Splits this expression into its key and context.
+    #[must_use]
+    pub fn into_parts(self) -> (Identifier, PermissionRuleContext) {
+        (self.key, self.context)
+    }
+}
+
+impl fmt::Display for PermissionMetadataExpression {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.key)?;
+        write_permission_expression_context(f, &self.context)
+    }
+}
+
+fn parse_permission_expression_context(
     value: &str,
-) -> Result<PermissionRuleContext, PermissionRuleExpressionError> {
+) -> Result<PermissionRuleContext, PermissionExpressionContextError> {
     if value.is_empty() {
-        return Err(PermissionRuleExpressionError::EmptyContext);
+        return Err(PermissionExpressionContextError::EmptyContext);
     }
 
     let mut contexts = Vec::new();
     let mut seen_keys = BTreeSet::new();
     for entry in value.split(',') {
         let Some((key, context_value)) = entry.split_once('=') else {
-            return Err(PermissionRuleExpressionError::InvalidContextEntry(
+            return Err(PermissionExpressionContextError::InvalidContextEntry(
                 entry.to_owned(),
             ));
         };
         if key.is_empty() || context_value.is_empty() {
-            return Err(PermissionRuleExpressionError::InvalidContextEntry(
+            return Err(PermissionExpressionContextError::InvalidContextEntry(
                 entry.to_owned(),
             ));
         }
@@ -357,13 +430,13 @@ fn parse_permission_rule_expression_context(
             .chars()
             .any(|ch| ch.is_whitespace() || matches!(ch, '{' | '}' | ',' | '='))
         {
-            return Err(PermissionRuleExpressionError::InvalidContextValue {
+            return Err(PermissionExpressionContextError::InvalidContextValue {
                 key: key.to_owned(),
                 value: context_value.to_owned(),
             });
         }
         if !seen_keys.insert(key.to_owned()) {
-            return Err(PermissionRuleExpressionError::DuplicateContextKey(
+            return Err(PermissionExpressionContextError::DuplicateContextKey(
                 key.to_owned(),
             ));
         }
@@ -375,14 +448,15 @@ fn parse_permission_rule_expression_context(
         }
     }
 
-    PermissionRuleContext::all(contexts).map_err(PermissionRuleExpressionError::InvalidRuleContext)
+    PermissionRuleContext::all(contexts)
+        .map_err(PermissionExpressionContextError::InvalidRuleContext)
 }
 
 fn parse_rule_expression_domain(
     value: &str,
-) -> Result<PermissionRuleContext, PermissionRuleExpressionError> {
+) -> Result<PermissionRuleContext, PermissionExpressionContextError> {
     if value.is_empty() || !Identifier::validate_namespace(value) {
-        return Err(PermissionRuleExpressionError::InvalidDomain(
+        return Err(PermissionExpressionContextError::InvalidDomain(
             value.to_owned(),
         ));
     }
@@ -391,9 +465,9 @@ fn parse_rule_expression_domain(
 
 fn parse_rule_expression_world(
     value: &str,
-) -> Result<PermissionRuleContext, PermissionRuleExpressionError> {
+) -> Result<PermissionRuleContext, PermissionExpressionContextError> {
     let Some(world) = parse_loaded_world_identifier(value) else {
-        return Err(PermissionRuleExpressionError::InvalidWorld(
+        return Err(PermissionExpressionContextError::InvalidWorld(
             value.to_owned(),
         ));
     };
@@ -403,15 +477,15 @@ fn parse_rule_expression_world(
 fn parse_rule_expression_custom(
     key: &str,
     value: &str,
-) -> Result<PermissionRuleContext, PermissionRuleExpressionError> {
+) -> Result<PermissionRuleContext, PermissionExpressionContextError> {
     let key = PermissionContextKey::parse(key.to_owned()).map_err(|source| {
-        PermissionRuleExpressionError::InvalidContextKey {
+        PermissionExpressionContextError::InvalidContextKey {
             key: key.to_owned(),
             source,
         }
     })?;
     PermissionRuleContext::custom(key, value.to_owned())
-        .map_err(PermissionRuleExpressionError::InvalidRuleContext)
+        .map_err(PermissionExpressionContextError::InvalidRuleContext)
 }
 
 fn write_permission_expression_context(
@@ -466,6 +540,24 @@ fn write_permission_expression_context_entry(
     write!(f, "{key}={value}")
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PermissionExpressionContextError {
+    EmptyContext,
+    InvalidContextEntry(String),
+    InvalidContextValue {
+        key: String,
+        value: String,
+    },
+    DuplicateContextKey(String),
+    InvalidDomain(String),
+    InvalidWorld(String),
+    InvalidContextKey {
+        key: String,
+        source: PermissionContextKeyError,
+    },
+    InvalidRuleContext(PermissionRuleContextError),
+}
+
 /// Invalid permission rule expression syntax.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PermissionRuleExpressionError {
@@ -506,6 +598,31 @@ pub enum PermissionRuleExpressionError {
     InvalidRuleContext(PermissionRuleContextError),
 }
 
+impl PermissionRuleExpressionError {
+    fn from_context_error(error: PermissionExpressionContextError) -> Self {
+        match error {
+            PermissionExpressionContextError::EmptyContext => Self::EmptyContext,
+            PermissionExpressionContextError::InvalidContextEntry(entry) => {
+                Self::InvalidContextEntry(entry)
+            }
+            PermissionExpressionContextError::InvalidContextValue { key, value } => {
+                Self::InvalidContextValue { key, value }
+            }
+            PermissionExpressionContextError::DuplicateContextKey(key) => {
+                Self::DuplicateContextKey(key)
+            }
+            PermissionExpressionContextError::InvalidDomain(domain) => Self::InvalidDomain(domain),
+            PermissionExpressionContextError::InvalidWorld(world) => Self::InvalidWorld(world),
+            PermissionExpressionContextError::InvalidContextKey { key, source } => {
+                Self::InvalidContextKey { key, source }
+            }
+            PermissionExpressionContextError::InvalidRuleContext(source) => {
+                Self::InvalidRuleContext(source)
+            }
+        }
+    }
+}
+
 impl fmt::Display for PermissionRuleExpressionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -534,6 +651,108 @@ impl fmt::Display for PermissionRuleExpressionError {
 }
 
 impl Error for PermissionRuleExpressionError {}
+
+/// Invalid permission metadata expression syntax.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PermissionMetadataExpressionError {
+    /// The metadata key is invalid.
+    InvalidMetadataKey {
+        /// Invalid metadata key text.
+        value: String,
+        /// Parse error.
+        source: PermissionValueKeyError,
+    },
+    /// A context selector started with `{` but did not end with `}`.
+    UnclosedContext,
+    /// The context selector was empty.
+    EmptyContext,
+    /// A context entry was not `key=value`.
+    InvalidContextEntry(String),
+    /// A context entry used an invalid value.
+    InvalidContextValue {
+        /// Context key.
+        key: String,
+        /// Invalid context value.
+        value: String,
+    },
+    /// The same context key appeared more than once.
+    DuplicateContextKey(String),
+    /// The domain context value is invalid.
+    InvalidDomain(String),
+    /// The world context value is invalid.
+    InvalidWorld(String),
+    /// A custom context key is invalid.
+    InvalidContextKey {
+        /// Invalid context key text.
+        key: String,
+        /// Parse error.
+        source: PermissionContextKeyError,
+    },
+    /// The resulting rule context is invalid.
+    InvalidRuleContext(PermissionRuleContextError),
+}
+
+impl PermissionMetadataExpressionError {
+    fn from_context_error(error: PermissionExpressionContextError) -> Self {
+        match error {
+            PermissionExpressionContextError::EmptyContext => Self::EmptyContext,
+            PermissionExpressionContextError::InvalidContextEntry(entry) => {
+                Self::InvalidContextEntry(entry)
+            }
+            PermissionExpressionContextError::InvalidContextValue { key, value } => {
+                Self::InvalidContextValue { key, value }
+            }
+            PermissionExpressionContextError::DuplicateContextKey(key) => {
+                Self::DuplicateContextKey(key)
+            }
+            PermissionExpressionContextError::InvalidDomain(domain) => Self::InvalidDomain(domain),
+            PermissionExpressionContextError::InvalidWorld(world) => Self::InvalidWorld(world),
+            PermissionExpressionContextError::InvalidContextKey { key, source } => {
+                Self::InvalidContextKey { key, source }
+            }
+            PermissionExpressionContextError::InvalidRuleContext(source) => {
+                Self::InvalidRuleContext(source)
+            }
+        }
+    }
+}
+
+impl fmt::Display for PermissionMetadataExpressionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidMetadataKey { value, source } => {
+                write!(f, "invalid permission metadata key '{value}': {source}")
+            }
+            Self::UnclosedContext => {
+                write!(f, "permission metadata context selector is not closed")
+            }
+            Self::EmptyContext => write!(f, "permission metadata context selector is empty"),
+            Self::InvalidContextEntry(entry) => {
+                write!(f, "invalid permission metadata context entry '{entry}'")
+            }
+            Self::InvalidContextValue { key, value } => {
+                write!(
+                    f,
+                    "invalid permission metadata context value '{value}' for '{key}'"
+                )
+            }
+            Self::DuplicateContextKey(key) => {
+                write!(
+                    f,
+                    "permission metadata context key '{key}' appears more than once"
+                )
+            }
+            Self::InvalidDomain(domain) => write!(f, "invalid domain context '{domain}'"),
+            Self::InvalidWorld(world) => write!(f, "invalid world context '{world}'"),
+            Self::InvalidContextKey { key, source } => {
+                write!(f, "invalid permission context key '{key}': {source}")
+            }
+            Self::InvalidRuleContext(source) => write!(f, "{source}"),
+        }
+    }
+}
+
+impl Error for PermissionMetadataExpressionError {}
 
 /// Context used when evaluating a permission expression.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -3338,7 +3557,8 @@ mod tests {
         PermissionContextCatalogSource, PermissionContextKey, PermissionEntry, PermissionExpr,
         PermissionGroupManager, PermissionGroupManagerError, PermissionGroups,
         PermissionGroupsConfig, PermissionKey, PermissionKeyError, PermissionMetadataCatalog,
-        PermissionMetadataCatalogSource, PermissionResolutionSource, PermissionRuleContext,
+        PermissionMetadataCatalogSource, PermissionMetadataExpression,
+        PermissionMetadataExpressionError, PermissionResolutionSource, PermissionRuleContext,
         PermissionRuleExpression, PermissionRuleExpressionError, PermissionSegment, PermissionSet,
         PermissionState, PermissionValue, PermissionValueEntry, PermissionValueKeyError,
         PermissionValueSet, parse_permission_value_key,
@@ -3596,6 +3816,38 @@ mod tests {
             error,
             PermissionRuleExpressionError::InvalidContextValue { key, value }
                 if key == "plugin:region" && value == "spawn=bad"
+        ));
+    }
+
+    #[test]
+    fn permission_metadata_expression_parses_chained_contexts() {
+        let expression =
+            PermissionMetadataExpression::parse("steel:homes{world=lobby:spawn,region=spawn}")
+                .expect("metadata expression parses");
+        let expected_context = PermissionRuleContext::all([
+            PermissionRuleContext::world(Identifier::new("lobby", "spawn")),
+            rule_custom_context("region", "spawn"),
+        ])
+        .expect("context chain is valid");
+
+        assert_eq!(expression.key(), &value_key("steel:homes"));
+        assert_eq!(expression.context(), &expected_context);
+        assert_eq!(
+            expression.to_string(),
+            "steel:homes{world=lobby:spawn,region=spawn}"
+        );
+    }
+
+    #[test]
+    fn permission_metadata_expression_rejects_invalid_keys() {
+        let error = PermissionMetadataExpression::parse("steel:homes:limit")
+            .expect_err("invalid metadata key is rejected");
+
+        assert!(matches!(
+            error,
+            PermissionMetadataExpressionError::InvalidMetadataKey { value, source }
+                if value == "steel:homes:limit"
+                    && source == PermissionValueKeyError::InvalidFormat
         ));
     }
 

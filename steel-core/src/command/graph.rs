@@ -168,6 +168,8 @@ pub enum CommandParseErrorKind {
     InvalidPermissionKey(String),
     /// A permission rule expression argument was invalid.
     InvalidPermissionExpression(String),
+    /// A permission metadata expression argument was invalid.
+    InvalidPermissionMetadataExpression(String),
     /// A permission metadata key argument was invalid.
     InvalidPermissionMetadataKey(String),
     /// A permission group argument was invalid.
@@ -214,6 +216,7 @@ impl CommandParseErrorKind {
             | Self::InvalidTime(_)
             | Self::InvalidPermissionKey(_)
             | Self::InvalidPermissionExpression(_)
+            | Self::InvalidPermissionMetadataExpression(_)
             | Self::InvalidPermissionMetadataKey(_)
             | Self::InvalidPermissionGroup(_)
             | Self::MissingCommandContext(_)

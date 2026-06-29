@@ -1,6 +1,6 @@
     use super::{
-        PermissionAssignedGroupParser, PermissionContextKeyParser, PermissionContextValueParser,
-        PermissionGroupEditError, PermissionGroupNameParser, PermissionMetadataKeyParser,
+        PermissionAssignedGroupParser, PermissionGroupEditError, PermissionGroupNameParser,
+        PermissionMetadataExpressionParser,
         add_default_group_config, assigned_group_suggestions, can_manage_group,
         can_manage_metadata, can_manage_permission, delete_group_config,
         direct_metadata_override_suggestions, direct_permission_override_suggestions,
@@ -23,9 +23,13 @@
         PermissionContextKey, PermissionEntry, PermissionGroupConfig, PermissionGroupsConfig,
         PermissionKey, PermissionMetadataCatalog, PermissionMetadataCatalogSource,
         PermissionResolutionSource, PermissionRuleConfig, PermissionRuleContext,
-        PermissionRuleContextConfig, PermissionRuleCustomContextConfig, PermissionRuleStateConfig,
-        PermissionSet, PermissionState, PermissionValue, PermissionValueEntry,
-        PermissionValueRuleConfig, PermissionValueSet, parse_permission_value_key,
+        PermissionRuleContextConfig, PermissionRuleCustomContextConfig, PermissionRuleExpression,
+        PermissionRuleStateConfig, PermissionSet, PermissionState, PermissionValue,
+        PermissionValueEntry, PermissionValueRuleConfig, PermissionValueSet,
+        parse_permission_value_key,
+    };
+    use steel_protocol::packets::game::{
+        ArgumentStringTypeBehavior, ArgumentType, SuggestionType,
     };
     use steel_utils::Identifier;
 
@@ -192,90 +196,98 @@
     }
 
     #[test]
-    fn metadata_key_parser_requests_server_suggestions() {
-        let (_, suggestion_type) = PermissionMetadataKeyParser
+    fn metadata_expression_parser_requests_server_suggestions() {
+        let (argument_type, suggestion_type) = PermissionMetadataExpressionParser
             .client_parser()
             .into_protocol_argument();
         assert!(matches!(
-            suggestion_type,
-            Some(steel_protocol::packets::game::SuggestionType::AskServer)
+            argument_type,
+            ArgumentType::String {
+                behavior: ArgumentStringTypeBehavior::GreedyPhrase
+            }
         ));
+        assert!(matches!(suggestion_type, Some(SuggestionType::AskServer)));
     }
 
     #[test]
-    fn context_key_and_value_parsers_request_server_suggestions() {
-        let (key_argument_type, key_suggestion_type) = PermissionContextKeyParser
-            .client_parser()
-            .into_protocol_argument();
-        assert!(matches!(
-            key_argument_type,
-            steel_protocol::packets::game::ArgumentType::Identifier
-        ));
-        assert!(matches!(
-            key_suggestion_type,
-            Some(steel_protocol::packets::game::SuggestionType::AskServer)
-        ));
-        let (_, value_suggestion_type) = PermissionContextValueParser::new("context_custom_key")
-            .client_parser()
-            .into_protocol_argument();
-        assert!(matches!(
-            value_suggestion_type,
-            Some(steel_protocol::packets::game::SuggestionType::AskServer)
-        ));
-    }
-
-    #[test]
-    fn context_key_parser_accepts_namespaced_keys() {
-        let mut reader = CommandReader::new("plugin:region");
-        let parsed = PermissionContextKeyParser
+    fn metadata_expression_parser_accepts_context_selectors() {
+        let mut reader = CommandReader::new("plugin:homes{domain=lobby,plugin:region=spawn}");
+        let parsed = PermissionMetadataExpressionParser
             .parse(&mut reader, &TestContext::empty())
-            .expect("namespaced context key parses");
+            .expect("metadata expression parses");
 
         assert!(
-            matches!(parsed, ParsedArgument::String(ref value) if value == "plugin:region"),
-            "expected parsed context key string, got {parsed:?}"
+            matches!(parsed, ParsedArgument::PermissionMetadataExpression(ref expression)
+                if expression.key() == &metadata_key("plugin:homes")
+                    && expression.to_string() == "plugin:homes{domain=lobby,plugin:region=spawn}"),
+            "expected parsed metadata expression, got {parsed:?}"
         );
         assert_eq!(reader.remaining(), "");
     }
 
     #[test]
-    fn context_catalog_suggestions_include_known_keys_and_values() {
-        let mut context = TestContext::empty();
+    fn metadata_expression_parser_reports_expression_errors() {
+        let mut reader = CommandReader::new("plugin:homes{plugin:region=spawn=bad}");
+        let error = PermissionMetadataExpressionParser
+            .parse(&mut reader, &TestContext::empty())
+            .expect_err("invalid metadata expression should fail");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidPermissionMetadataExpression(value)
+                if value.contains("invalid permission metadata context value")
+        ));
+        assert_eq!(error.cursor(), 0);
+    }
+
+    #[test]
+    fn metadata_expression_suggestions_include_known_keys_and_contexts() {
+        let mut context = TestContext::with_permissions(["steel.permission.metadata.plugin.*"]);
+        context.metadata_catalog.insert(
+            metadata_key("plugin:homes"),
+            PermissionMetadataCatalogSource::Config,
+        );
+        context.metadata_catalog.insert(
+            metadata_key("other:homes"),
+            PermissionMetadataCatalogSource::Config,
+        );
         context.context_catalog.insert_value(
-            context_key("region"),
+            context_key("plugin:region"),
             "spawn",
             PermissionContextCatalogSource::Config,
         );
-        context.context_catalog.insert_value(
-            context_key("region"),
-            "market",
-            PermissionContextCatalogSource::Config,
-        );
-        context.context_catalog.insert_value(
-            context_key("arena"),
-            "duel",
-            PermissionContextCatalogSource::Config,
-        );
-        let mut arguments = ParsedArguments::default();
-        arguments.insert(
-            "context_custom_key",
-            ParsedArgument::String("region".to_owned()),
-        );
 
         assert_eq!(
-            suggestion_texts(PermissionContextKeyParser.suggest(
-                "r",
+            suggestion_texts(PermissionMetadataExpressionParser.suggest(
+                "plugin:h",
                 &ParsedArguments::default(),
                 &context
             )),
-            vec!["region"]
+            vec!["plugin:homes"]
         );
         assert_eq!(
-            suggestion_texts(
-                PermissionContextValueParser::new("context_custom_key")
-                    .suggest("s", &arguments, &context)
-            ),
-            vec!["spawn"]
+            suggestion_texts(PermissionMetadataExpressionParser.suggest(
+                "plugin:homes{p",
+                &ParsedArguments::default(),
+                &context
+            )),
+            vec!["plugin:homes{plugin:region="]
+        );
+        assert_eq!(
+            suggestion_texts(PermissionMetadataExpressionParser.suggest(
+                "plugin:homes{plugin:region=s",
+                &ParsedArguments::default(),
+                &context
+            )),
+            vec!["plugin:homes{plugin:region=spawn}"]
+        );
+        assert_eq!(
+            suggestion_texts(PermissionMetadataExpressionParser.suggest(
+                "other:homes{p",
+                &ParsedArguments::default(),
+                &context
+            )),
+            Vec::<String>::new()
         );
     }
 
@@ -292,7 +304,7 @@
         );
 
         assert_eq!(
-            suggestion_texts(PermissionMetadataKeyParser.suggest(
+            suggestion_texts(PermissionMetadataExpressionParser.suggest(
                 "",
                 &ParsedArguments::default(),
                 &context
@@ -310,30 +322,15 @@
     }
 
     #[test]
-    fn permission_context_key_parser_rejects_invalid_segments() {
-        let mut reader = CommandReader::new("region.spawn");
-        let error = PermissionContextKeyParser
-            .parse(&mut reader, &TestContext::empty())
-            .expect_err("context key should be one permission segment");
-
-        assert!(matches!(
-            error.kind(),
-            CommandParseErrorKind::InvalidPermissionKey(value) if value == "region.spawn"
-        ));
-    }
-
-    #[test]
     fn parsed_contexts_can_chain_domain_and_custom_constraints() {
         let permission = key("steel.region.build");
         let mut arguments = ParsedArguments::default();
-        arguments.insert("context_domain", ParsedArgument::String("lobby".to_owned()));
         arguments.insert(
-            "context_custom_key",
-            ParsedArgument::String("region".to_owned()),
-        );
-        arguments.insert(
-            "context_custom_value",
-            ParsedArgument::String("spawn".to_owned()),
+            "permission",
+            ParsedArgument::PermissionRuleExpression(
+                PermissionRuleExpression::parse("steel.region.build{domain=lobby,region=spawn}")
+                    .expect("permission expression parses"),
+            ),
         );
         let Ok(rule_context) = permission_rule_context(&arguments) else {
             panic!("rule context should parse");
@@ -348,6 +345,56 @@
 
         assert!(permissions.allows_key_in(&permission, &check_context));
         assert!(!permissions.allows_key_in(&permission, &PermissionContext::for_domain("lobby")));
+    }
+
+    #[test]
+    fn metadata_expression_context_drives_metadata_context_extraction() {
+        let mut arguments = ParsedArguments::default();
+        arguments.insert(
+            "metadata",
+            ParsedArgument::PermissionMetadataExpression(
+                crate::permission::PermissionMetadataExpression::parse(
+                    "plugin:homes{domain=lobby,region=spawn}",
+                )
+                .expect("metadata expression parses"),
+            ),
+        );
+
+        let Ok(rule_context) = permission_rule_context(&arguments) else {
+            panic!("rule context should parse");
+        };
+        let Ok(check_context) = permission_context(&arguments) else {
+            panic!("check context should parse");
+        };
+
+        assert_eq!(
+            rule_context,
+            PermissionRuleContext::all([
+                PermissionRuleContext::domain("lobby"),
+                custom_context("region", "spawn"),
+            ])
+            .expect("context chain is valid")
+        );
+        assert_eq!(
+            check_context,
+            PermissionContext::for_domain("lobby")
+                .with_custom_context(context_key("region"), "spawn")
+                .expect("custom context is valid")
+        );
+    }
+
+    #[test]
+    fn metadata_expression_parser_rejects_invalid_keys() {
+        let mut reader = CommandReader::new("plugin:bad:path");
+        let error = PermissionMetadataExpressionParser
+            .parse(&mut reader, &TestContext::empty())
+            .expect_err("invalid metadata expression should fail");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidPermissionMetadataExpression(value)
+                if value.contains("invalid permission metadata key")
+        ));
     }
 
     #[test]
@@ -456,7 +503,11 @@
     #[test]
     fn direct_metadata_suggestions_only_include_manageable_overrides() {
         let values = PermissionValueSet::from_entries([
-            PermissionValueEntry::new(metadata_key("plugin:homes"), PermissionValue::Integer(10)),
+            PermissionValueEntry::new_with_context(
+                metadata_key("plugin:homes"),
+                PermissionRuleContext::domain("lobby"),
+                PermissionValue::Integer(10),
+            ),
             PermissionValueEntry::new(metadata_key("other:homes"), PermissionValue::Integer(20)),
         ]);
 
@@ -466,7 +517,7 @@
                 [values],
                 &TestContext::with_permissions(["steel.permission.metadata.plugin.*"]),
             )),
-            vec!["plugin:homes"]
+            vec!["plugin:homes{domain=lobby}"]
         );
     }
 
@@ -942,7 +993,11 @@
                 PermissionValueRuleConfig {
                     key: "plugin:homes".to_owned(),
                     value: PermissionValue::Integer(10),
-                    context: None,
+                    context: Some(PermissionRuleContextConfig {
+                        domain: Some("lobby".to_owned()),
+                        world: None,
+                        custom: Vec::new(),
+                    }),
                 },
                 PermissionValueRuleConfig {
                     key: "other:homes".to_owned(),
@@ -958,6 +1013,6 @@
                 &group,
                 &TestContext::with_permissions(["steel.permission.metadata.plugin.*"]),
             )),
-            vec!["plugin:homes"]
+            vec!["plugin:homes{domain=lobby}"]
         );
     }

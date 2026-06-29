@@ -9,8 +9,9 @@ use crate::command::error::CommandError;
 use crate::command::requirement::{PermissionExpr, RequirementContext};
 use crate::permission::{
     PermissionGroupConfig, PermissionKey, PermissionKeyError, PermissionMetadataCatalog,
-    PermissionRuleConfig, PermissionRuleContext, PermissionRuleExpression, PermissionSegment,
-    PermissionSet, PermissionValueSet, parse_permission_value_key,
+    PermissionMetadataExpression, PermissionRuleConfig, PermissionRuleContext,
+    PermissionRuleExpression, PermissionSegment, PermissionSet, PermissionValueSet,
+    parse_permission_value_key,
 };
 
 pub(super) fn direct_permission_override_suggestions(
@@ -41,9 +42,11 @@ pub(super) fn direct_metadata_override_suggestions(
     let mut keys = BTreeSet::new();
     for values in values {
         for entry in values.entries() {
-            let key = entry.key().to_string();
-            if key.starts_with(prefix) && can_manage_metadata(context, entry.key()) {
-                keys.insert(key);
+            let expression =
+                PermissionMetadataExpression::new(entry.key().clone(), entry.context().clone())
+                    .to_string();
+            if expression.starts_with(prefix) && can_manage_metadata(context, entry.key()) {
+                keys.insert(expression);
             }
         }
     }
@@ -77,14 +80,21 @@ pub(super) fn group_metadata_suggestions(
 ) -> Vec<SuggestionEntry> {
     let mut keys = BTreeSet::new();
     for value in &group_config.values {
-        if !value.key.starts_with(prefix) {
-            continue;
-        }
         let Ok(key) = parse_permission_value_key(value.key.clone()) else {
             continue;
         };
-        if can_manage_metadata(context, &key) {
-            keys.insert(key.to_string());
+        let rule_context = value
+            .context
+            .clone()
+            .map_or(Ok(PermissionRuleContext::Global), |context| {
+                context.into_rule_context()
+            });
+        let Ok(rule_context) = rule_context else {
+            continue;
+        };
+        let expression = PermissionMetadataExpression::new(key.clone(), rule_context).to_string();
+        if expression.starts_with(prefix) && can_manage_metadata(context, &key) {
+            keys.insert(expression);
         }
     }
 

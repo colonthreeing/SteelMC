@@ -72,8 +72,7 @@ use self::config::{
 };
 #[cfg(test)]
 use self::parsers::{
-    PermissionAssignedGroupParser, PermissionContextKeyParser, PermissionContextValueParser,
-    PermissionGroupNameParser, PermissionMetadataKeyParser,
+    PermissionAssignedGroupParser, PermissionGroupNameParser, PermissionMetadataExpressionParser,
 };
 
 pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::steel().aliases(&["sp"]);

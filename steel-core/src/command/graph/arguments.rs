@@ -12,7 +12,8 @@ use uuid::Uuid;
 use crate::command::context::EntityAnchor;
 use crate::entity::LivingEntity;
 use crate::permission::{
-    PermissionKey, PermissionKeyError, PermissionRuleExpression, PermissionSegment,
+    PermissionKey, PermissionKeyError, PermissionMetadataExpression, PermissionRuleExpression,
+    PermissionSegment,
 };
 use crate::player::Player;
 use crate::world::World;
@@ -38,6 +39,8 @@ pub enum ParsedArgument {
     PermissionKey(PermissionKey),
     /// Permission rule expression argument.
     PermissionRuleExpression(PermissionRuleExpression),
+    /// Permission metadata expression argument.
+    PermissionMetadataExpression(PermissionMetadataExpression),
     /// Game mode argument.
     GameMode(GameType),
     /// Player target argument.
@@ -190,6 +193,10 @@ impl fmt::Debug for ParsedArgument {
                 .debug_tuple("PermissionRuleExpression")
                 .field(value)
                 .finish(),
+            Self::PermissionMetadataExpression(value) => f
+                .debug_tuple("PermissionMetadataExpression")
+                .field(value)
+                .finish(),
             Self::GameMode(value) => f.debug_tuple("GameMode").field(value).finish(),
             Self::Players(value) => f
                 .debug_struct("Players")
@@ -273,6 +280,7 @@ impl ParsedArgument {
             Self::Identifier(_) => "identifier",
             Self::PermissionKey(_) => "permission_key",
             Self::PermissionRuleExpression(_) => "permission_rule_expression",
+            Self::PermissionMetadataExpression(_) => "permission_metadata_expression",
             Self::GameMode(_) => "gamemode",
             Self::Players(_) => "players",
             Self::PermissionTargets(_) => "permission_targets",
@@ -411,6 +419,17 @@ impl FromParsedArgument for PermissionRuleExpression {
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
         let ParsedArgument::PermissionRuleExpression(value) = value else {
+            return None;
+        };
+        Some(value.clone())
+    }
+}
+
+impl FromParsedArgument for PermissionMetadataExpression {
+    const TYPE_NAME: &'static str = "permission_metadata_expression";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::PermissionMetadataExpression(value) = value else {
             return None;
         };
         Some(value.clone())

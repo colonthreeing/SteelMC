@@ -1,16 +1,13 @@
 //! Parsed argument extraction and context assembly for the `steelperms` command.
 
-use std::sync::Arc;
-
 use steel_utils::Identifier;
 
 use crate::command::error::CommandError;
 use crate::command::graph::{ParsedArguments, PermissionTarget};
 use crate::permission::{
-    PermissionContext, PermissionContextKey, PermissionKey, PermissionRuleContext,
+    PermissionContext, PermissionKey, PermissionMetadataExpression, PermissionRuleContext,
     PermissionRuleExpression, PermissionValue,
 };
-use crate::world::World;
 
 pub(super) fn targets(arguments: &ParsedArguments) -> Result<Vec<PermissionTarget>, CommandError> {
     let targets = arguments
@@ -46,9 +43,10 @@ pub(super) fn permission(arguments: &ParsedArguments) -> Result<PermissionKey, C
 }
 
 pub(super) fn metadata_key(arguments: &ParsedArguments) -> Result<Identifier, CommandError> {
-    arguments
-        .get::<Identifier>("metadata_key")
-        .map_err(super::super::invalid_parsed_argument)
+    let expression = arguments
+        .get::<PermissionMetadataExpression>("metadata")
+        .map_err(super::super::invalid_parsed_argument)?;
+    Ok(expression.key().clone())
 }
 
 pub(super) fn metadata_value(arguments: &ParsedArguments) -> Result<PermissionValue, CommandError> {
@@ -72,14 +70,8 @@ pub(super) fn permission_rule_context(
     if let Ok(expression) = arguments.get::<PermissionRuleExpression>("permission") {
         contexts.push(expression.context().clone());
     }
-    if let Ok(domain) = arguments.get::<String>("context_domain") {
-        contexts.push(PermissionRuleContext::domain(domain));
-    }
-    if let Ok(world) = arguments.get::<Arc<World>>("context_world") {
-        contexts.push(PermissionRuleContext::world(world.key.clone()));
-    }
-    if let Some(custom) = custom_permission_rule_context(arguments)? {
-        contexts.push(custom);
+    if let Ok(expression) = arguments.get::<PermissionMetadataExpression>("metadata") {
+        contexts.push(expression.context().clone());
     }
 
     PermissionRuleContext::all(contexts).map_err(|error| CommandError::failure(error.to_string()))
@@ -125,30 +117,4 @@ fn append_permission_context_from_rule_context(
         }
     }
     Ok(())
-}
-
-fn custom_permission_rule_context(
-    arguments: &ParsedArguments,
-) -> Result<Option<PermissionRuleContext>, CommandError> {
-    let Some((key, value)) = custom_permission_context(arguments)? else {
-        return Ok(None);
-    };
-
-    PermissionRuleContext::custom(key, value)
-        .map(Some)
-        .map_err(|error| CommandError::failure(error.to_string()))
-}
-
-fn custom_permission_context(
-    arguments: &ParsedArguments,
-) -> Result<Option<(PermissionContextKey, String)>, CommandError> {
-    let Ok(key) = arguments.get::<String>("context_custom_key") else {
-        return Ok(None);
-    };
-    let value = arguments
-        .get::<String>("context_custom_value")
-        .map_err(super::super::invalid_parsed_argument)?;
-    let key = PermissionContextKey::parse(key)
-        .map_err(|error| CommandError::failure(format!("Invalid context key: {error}")))?;
-    Ok(Some((key, value)))
 }
