@@ -65,6 +65,14 @@ pub trait CommandArgumentParser: Send + Sync {
     /// accepts only a hardcoded unquoted character set.
     fn client_parser(&self) -> CommandArgumentClientParser;
 
+    /// Returns true when no command nodes can be reached after this argument.
+    ///
+    /// This covers parsers that consume the rest of the server input and parser
+    /// metadata that makes tail nodes unreachable in the vanilla client.
+    fn is_terminal_argument(&self) -> bool {
+        self.client_parser().is_greedy_phrase()
+    }
+
     /// Returns the parsed argument type stored by this parser.
     fn parsed_type(&self) -> &'static str;
 

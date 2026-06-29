@@ -185,10 +185,8 @@ impl CommandNodeBuilder {
             return Ok(());
         };
 
-        if parser.client_parser().is_greedy_phrase()
-            && (!self.children.is_empty() || self.redirect.is_some())
-        {
-            return Err(CommandGraphError::GreedyClientParserMustBeTerminal { name: name.clone() });
+        if parser.is_terminal_argument() && (!self.children.is_empty() || self.redirect.is_some()) {
+            return Err(CommandGraphError::TerminalArgumentMustBeLeaf { name: name.clone() });
         }
 
         Ok(())

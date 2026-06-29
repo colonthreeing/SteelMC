@@ -279,8 +279,8 @@ pub enum CommandGraphError {
         /// Type produced by the parser.
         actual: &'static str,
     },
-    /// A client-side greedy string parser was registered with unreachable tail nodes.
-    GreedyClientParserMustBeTerminal {
+    /// A terminal argument parser was registered with unreachable tail nodes.
+    TerminalArgumentMustBeLeaf {
         /// Argument node name.
         name: String,
     },
@@ -337,10 +337,10 @@ impl fmt::Display for CommandGraphError {
                     "dynamic permission on command node '{node}' references argument '{argument}' as {expected}, but parser stores {actual}"
                 )
             }
-            Self::GreedyClientParserMustBeTerminal { name } => {
+            Self::TerminalArgumentMustBeLeaf { name } => {
                 write!(
                     f,
-                    "argument '{name}' advertises a greedy client parser and cannot have child nodes or redirects"
+                    "argument '{name}' is terminal and cannot have child nodes or redirects"
                 )
             }
         }
@@ -794,7 +794,7 @@ mod tests {
     };
 
     use crate::command::commands;
-    use crate::command::parsers::GameModeParser;
+    use crate::command::parsers::{ComponentParser, GameModeParser, PermissionKeyParser};
     use crate::command::{
         graph::{
             AnchorParser, BoolParser, CommandGraph, CommandGraphError, CommandNodeBuilder,
@@ -896,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn registration_rejects_greedy_client_parser_children() {
+    fn registration_rejects_terminal_argument_children() {
         let error = graph_registration_error(
             literal("root").then(
                 argument("message", StringParser::new(StringMode::GreedyPhrase))
@@ -906,14 +906,14 @@ mod tests {
 
         assert_eq!(
             error,
-            CommandGraphError::GreedyClientParserMustBeTerminal {
+            CommandGraphError::TerminalArgumentMustBeLeaf {
                 name: "message".to_owned(),
             }
         );
     }
 
     #[test]
-    fn registration_rejects_greedy_client_parser_redirects() {
+    fn registration_rejects_terminal_argument_redirects() {
         let error = graph_registration_error(
             literal("root").then(
                 argument("message", StringParser::new(StringMode::GreedyPhrase))
@@ -925,8 +925,42 @@ mod tests {
 
         assert_eq!(
             error,
-            CommandGraphError::GreedyClientParserMustBeTerminal {
+            CommandGraphError::TerminalArgumentMustBeLeaf {
                 name: "message".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn registration_rejects_server_terminal_argument_children() {
+        let error = graph_registration_error(
+            literal("tellraw").then(
+                argument("message", ComponentParser)
+                    .then(literal("tail").executes(|_, _| Ok(CommandResult::success()))),
+            ),
+        );
+
+        assert_eq!(
+            error,
+            CommandGraphError::TerminalArgumentMustBeLeaf {
+                name: "message".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn registration_rejects_client_terminal_permission_argument_children() {
+        let error = graph_registration_error(
+            literal("perm").then(
+                argument("permission", PermissionKeyParser)
+                    .then(literal("tail").executes(|_, _| Ok(CommandResult::success()))),
+            ),
+        );
+
+        assert_eq!(
+            error,
+            CommandGraphError::TerminalArgumentMustBeLeaf {
+                name: "permission".to_owned(),
             }
         );
     }

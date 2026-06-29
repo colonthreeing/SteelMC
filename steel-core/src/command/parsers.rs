@@ -161,6 +161,19 @@ mod tests {
     }
 
     #[test]
+    fn permission_key_parser_reads_one_server_token() {
+        let mut reader = CommandReader::new("steel.command.steelperms.* trailing");
+        let value = PermissionKeyParser
+            .parse(&mut reader, &TestContext)
+            .expect("permission key parses");
+
+        assert!(
+            matches!(value, ParsedArgument::PermissionKey(permission) if permission.as_str() == "steel.command.steelperms.*")
+        );
+        assert_eq!(reader.remaining(), " trailing");
+    }
+
+    #[test]
     fn permission_management_parsers_request_server_suggestions() {
         let (permission_key_argument, permission_key_suggestion) =
             PermissionKeyParser.client_parser().into_protocol_argument();
@@ -259,6 +272,7 @@ mod tests {
             CommandParseErrorKind::InvalidPermissionExpression(value)
                 if value.contains("invalid permission context value")
         ));
+        assert_eq!(error.cursor(), 0);
     }
 
     #[test]

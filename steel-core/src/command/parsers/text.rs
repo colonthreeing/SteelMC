@@ -38,6 +38,10 @@ impl CommandArgumentParser for ComponentParser {
         CommandArgumentClientParser::new(ArgumentType::Component, None)
     }
 
+    fn is_terminal_argument(&self) -> bool {
+        true
+    }
+
     fn parsed_type(&self) -> &'static str {
         "component"
     }
