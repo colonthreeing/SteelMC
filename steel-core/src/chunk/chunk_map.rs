@@ -1409,6 +1409,22 @@ impl ChunkMap {
         chunks
     }
 
+    /// Returns whether the chunk is full and currently allows entity ticks.
+    pub fn is_entity_ticking_full_chunk_loaded(&self, pos: ChunkPos) -> bool {
+        self.chunks
+            .read_sync(&pos, |_, holder| holder.entity_visibility().is_ticking())
+            .unwrap_or(false)
+    }
+
+    /// Returns whether the chunk is loaded at full status.
+    pub fn is_full_chunk_loaded(&self, pos: ChunkPos) -> bool {
+        self.chunks
+            .read_sync(&pos, |_, holder| {
+                holder.try_chunk(ChunkStatus::Full).is_some()
+            })
+            .unwrap_or(false)
+    }
+
     /// Sorts and executes all ready scheduled ticks, calling block/fluid behavior callbacks.
     fn execute_scheduled_ticks(
         world: &Arc<World>,

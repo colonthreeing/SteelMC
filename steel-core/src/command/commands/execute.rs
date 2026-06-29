@@ -5,23 +5,27 @@
 //! heightmap positioning are not registered here yet because their backing
 //! foundations are not implemented in Steel's command/runtime layer.
 
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use glam::DVec3;
 use steel_protocol::packets::game::{ArgumentType, SuggestionEntry};
 use steel_registry::entity_type::EntityTypeRef;
-use steel_utils::translations;
+use steel_utils::{BlockPos, translations};
 use text_components::TextComponent;
+use text_components::translation::TranslatedMessage;
 
 use crate::command::CommandRegistrationSpec;
 use crate::command::context::{CommandContext, EntityAnchor, anchored_position};
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    AnchorParser, CommandArgumentClientParser, CommandArgumentParser, CommandNodeBuilder,
-    CommandParseError, CommandParseErrorKind, CommandRedirectTarget, CommandResult,
-    ParsedArgument, ParsedArguments, argument, literal,
+    AnchorParser, BiomeArgumentValue, CommandArgumentClientParser, CommandArgumentParser,
+    CommandNodeBuilder, CommandParseError, CommandParseErrorKind, CommandRedirectTarget,
+    CommandResult, ParsedArgument, ParsedArguments, argument, literal,
 };
-use crate::command::parsers::{EntityParser, EntitySummonParser, RotationParser, Vec3Parser, WorldParser};
+use crate::command::parsers::{
+    BiomeParser, BlockPosParser, EntityParser, EntitySummonParser, RotationParser, Vec3Parser,
+    WorldParser,
+};
 use crate::command::reader::CommandReader;
 use crate::command::requirement::CommandInputContext;
 use crate::entity::{Mob, SharedEntity};
@@ -142,6 +146,26 @@ fn conditionals(name: &'static str, expected: bool) -> CommandNodeBuilder {
                 })
                 .forks(CommandRedirectTarget::Current, move |context, arguments| {
                     fork_dimension_condition(context, arguments, expected)
+                }),
+        ))
+        .then(literal("biome").then(
+            argument("pos", BlockPosParser).then(
+                argument("biome", BiomeParser)
+                    .executes(move |context, arguments| {
+                        execute_biome_condition(context, arguments, expected)
+                    })
+                    .forks(CommandRedirectTarget::Current, move |context, arguments| {
+                        fork_biome_condition(context, arguments, expected)
+                    }),
+            ),
+        ))
+        .then(literal("loaded").then(
+            argument("pos", BlockPosParser)
+                .executes(move |context, arguments| {
+                    execute_loaded_condition(context, arguments, expected)
+                })
+                .forks(CommandRedirectTarget::Current, move |context, arguments| {
+                    fork_loaded_condition(context, arguments, expected)
                 }),
         ))
 }
@@ -356,6 +380,98 @@ fn fork_dimension_condition(
     })
 }
 
+fn execute_loaded_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+) -> Result<CommandResult, CommandError> {
+    let matches = context
+        .world
+        .is_entity_ticking_chunk_loaded(block_position(arguments)?);
+    if matches == expected {
+        send_condition_pass(context);
+        Ok(CommandResult::success())
+    } else {
+        Err(conditional_failed(0))
+    }
+}
+
+fn fork_loaded_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+) -> Result<Vec<CommandContext>, CommandError> {
+    let matches = context
+        .world
+        .is_entity_ticking_chunk_loaded(block_position(arguments)?);
+    Ok(if matches == expected {
+        vec![context.clone()]
+    } else {
+        Vec::new()
+    })
+}
+
+fn execute_biome_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+) -> Result<CommandResult, CommandError> {
+    let matches = biome_condition_matches(context, arguments)?;
+    if matches == expected {
+        send_condition_pass(context);
+        Ok(CommandResult::success())
+    } else {
+        Err(conditional_failed(0))
+    }
+}
+
+fn fork_biome_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+) -> Result<Vec<CommandContext>, CommandError> {
+    let matches = biome_condition_matches(context, arguments)?;
+    Ok(if matches == expected {
+        vec![context.clone()]
+    } else {
+        Vec::new()
+    })
+}
+
+fn biome_condition_matches(
+    context: &CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<bool, CommandError> {
+    let pos = loaded_block_position(context, arguments)?;
+    let Some(biome) = context.world.biome_at(pos) else {
+        return Err(position_error("argument.pos.unloaded"));
+    };
+
+    Ok(biome_value(arguments)?.matches_biome(biome))
+}
+
+fn loaded_block_position(
+    context: &CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<BlockPos, CommandError> {
+    let pos = block_position(arguments)?;
+    if !context.world.is_full_chunk_loaded_at(pos) {
+        return Err(position_error("argument.pos.unloaded"));
+    }
+    if !context.world.is_in_valid_bounds(pos) {
+        return Err(position_error("argument.pos.outofworld"));
+    }
+    Ok(pos)
+}
+
+fn position_error(key: &'static str) -> CommandError {
+    CommandError::failure(TextComponent::translated(TranslatedMessage {
+        key: Cow::Borrowed(key),
+        fallback: None,
+        args: None,
+    }))
+}
+
 fn fork_on_attacker(
     context: &mut CommandContext,
     _arguments: &ParsedArguments,
@@ -457,6 +573,18 @@ fn anchor(arguments: &ParsedArguments) -> Result<EntityAnchor, CommandError> {
 fn position(arguments: &ParsedArguments) -> Result<DVec3, CommandError> {
     arguments
         .get::<DVec3>("pos")
+        .map_err(super::invalid_parsed_argument)
+}
+
+fn block_position(arguments: &ParsedArguments) -> Result<BlockPos, CommandError> {
+    arguments
+        .get::<BlockPos>("pos")
+        .map_err(super::invalid_parsed_argument)
+}
+
+fn biome_value(arguments: &ParsedArguments) -> Result<BiomeArgumentValue, CommandError> {
+    arguments
+        .get::<BiomeArgumentValue>("biome")
         .map_err(super::invalid_parsed_argument)
 }
 
@@ -575,4 +703,75 @@ fn is_valid_axes(axes: &str) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use glam::DVec3;
+    use steel_registry::test_support::init_test_registry;
+
+    use crate::command::graph::CommandGraph;
+    use crate::command::requirement::{
+        CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext,
+    };
+
+    struct TestContext;
+
+    impl RequirementContext for TestContext {
+        fn source_kind(&self) -> CommandSourceKind {
+            CommandSourceKind::Player
+        }
+
+        fn has_permission(&self, _permission: &PermissionExpr) -> bool {
+            false
+        }
+    }
+
+    impl CommandInputContext for TestContext {
+        fn position(&self) -> Option<DVec3> {
+            Some(DVec3::ZERO)
+        }
+    }
+
+    fn graph() -> CommandGraph {
+        CommandGraph::new()
+            .with_root(super::command())
+            .expect("execute command registers")
+    }
+
+    #[test]
+    fn loaded_condition_parses_direct_and_redirect_forms() {
+        let graph = graph();
+        let context = TestContext;
+
+        let direct = graph
+            .parse("execute if loaded 0 64 0", &context)
+            .expect("direct loaded conditional parses");
+        assert_eq!(direct.path(), ["execute", "if", "loaded", "pos"]);
+
+        let redirected = graph
+            .parse("execute unless loaded 0 64 0 run seed", &context)
+            .expect("redirected loaded conditional parses");
+        assert_eq!(redirected.path(), ["execute", "unless", "loaded", "pos"]);
+    }
+
+    #[test]
+    fn biome_condition_parses_direct_and_redirect_forms() {
+        init_test_registry();
+        let graph = graph();
+        let context = TestContext;
+
+        let direct = graph
+            .parse("execute if biome 0 64 0 plains", &context)
+            .expect("direct biome conditional parses");
+        assert_eq!(direct.path(), ["execute", "if", "biome", "pos", "biome"]);
+
+        let redirected = graph
+            .parse("execute unless biome 0 64 0 #is_overworld run seed", &context)
+            .expect("redirected biome conditional parses");
+        assert_eq!(
+            redirected.path(),
+            ["execute", "unless", "biome", "pos", "biome"]
+        );
+    }
 }

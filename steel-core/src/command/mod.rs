@@ -519,6 +519,9 @@ impl CommandDispatcher {
             CommandParseErrorKind::InvalidEnchantment(value) => {
                 TextComponent::plain(format!("Invalid enchantment '{value}'"))
             }
+            CommandParseErrorKind::InvalidBiome(value) => {
+                TextComponent::plain(format!("Invalid biome '{value}'"))
+            }
             CommandParseErrorKind::InvalidStructure(value) => {
                 TextComponent::plain(format!("Invalid structure '{value}'"))
             }

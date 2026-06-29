@@ -7,8 +7,9 @@ use steel_utils::Identifier;
 use crate::{
     command::{
         graph::{
-            CommandArgumentClientParser, CommandArgumentParser, CommandParseError,
-            CommandParseErrorKind, ParsedArgument, ParsedArguments, StructureArgumentValue,
+            BiomeArgumentValue, CommandArgumentClientParser, CommandArgumentParser,
+            CommandParseError, CommandParseErrorKind, ParsedArgument, ParsedArguments,
+            StructureArgumentValue,
         },
         reader::CommandReader,
         requirement::CommandInputContext,
@@ -210,6 +211,129 @@ impl CommandArgumentParser for EnchantmentParser {
                 matches_suggestion_substr(stripped_prefix, text)
             })
             .collect()
+    }
+}
+
+/// Biome or biome tag argument parser.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BiomeParser;
+
+impl CommandArgumentParser for BiomeParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let raw = reader.read_token()?;
+
+        if let Some(tag) = raw.strip_prefix('#') {
+            let Some(key) = parse_resource_identifier(tag) else {
+                return Err(CommandParseError::new(
+                    CommandParseErrorKind::InvalidBiome(raw),
+                    cursor,
+                ));
+            };
+            let Some(biomes) = REGISTRY.biomes.get_tag(&key) else {
+                return Err(CommandParseError::new(
+                    CommandParseErrorKind::InvalidBiome(raw),
+                    cursor,
+                ));
+            };
+            if biomes.is_empty() {
+                return Err(CommandParseError::new(
+                    CommandParseErrorKind::InvalidBiome(raw),
+                    cursor,
+                ));
+            }
+            return Ok(ParsedArgument::Biome(BiomeArgumentValue::Tag {
+                key,
+                biomes,
+            }));
+        }
+
+        let Some(key) = parse_resource_identifier(&raw) else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidBiome(raw),
+                cursor,
+            ));
+        };
+
+        let Some(biome) = REGISTRY.biomes.by_key(&key) else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidBiome(raw),
+                cursor,
+            ));
+        };
+
+        Ok(ParsedArgument::Biome(BiomeArgumentValue::Biome(biome)))
+    }
+
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(
+            ArgumentType::ResourceOrTag {
+                identifier: "minecraft:worldgen/biome",
+            },
+            Some(SuggestionType::AskServer),
+        )
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "biome"
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        _arguments: &ParsedArguments,
+        _context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        if prefix.starts_with('#') {
+            let stripped_prefix = prefix
+                .strip_prefix("#minecraft:")
+                .or_else(|| prefix.strip_prefix('#'))
+                .unwrap_or(prefix);
+            return REGISTRY
+                .biomes
+                .tag_keys()
+                .filter_map(|key| {
+                    let key = key.to_string();
+                    let text = key.strip_prefix("minecraft:").unwrap_or(&key);
+                    matches_suggestion_substr(stripped_prefix, text)
+                        .then(|| SuggestionEntry::new(format!("#{key}")))
+                })
+                .collect();
+        }
+
+        let stripped_prefix = prefix.strip_prefix("minecraft:").unwrap_or(prefix);
+        let mut suggestions = Vec::new();
+        suggestions.extend(
+            REGISTRY
+                .biomes
+                .iter()
+                .map(|(_, biome)| SuggestionEntry::new(biome.key.to_string()))
+                .filter(|suggestion| {
+                    let text = suggestion
+                        .text
+                        .strip_prefix("minecraft:")
+                        .unwrap_or(&suggestion.text);
+                    matches_suggestion_substr(stripped_prefix, text)
+                }),
+        );
+        suggestions.extend(
+            REGISTRY
+                .biomes
+                .tag_keys()
+                .map(|key| SuggestionEntry::new(format!("#{key}")))
+                .filter(|suggestion| {
+                    let text = suggestion
+                        .text
+                        .strip_prefix("#minecraft:")
+                        .unwrap_or(&suggestion.text);
+                    matches_suggestion_substr(stripped_prefix, text)
+                }),
+        );
+        suggestions
     }
 }
 

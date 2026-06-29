@@ -2,7 +2,7 @@ use std::{fmt, sync::Arc};
 
 use glam::DVec3;
 use steel_registry::{
-    enchantment::EnchantmentRef, entity_type::EntityTypeRef, items::ItemRef,
+    biome::BiomeRef, enchantment::EnchantmentRef, entity_type::EntityTypeRef, items::ItemRef,
     structure::StructureRef,
 };
 use steel_utils::{BlockPos, Identifier, types::GameType};
@@ -55,6 +55,8 @@ pub enum ParsedArgument {
     Item(ItemRef),
     /// Enchantment argument.
     Enchantment(EnchantmentRef),
+    /// Biome or biome tag argument.
+    Biome(BiomeArgumentValue),
     /// Structure or structure tag argument.
     Structure(StructureArgumentValue),
     /// Loaded world argument.
@@ -67,6 +69,20 @@ pub enum ParsedArgument {
     Rotation((f32, f32)),
     /// Text component argument.
     Component(Box<TextComponent>),
+}
+
+/// Biome command argument value: either one biome or a biome tag.
+#[derive(Clone, Debug)]
+pub enum BiomeArgumentValue {
+    /// A single biome key.
+    Biome(BiomeRef),
+    /// A biome tag and its resolved entries.
+    Tag {
+        /// Tag key without the leading `#`.
+        key: Identifier,
+        /// Biomes in the tag.
+        biomes: Vec<BiomeRef>,
+    },
 }
 
 /// Structure command argument value: either one structure or a structure tag.
@@ -178,6 +194,17 @@ impl StructureArgumentValue {
     }
 }
 
+impl BiomeArgumentValue {
+    /// Returns whether this value matches `biome`.
+    #[must_use]
+    pub fn matches_biome(&self, biome: BiomeRef) -> bool {
+        match self {
+            Self::Biome(expected) => expected.key == biome.key,
+            Self::Tag { biomes, .. } => biomes.iter().any(|entry| entry.key == biome.key),
+        }
+    }
+}
+
 impl fmt::Debug for ParsedArgument {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -213,6 +240,7 @@ impl fmt::Debug for ParsedArgument {
             Self::EntityType(value) => f.debug_tuple("EntityType").field(&value.key).finish(),
             Self::Item(value) => f.debug_tuple("Item").field(&value.key).finish(),
             Self::Enchantment(value) => f.debug_tuple("Enchantment").field(&value.key).finish(),
+            Self::Biome(value) => f.debug_tuple("Biome").field(value).finish(),
             Self::Structure(value) => f.debug_tuple("Structure").field(value).finish(),
             Self::World(value) => f.debug_tuple("World").field(&value.key).finish(),
             Self::Vec3(value) => f.debug_tuple("Vec3").field(value).finish(),
@@ -288,6 +316,7 @@ impl ParsedArgument {
             Self::EntityType(_) => "entity_type",
             Self::Item(_) => "item",
             Self::Enchantment(_) => "enchantment",
+            Self::Biome(_) => "biome",
             Self::Structure(_) => "structure",
             Self::World(_) => "world",
             Self::Vec3(_) => "vec3",
@@ -528,6 +557,17 @@ impl FromParsedArgument for StructureArgumentValue {
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
         let ParsedArgument::Structure(value) = value else {
+            return None;
+        };
+        Some(value.clone())
+    }
+}
+
+impl FromParsedArgument for BiomeArgumentValue {
+    const TYPE_NAME: &'static str = "biome";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::Biome(value) = value else {
             return None;
         };
         Some(value.clone())

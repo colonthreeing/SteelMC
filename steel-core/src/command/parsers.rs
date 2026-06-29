@@ -11,7 +11,9 @@ mod world;
 pub use game::GameModeParser;
 pub use permission::{PermissionGroupParser, PermissionKeyParser, PermissionRuleExpressionParser};
 pub use position::{BlockPosParser, RotationParser, Vec3Parser};
-pub use resource::{EnchantmentParser, EntitySummonParser, ItemParser, StructureParser};
+pub use resource::{
+    BiomeParser, EnchantmentParser, EntitySummonParser, ItemParser, StructureParser,
+};
 pub use target::{EntityParser, PermissionTargetParser, PlayerParser};
 pub use text::{ComponentParser, TimeParser};
 pub use world::{DomainParser, WorldParser};
@@ -21,7 +23,8 @@ mod tests {
     use glam::DVec3;
     use steel_protocol::packets::game::SuggestionType;
     use steel_registry::{
-        test_support::init_test_registry, vanilla_enchantments, vanilla_entities, vanilla_items,
+        test_support::init_test_registry, vanilla_biomes, vanilla_enchantments, vanilla_entities,
+        vanilla_items,
     };
 
     use crate::{
@@ -30,8 +33,8 @@ mod tests {
                 CommandArgumentParser, CommandParseErrorKind, ParsedArgument, ParsedArguments,
             },
             parsers::{
-                BlockPosParser, ComponentParser, DomainParser, EnchantmentParser, EntityParser,
-                EntitySummonParser, GameModeParser, ItemParser, PermissionKeyParser,
+                BiomeParser, BlockPosParser, ComponentParser, DomainParser, EnchantmentParser,
+                EntityParser, EntitySummonParser, GameModeParser, ItemParser, PermissionKeyParser,
                 PermissionRuleExpressionParser, PermissionTargetParser, PlayerParser,
                 RotationParser, StructureParser, TimeParser, Vec3Parser, WorldParser,
             },
@@ -435,6 +438,36 @@ mod tests {
         assert!(matches!(
             value,
             ParsedArgument::Enchantment(enchantment) if enchantment == &vanilla_enchantments::SHARPNESS
+        ));
+    }
+
+    #[test]
+    fn biome_parser_resolves_default_namespace() {
+        init_test_registry();
+
+        let mut reader = CommandReader::new("plains");
+        let value = BiomeParser
+            .parse(&mut reader, &TestContext)
+            .expect("biome parses");
+
+        assert!(matches!(
+            value,
+            ParsedArgument::Biome(biome) if biome.matches_biome(&vanilla_biomes::PLAINS)
+        ));
+    }
+
+    #[test]
+    fn biome_parser_resolves_tags() {
+        init_test_registry();
+
+        let mut reader = CommandReader::new("#is_overworld");
+        let value = BiomeParser
+            .parse(&mut reader, &TestContext)
+            .expect("biome tag parses");
+
+        assert!(matches!(
+            value,
+            ParsedArgument::Biome(biome) if biome.matches_biome(&vanilla_biomes::PLAINS)
         ));
     }
 
