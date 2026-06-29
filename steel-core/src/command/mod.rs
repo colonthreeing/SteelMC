@@ -467,6 +467,12 @@ impl CommandDispatcher {
             CommandParseErrorKind::MissingCommandContext(name) => {
                 TextComponent::plain(format!("Missing command context '{name}'"))
             }
+            CommandParseErrorKind::ArgumentParserDidNotConsumeInput {
+                argument,
+                parsed_type,
+            } => TextComponent::plain(format!(
+                "Command argument parser '{parsed_type}' for '{argument}' did not consume input"
+            )),
         }
     }
 

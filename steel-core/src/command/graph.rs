@@ -174,6 +174,13 @@ pub enum CommandParseErrorKind {
     InvalidPermissionGroup(String),
     /// A parser required live command context that was not available.
     MissingCommandContext(&'static str),
+    /// An argument parser returned success without advancing the reader.
+    ArgumentParserDidNotConsumeInput {
+        /// Argument node name.
+        argument: String,
+        /// Parser value type.
+        parsed_type: &'static str,
+    },
 }
 
 impl CommandParseErrorKind {
@@ -210,6 +217,7 @@ impl CommandParseErrorKind {
             | Self::InvalidPermissionMetadataKey(_)
             | Self::InvalidPermissionGroup(_)
             | Self::MissingCommandContext(_)
+            | Self::ArgumentParserDidNotConsumeInput { .. }
             | Self::UnclosedQuote
             | Self::InvalidEscape(_) => 6,
             Self::ExpectedArgument => 5,
@@ -797,12 +805,13 @@ mod tests {
     use crate::command::parsers::{ComponentParser, GameModeParser, PermissionKeyParser};
     use crate::command::{
         graph::{
-            AnchorParser, BoolParser, CommandGraph, CommandGraphError, CommandNodeBuilder,
-            CommandNodeNameError, CommandParseErrorKind, CommandRedirectTarget, CommandResult,
-            FloatParser, IntegerParser, LongParser, ParsedCommandAction, StringParser,
-            SuggestionResult, argument, literal,
+            AnchorParser, BoolParser, CommandArgumentClientParser, CommandArgumentParser,
+            CommandGraph, CommandGraphError, CommandNodeBuilder, CommandNodeNameError,
+            CommandParseError, CommandParseErrorKind, CommandRedirectTarget, CommandResult,
+            FloatParser, IntegerParser, LongParser, ParsedArgument, ParsedCommandAction,
+            StringParser, SuggestionResult, argument, literal,
         },
-        reader::StringMode,
+        reader::{CommandReader, StringMode},
         requirement::{
             CommandInputContext, CommandSourceKind, PermissionExpr, PermissionKey, Requirement,
             RequirementContext,
@@ -811,12 +820,39 @@ mod tests {
     use crate::permission::{
         PermissionCatalog, PermissionCatalogSource, PermissionEntry, PermissionSet,
     };
-    use steel_protocol::packets::game::CommandNode as ProtocolCommandNode;
+    use steel_protocol::packets::game::{
+        ArgumentStringTypeBehavior, ArgumentType, CommandNode as ProtocolCommandNode,
+    };
     use steel_utils::{serial::WriteTo, types::GameType};
 
     struct TestContext {
         source_kind: CommandSourceKind,
         permissions: PermissionSet,
+    }
+
+    struct EmptySuccessParser;
+
+    impl CommandArgumentParser for EmptySuccessParser {
+        fn parse(
+            &self,
+            _reader: &mut CommandReader<'_>,
+            _context: &dyn CommandInputContext,
+        ) -> Result<ParsedArgument, CommandParseError> {
+            Ok(ParsedArgument::String(String::new()))
+        }
+
+        fn client_parser(&self) -> CommandArgumentClientParser {
+            CommandArgumentClientParser::new(
+                ArgumentType::String {
+                    behavior: ArgumentStringTypeBehavior::SingleWord,
+                },
+                None,
+            )
+        }
+
+        fn parsed_type(&self) -> &'static str {
+            "empty_success"
+        }
     }
 
     impl RequirementContext for TestContext {
@@ -1275,6 +1311,26 @@ mod tests {
 
         assert_eq!(result.path(), ["give", "count"]);
         assert_eq!(result.arguments().get::<i32>("count"), Ok(12));
+    }
+
+    #[test]
+    fn argument_parser_must_consume_input() {
+        let graph = graph_with_root(literal("root").then(
+            argument("value", EmptySuccessParser).executes(|_, _| Ok(CommandResult::success())),
+        ));
+
+        let error = graph
+            .parse("root value", &player_context())
+            .expect_err("argument parser that does not consume input should reject parsing");
+
+        assert_eq!(
+            error.kind(),
+            &CommandParseErrorKind::ArgumentParserDidNotConsumeInput {
+                argument: "value".to_owned(),
+                parsed_type: "empty_success",
+            }
+        );
+        assert_eq!(error.cursor(), 5);
     }
 
     #[test]

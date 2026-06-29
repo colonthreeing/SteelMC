@@ -5,8 +5,8 @@ use steel_protocol::packets::game::SuggestionEntry;
 use super::node::{CommandNode, CommandNodeKind};
 use super::{
     CommandArgumentParser, CommandParseError, CommandParseErrorKind, CommandRedirectTarget,
-    DynamicPermission, ParseResults, ParsedArguments, ParsedCommandAction, ParsedRedirect,
-    SuggestionResult, dynamic_permissions_allow,
+    DynamicPermission, ParseResults, ParsedArgument, ParsedArguments, ParsedCommandAction,
+    ParsedRedirect, SuggestionResult, dynamic_permissions_allow,
 };
 use crate::command::{reader::CommandReader, requirement::CommandInputContext};
 
@@ -234,7 +234,7 @@ fn filter_argument_suggestions_by_dynamic_permissions(
         .into_iter()
         .filter(|suggestion| {
             let mut reader = CommandReader::new(&suggestion.text);
-            let Ok(value) = parser.parse(&mut reader, context) else {
+            let Ok(value) = parse_argument(parser, argument_name, &mut reader, context) else {
                 return false;
             };
             reader.skip_whitespace();
@@ -293,7 +293,7 @@ impl CommandNode {
                 }
             }
             CommandNodeKind::Argument { name, parser } => {
-                let value = parser.parse(reader, context)?;
+                let value = parse_argument(parser.as_ref(), name, reader, context)?;
                 arguments.insert(name, value);
                 Ok(())
             }
@@ -467,4 +467,24 @@ impl CommandNode {
             current_root_children,
         )
     }
+}
+
+fn parse_argument(
+    parser: &dyn CommandArgumentParser,
+    argument_name: &str,
+    reader: &mut CommandReader<'_>,
+    context: &dyn CommandInputContext,
+) -> Result<ParsedArgument, CommandParseError> {
+    let cursor = reader.absolute_cursor();
+    let value = parser.parse(reader, context)?;
+    if reader.absolute_cursor() == cursor {
+        return Err(CommandParseError::new(
+            CommandParseErrorKind::ArgumentParserDidNotConsumeInput {
+                argument: argument_name.to_owned(),
+                parsed_type: parser.parsed_type(),
+            },
+            cursor,
+        ));
+    }
+    Ok(value)
 }
