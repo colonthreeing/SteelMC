@@ -4,19 +4,15 @@
 //! predicates are not registered here yet because their backing foundations are
 //! not implemented in Steel's command/runtime layer.
 
-use std::{borrow::Cow, fmt, io::Cursor, sync::Arc};
+use std::{borrow::Cow, sync::Arc};
 
 use glam::DVec3;
-use simdnbt::{
-    borrow::read_compound as read_borrowed_compound,
-    owned::{NbtCompound, NbtTag},
-};
-use steel_protocol::packets::game::{ArgumentType, SuggestionEntry, SuggestionType};
+use simdnbt::owned::{NbtCompound, NbtTag};
 use steel_registry::blocks::block_state_ext::BlockStateExt;
 use steel_registry::entity_type::EntityTypeRef;
 use steel_utils::{
     BlockPos, Identifier,
-    nbt::{NbtPath, NbtPathMutationError, compare_nbt},
+    nbt::{NbtPath, compare_nbt},
     translations,
 };
 use text_components::TextComponent;
@@ -24,28 +20,28 @@ use text_components::translation::TranslatedMessage;
 
 use crate::chunk::heightmap::HeightmapType;
 use crate::command::CommandRegistrationSpec;
-use crate::command::context::{
-    CommandContext, CommandResultCallback, EntityAnchor, anchored_position,
-};
+use crate::command::context::{CommandContext, EntityAnchor, anchored_position};
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    AnchorParser, BiomeArgumentValue, BlockPredicateArgumentValue, CommandArgumentClientParser,
-    CommandArgumentParser, CommandNodeBuilder, CommandParseError, CommandParseErrorKind,
-    CommandRedirectTarget, CommandResult, IntRangeArgumentValue, ParsedArgument, ParsedArguments,
-    DoubleParser, ScoreHolderArgumentValue, ScoreboardObjectiveName, argument, literal,
+    AnchorParser, BiomeArgumentValue, BlockPredicateArgumentValue, CommandNodeBuilder,
+    CommandRedirectTarget, CommandResult, IntRangeArgumentValue, ParsedArguments,
+    ScoreHolderArgumentValue, ScoreboardObjectiveName, argument, literal,
 };
 use crate::command::parsers::{
     BiomeParser, BlockPosParser, BlockPredicateParser, EntityParser, EntitySummonParser,
     HeightmapParser, IntRangeParser, NbtPathParser, ObjectiveParser, RotationParser,
-    ScoreHolderParser, Vec3Parser, WorldParser, parse_resource_identifier,
+    ScoreHolderParser, Vec3Parser, WorldParser,
 };
-use crate::command::reader::CommandReader;
-use crate::command::requirement::CommandInputContext;
-use crate::command::storage::CommandStorage;
-use crate::command::suggestions::matches_suggestion_substr;
 use crate::entity::{Mob, SharedEntity};
-use crate::scoreboard::{ScoreHolder, Scoreboard, ScoreboardError, ScoreboardObjective};
+use crate::scoreboard::{ScoreHolder, Scoreboard, ScoreboardObjective};
 use crate::world::World;
+
+#[path = "execute/store.rs"]
+mod store;
+#[path = "execute/parsers.rs"]
+mod execute_parsers;
+
+use self::execute_parsers::{AxesParser, StorageKeyParser};
 
 pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::minecraft();
 
@@ -74,8 +70,8 @@ pub(crate) fn command() -> CommandNodeBuilder {
         )
         .then(
             literal("store")
-                .then(store_target("result", true))
-                .then(store_target("success", false)),
+                .then(store::target("result", true))
+                .then(store::target("success", false)),
         )
         .then(
             literal("positioned")
@@ -270,144 +266,6 @@ fn conditionals(name: &'static str, expected: bool) -> CommandNodeBuilder {
                 ),
             ),
         ))
-}
-
-fn store_target(name: &'static str, store_result: bool) -> CommandNodeBuilder {
-    literal(name)
-        .then(literal("score").then(
-            argument("targets", ScoreHolderParser::multiple()).then(
-                argument("objective", ObjectiveParser).redirects(
-                    CommandRedirectTarget::Current,
-                    move |context, arguments| store_score(context, arguments, store_result),
-                ),
-            ),
-        ))
-        .then(literal("block").then(
-            argument("targetPos", BlockPosParser).then(
-                argument("path", NbtPathParser)
-                    .then(store_block_data_type("int", StoreDataType::Int, store_result))
-                    .then(store_block_data_type(
-                        "float",
-                        StoreDataType::Float,
-                        store_result,
-                    ))
-                    .then(store_block_data_type(
-                        "short",
-                        StoreDataType::Short,
-                        store_result,
-                    ))
-                    .then(store_block_data_type("long", StoreDataType::Long, store_result))
-                    .then(store_block_data_type(
-                        "double",
-                        StoreDataType::Double,
-                        store_result,
-                    ))
-                    .then(store_block_data_type("byte", StoreDataType::Byte, store_result)),
-            ),
-        ))
-        .then(literal("storage").then(
-            argument("target", StorageKeyParser).then(
-                argument("path", NbtPathParser)
-                    .then(store_storage_data_type(
-                        "int",
-                        StoreDataType::Int,
-                        store_result,
-                    ))
-                    .then(store_storage_data_type(
-                        "float",
-                        StoreDataType::Float,
-                        store_result,
-                    ))
-                    .then(store_storage_data_type(
-                        "short",
-                        StoreDataType::Short,
-                        store_result,
-                    ))
-                    .then(store_storage_data_type(
-                        "long",
-                        StoreDataType::Long,
-                        store_result,
-                    ))
-                    .then(store_storage_data_type(
-                        "double",
-                        StoreDataType::Double,
-                        store_result,
-                    ))
-                    .then(store_storage_data_type(
-                        "byte",
-                        StoreDataType::Byte,
-                        store_result,
-                    )),
-            ),
-        ))
-        .then(literal("entity").then(
-            argument("target", EntityParser::one()).then(
-                argument("path", NbtPathParser)
-                    .then(store_entity_data_type(
-                        "int",
-                        StoreDataType::Int,
-                        store_result,
-                    ))
-                    .then(store_entity_data_type(
-                        "float",
-                        StoreDataType::Float,
-                        store_result,
-                    ))
-                    .then(store_entity_data_type(
-                        "short",
-                        StoreDataType::Short,
-                        store_result,
-                    ))
-                    .then(store_entity_data_type(
-                        "long",
-                        StoreDataType::Long,
-                        store_result,
-                    ))
-                    .then(store_entity_data_type(
-                        "double",
-                        StoreDataType::Double,
-                        store_result,
-                    ))
-                    .then(store_entity_data_type(
-                        "byte",
-                        StoreDataType::Byte,
-                        store_result,
-                    )),
-            ),
-        ))
-}
-
-fn store_block_data_type(
-    name: &'static str,
-    data_type: StoreDataType,
-    store_result: bool,
-) -> CommandNodeBuilder {
-    literal(name).then(argument("scale", DoubleParser::new()).redirects(
-        CommandRedirectTarget::Current,
-        move |context, arguments| store_block_data(context, arguments, data_type, store_result),
-    ))
-}
-
-fn store_storage_data_type(
-    name: &'static str,
-    data_type: StoreDataType,
-    store_result: bool,
-) -> CommandNodeBuilder {
-    literal(name).then(argument("scale", DoubleParser::new()).redirects(
-        CommandRedirectTarget::Current,
-        move |context, arguments| store_storage_data(context, arguments, data_type, store_result),
-    ))
-}
-
-fn store_entity_data_type(
-    name: &'static str,
-    data_type: StoreDataType,
-    store_result: bool,
-) -> CommandNodeBuilder {
-    literal(name).then(argument("scale", DoubleParser::new()).redirects(
-        CommandRedirectTarget::Current,
-        move |context, arguments| store_entity_data(context, arguments, data_type, store_result),
-    ))
 }
 
 fn blocks_conditional(name: &'static str, expected: bool, skip_air: bool) -> CommandNodeBuilder {
@@ -607,263 +465,6 @@ fn summon_and_redirect(
     let entity = super::summon::create_entity(context, entity_type(arguments)?, context.position)?;
     *context = context.clone().with_entity(entity);
     Ok(CommandResult::success())
-}
-
-#[derive(Clone, Copy, Debug)]
-enum StoreDataType {
-    Byte,
-    Short,
-    Int,
-    Long,
-    Float,
-    Double,
-}
-
-impl StoreDataType {
-    fn tag(self, value: i32, scale: f64) -> NbtTag {
-        let scaled = f64::from(value) * scale;
-        match self {
-            Self::Byte => NbtTag::Byte(scaled as i32 as u8 as i8),
-            Self::Short => NbtTag::Short(scaled as i32 as u16 as i16),
-            Self::Int => NbtTag::Int(scaled as i32),
-            Self::Long => NbtTag::Long(scaled as i64),
-            Self::Float => NbtTag::Float(scaled as f32),
-            Self::Double => NbtTag::Double(scaled),
-        }
-    }
-}
-
-fn store_block_data(
-    context: &mut CommandContext,
-    arguments: &ParsedArguments,
-    data_type: StoreDataType,
-    store_result: bool,
-) -> Result<CommandResult, CommandError> {
-    let pos = loaded_named_block_position(context, arguments, "targetPos")?;
-    if context.world.get_block_entity(pos).is_none() {
-        return Err(block_data_invalid_error());
-    }
-
-    let path = nbt_path(arguments)?;
-    let scale = double(arguments, "scale")?;
-    let world = Arc::clone(&context.world);
-    let callback = CommandResultCallback::new(move |result| {
-        let value = if store_result {
-            result.result
-        } else {
-            i32::from(result.success)
-        };
-        let tag = data_type.tag(value, scale);
-        if let Err(error) = store_block_data_value(&world, pos, &path, tag) {
-            log::warn!("Failed to store execute command result in block data: {error}");
-        }
-    });
-    context.chain_result_callback(callback);
-    Ok(CommandResult::success())
-}
-
-fn store_score(
-    context: &mut CommandContext,
-    arguments: &ParsedArguments,
-    store_result: bool,
-) -> Result<CommandResult, CommandError> {
-    let objective = scoreboard_objective(context, arguments, "objective")?;
-    let holders = score_holders_or_tracked(context, arguments, "targets")?;
-    let server = Arc::clone(&context.server);
-    let callback = CommandResultCallback::new(move |result| {
-        let value = if store_result {
-            result.result
-        } else {
-            i32::from(result.success)
-        };
-        if let Err(error) = store_score_value(&server.scoreboard, &holders, &objective, value) {
-            log::warn!("Failed to store execute command result in scoreboard: {error}");
-        }
-    });
-    context.chain_result_callback(callback);
-    Ok(CommandResult::success())
-}
-
-fn store_storage_data(
-    context: &mut CommandContext,
-    arguments: &ParsedArguments,
-    data_type: StoreDataType,
-    store_result: bool,
-) -> Result<CommandResult, CommandError> {
-    let target = storage_id(arguments, "target")?;
-    let path = nbt_path(arguments)?;
-    let scale = double(arguments, "scale")?;
-    let server = Arc::clone(&context.server);
-    let callback = CommandResultCallback::new(move |result| {
-        let value = if store_result {
-            result.result
-        } else {
-            i32::from(result.success)
-        };
-        let tag = data_type.tag(value, scale);
-        if let Err(error) = store_storage_data_value(&server.command_storage, &target, &path, tag) {
-            log::warn!("Failed to store execute command result in command storage: {error}");
-        }
-    });
-    context.chain_result_callback(callback);
-    Ok(CommandResult::success())
-}
-
-fn store_entity_data(
-    context: &mut CommandContext,
-    arguments: &ParsedArguments,
-    data_type: StoreDataType,
-    store_result: bool,
-) -> Result<CommandResult, CommandError> {
-    let target = single_entity(arguments, "target")?;
-    if target.as_player().is_some() {
-        return Err(entity_data_invalid_error());
-    }
-
-    let path = nbt_path(arguments)?;
-    let scale = double(arguments, "scale")?;
-    let callback = CommandResultCallback::new(move |result| {
-        let value = if store_result {
-            result.result
-        } else {
-            i32::from(result.success)
-        };
-        let tag = data_type.tag(value, scale);
-        if let Err(error) = store_entity_data_value(target.as_ref(), &path, tag) {
-            log::warn!("Failed to store execute command result in entity data: {error}");
-        }
-    });
-    context.chain_result_callback(callback);
-    Ok(CommandResult::success())
-}
-
-fn store_entity_data_value(
-    entity: &dyn crate::entity::Entity,
-    path: &NbtPath,
-    value: NbtTag,
-) -> Result<(), StoreEntityDataError> {
-    let mut tag = NbtTag::Compound(entity.nbt_for_data_compare());
-    path.set(&mut tag, value).map_err(StoreEntityDataError::Path)?;
-    let NbtTag::Compound(data) = tag else {
-        return Err(StoreEntityDataError::ExpectedCompoundRoot);
-    };
-
-    entity
-        .load_data_command_nbt(&data)
-        .map_err(StoreEntityDataError::Load)?;
-    Ok(())
-}
-
-#[derive(Debug)]
-enum StoreEntityDataError {
-    Path(NbtPathMutationError),
-    ExpectedCompoundRoot,
-    Load(crate::entity::EntityDataLoadError),
-}
-
-impl fmt::Display for StoreEntityDataError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Path(error) => write!(f, "{error}"),
-            Self::ExpectedCompoundRoot => write!(f, "NBT path mutation replaced the root compound"),
-            Self::Load(error) => write!(f, "{error}"),
-        }
-    }
-}
-
-fn store_storage_data_value(
-    storage: &CommandStorage,
-    id: &Identifier,
-    path: &NbtPath,
-    value: NbtTag,
-) -> Result<(), StoreStorageDataError> {
-    let mut tag = NbtTag::Compound(storage.get(id));
-    path.set(&mut tag, value)
-        .map_err(StoreStorageDataError::Path)?;
-    let NbtTag::Compound(data) = tag else {
-        return Err(StoreStorageDataError::ExpectedCompoundRoot);
-    };
-
-    storage.set(id.clone(), data);
-    Ok(())
-}
-
-#[derive(Debug)]
-enum StoreStorageDataError {
-    Path(NbtPathMutationError),
-    ExpectedCompoundRoot,
-}
-
-impl fmt::Display for StoreStorageDataError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Path(error) => write!(f, "{error}"),
-            Self::ExpectedCompoundRoot => write!(f, "NBT path mutation replaced the root compound"),
-        }
-    }
-}
-
-fn store_score_value(
-    scoreboard: &Scoreboard,
-    holders: &[ScoreHolder],
-    objective: &ScoreboardObjective,
-    value: i32,
-) -> Result<(), ScoreboardError> {
-    for holder in holders {
-        scoreboard.set_score(holder, objective, value)?;
-    }
-    Ok(())
-}
-
-fn store_block_data_value(
-    world: &Arc<World>,
-    pos: BlockPos,
-    path: &NbtPath,
-    value: NbtTag,
-) -> Result<(), StoreBlockDataError> {
-    let Some(block_entity) = world.get_block_entity(pos) else {
-        return Err(StoreBlockDataError::MissingBlockEntity);
-    };
-
-    let mut block_entity = block_entity.lock();
-    let mut tag = NbtTag::Compound(block_entity_full_nbt(&*block_entity));
-    path.set(&mut tag, value)
-        .map_err(StoreBlockDataError::Path)?;
-    let NbtTag::Compound(data) = tag else {
-        return Err(StoreBlockDataError::ExpectedCompoundRoot);
-    };
-
-    let mut nbt_bytes = Vec::new();
-    data.write(&mut nbt_bytes);
-    let borrowed = read_borrowed_compound(&mut Cursor::new(&nbt_bytes))
-        .map_err(|_| StoreBlockDataError::InvalidWrittenNbt)?;
-    block_entity.load_additional(&borrowed);
-    block_entity.set_changed();
-
-    if let Some(update_tag) = block_entity.get_update_tag() {
-        world.broadcast_block_entity_update(pos, block_entity.get_type(), update_tag);
-    }
-
-    Ok(())
-}
-
-#[derive(Debug)]
-enum StoreBlockDataError {
-    MissingBlockEntity,
-    Path(NbtPathMutationError),
-    ExpectedCompoundRoot,
-    InvalidWrittenNbt,
-}
-
-impl fmt::Display for StoreBlockDataError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingBlockEntity => write!(f, "block entity no longer exists"),
-            Self::Path(error) => write!(f, "{error}"),
-            Self::ExpectedCompoundRoot => write!(f, "NBT path mutation replaced the root compound"),
-            Self::InvalidWrittenNbt => write!(f, "mutated block entity NBT could not be reborrowed"),
-        }
-    }
 }
 
 fn execute_entity_condition(
@@ -1480,14 +1081,6 @@ fn block_data_invalid_error() -> CommandError {
     }))
 }
 
-fn entity_data_invalid_error() -> CommandError {
-    CommandError::failure(TextComponent::translated(TranslatedMessage {
-        key: Cow::Borrowed("commands.data.entity.invalid"),
-        fallback: None,
-        args: None,
-    }))
-}
-
 fn blocks_too_big_error(area: i64) -> CommandError {
     CommandError::failure(TextComponent::translated(TranslatedMessage {
         key: Cow::Borrowed("commands.execute.blocks.toobig"),
@@ -1838,122 +1431,6 @@ fn send_condition_pass_count(context: &CommandContext, count: usize) {
     );
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-struct AxesParser;
-
-impl CommandArgumentParser for AxesParser {
-    fn parse(
-        &self,
-        reader: &mut CommandReader<'_>,
-        _context: &dyn CommandInputContext,
-    ) -> Result<ParsedArgument, CommandParseError> {
-        let cursor = reader.absolute_cursor();
-        let axes = reader.read_token()?;
-        if !is_valid_axes(&axes) {
-            return Err(CommandParseError::new(
-                CommandParseErrorKind::InvalidSwizzle(axes),
-                cursor,
-            ));
-        }
-
-        Ok(ParsedArgument::String(axes))
-    }
-
-    fn client_parser(&self) -> CommandArgumentClientParser {
-        CommandArgumentClientParser::new(ArgumentType::Swizzle, None)
-    }
-
-    fn parsed_type(&self) -> &'static str {
-        "string"
-    }
-
-    fn examples(&self) -> &'static [&'static str] {
-        &["x", "xz", "xyz"]
-    }
-
-    fn suggest(
-        &self,
-        prefix: &str,
-        _arguments: &ParsedArguments,
-        _context: &dyn CommandInputContext,
-    ) -> Vec<SuggestionEntry> {
-        ["x", "y", "z", "xy", "xz", "yz", "xyz"]
-            .into_iter()
-            .filter(|axes| axes.starts_with(prefix))
-            .map(SuggestionEntry::new)
-            .collect()
-    }
-}
-
-fn is_valid_axes(axes: &str) -> bool {
-    if axes.is_empty() {
-        return false;
-    }
-
-    let mut seen_x = false;
-    let mut seen_y = false;
-    let mut seen_z = false;
-    for axis in axes.chars() {
-        match axis {
-            'x' if !seen_x => seen_x = true,
-            'y' if !seen_y => seen_y = true,
-            'z' if !seen_z => seen_z = true,
-            _ => return false,
-        }
-    }
-    true
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct StorageKeyParser;
-
-impl CommandArgumentParser for StorageKeyParser {
-    fn parse(
-        &self,
-        reader: &mut CommandReader<'_>,
-        _context: &dyn CommandInputContext,
-    ) -> Result<ParsedArgument, CommandParseError> {
-        let cursor = reader.absolute_cursor();
-        let raw = reader.read_token()?;
-        let Some(key) = parse_resource_identifier(&raw) else {
-            return Err(CommandParseError::new(
-                CommandParseErrorKind::InvalidIdentifier(raw),
-                cursor,
-            ));
-        };
-
-        Ok(ParsedArgument::Identifier(key))
-    }
-
-    fn client_parser(&self) -> CommandArgumentClientParser {
-        CommandArgumentClientParser::new(ArgumentType::Identifier, Some(SuggestionType::AskServer))
-    }
-
-    fn parsed_type(&self) -> &'static str {
-        "identifier"
-    }
-
-    fn suggest(
-        &self,
-        prefix: &str,
-        _arguments: &ParsedArguments,
-        context: &dyn CommandInputContext,
-    ) -> Vec<SuggestionEntry> {
-        let Some(server) = context.server() else {
-            return Vec::new();
-        };
-
-        server
-            .command_storage
-            .keys()
-            .into_iter()
-            .map(|key| key.to_string())
-            .filter(|key| matches_suggestion_substr(prefix, key))
-            .map(SuggestionEntry::new)
-            .collect()
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 struct BlockRegion {
     min: BlockPos,
@@ -2262,19 +1739,25 @@ mod tests {
 
     #[test]
     fn store_data_type_converts_scaled_value() {
-        assert_eq!(super::StoreDataType::Int.tag(3, 2.5), NbtTag::Int(7));
-        assert_eq!(super::StoreDataType::Long.tag(-3, 2.5), NbtTag::Long(-7));
-        assert_eq!(super::StoreDataType::Byte.tag(258, 1.0), NbtTag::Byte(2));
+        assert_eq!(super::store::StoreDataType::Int.tag(3, 2.5), NbtTag::Int(7));
         assert_eq!(
-            super::StoreDataType::Short.tag(65_538, 1.0),
+            super::store::StoreDataType::Long.tag(-3, 2.5),
+            NbtTag::Long(-7)
+        );
+        assert_eq!(
+            super::store::StoreDataType::Byte.tag(258, 1.0),
+            NbtTag::Byte(2)
+        );
+        assert_eq!(
+            super::store::StoreDataType::Short.tag(65_538, 1.0),
             NbtTag::Short(2)
         );
         assert_eq!(
-            super::StoreDataType::Float.tag(3, 0.5),
+            super::store::StoreDataType::Float.tag(3, 0.5),
             NbtTag::Float(1.5)
         );
         assert_eq!(
-            super::StoreDataType::Double.tag(3, 0.5),
+            super::store::StoreDataType::Double.tag(3, 0.5),
             NbtTag::Double(1.5)
         );
     }
@@ -2285,7 +1768,7 @@ mod tests {
         let key = Identifier::new_static("steel", "data");
         let path = parse_nbt_path("value").expect("path parses");
 
-        super::store_storage_data_value(&storage, &key, &path, NbtTag::Int(7))
+        super::store::store_storage_data_value(&storage, &key, &path, NbtTag::Int(7))
             .expect("storage write succeeds");
 
         let data = storage.get(&key);
@@ -2299,7 +1782,7 @@ mod tests {
         let entity = StoreTestEntity::shared(1, DVec3::ZERO);
         let path = parse_nbt_path("Air").expect("path parses");
 
-        super::store_entity_data_value(entity.as_ref(), &path, NbtTag::Int(123))
+        super::store::store_entity_data_value(entity.as_ref(), &path, NbtTag::Int(123))
             .expect("entity data updates");
 
         assert_eq!(entity.air_supply(), 123);
@@ -2347,7 +1830,7 @@ mod tests {
             .expect("objective should be added");
         let holders = [ScoreHolder::new("Steve"), ScoreHolder::new("Alex")];
 
-        super::store_score_value(&scoreboard, &holders, &objective, 11)
+        super::store::store_score_value(&scoreboard, &holders, &objective, 11)
             .expect("store should write scores");
 
         assert_eq!(scoreboard.score(&holders[0], &objective), Some(11));
