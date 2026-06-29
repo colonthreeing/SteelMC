@@ -35,7 +35,28 @@ pub enum PermissionRuleContext {
         value: String,
     },
     /// Permission applies when every nested context applies.
-    All(Vec<PermissionRuleContext>),
+    All(PermissionRuleContexts),
+}
+
+/// Validated AND-chain of permission rule contexts.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PermissionRuleContexts {
+    contexts: Vec<PermissionRuleContext>,
+}
+
+impl PermissionRuleContexts {
+    fn new(contexts: Vec<PermissionRuleContext>) -> Self {
+        Self { contexts }
+    }
+
+    fn into_vec(self) -> Vec<PermissionRuleContext> {
+        self.contexts
+    }
+
+    /// Returns chained contexts in canonical order.
+    pub fn iter(&self) -> impl Iterator<Item = &PermissionRuleContext> {
+        self.contexts.iter()
+    }
 }
 
 impl PermissionRuleContext {
@@ -74,27 +95,32 @@ impl PermissionRuleContext {
     }
 
     /// Creates an AND-chain of rule contexts.
-    #[must_use]
-    pub fn all(contexts: impl IntoIterator<Item = Self>) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when two custom contexts use the same key with different values.
+    pub fn all(
+        contexts: impl IntoIterator<Item = Self>,
+    ) -> Result<Self, PermissionRuleContextError> {
         let mut flattened = Vec::new();
         for context in contexts {
             match context {
                 Self::Global => {}
                 Self::All(contexts) => {
-                    for context in contexts {
-                        push_unique_context(&mut flattened, context);
+                    for context in contexts.into_vec() {
+                        push_unique_context(&mut flattened, context)?;
                     }
                 }
-                context => push_unique_context(&mut flattened, context),
+                context => push_unique_context(&mut flattened, context)?,
             }
         }
         flattened.sort_by(compare_rule_contexts);
 
-        match flattened.len() {
+        Ok(match flattened.len() {
             0 => Self::Global,
             1 => flattened.pop().unwrap_or(Self::Global),
-            _ => Self::All(flattened),
-        }
+            _ => Self::All(PermissionRuleContexts::new(flattened)),
+        })
     }
 
     /// Returns true if this entry applies in every context.
@@ -145,11 +171,33 @@ impl fmt::Display for PermissionRuleContext {
     }
 }
 
-fn push_unique_context(contexts: &mut Vec<PermissionRuleContext>, context: PermissionRuleContext) {
+fn push_unique_context(
+    contexts: &mut Vec<PermissionRuleContext>,
+    context: PermissionRuleContext,
+) -> Result<(), PermissionRuleContextError> {
+    if let PermissionRuleContext::Custom { key, value } = &context {
+        for existing in contexts.iter() {
+            let PermissionRuleContext::Custom {
+                key: existing_key,
+                value: existing_value,
+            } = existing
+            else {
+                continue;
+            };
+            if existing_key != key {
+                continue;
+            }
+            if existing_value == value {
+                return Ok(());
+            }
+            return Err(PermissionRuleContextError::DuplicateCustomKey(key.clone()));
+        }
+    }
     if contexts.iter().any(|existing| existing == &context) {
-        return;
+        return Ok(());
     }
     contexts.push(context);
+    Ok(())
 }
 
 fn compare_rule_contexts(left: &PermissionRuleContext, right: &PermissionRuleContext) -> Ordering {
@@ -191,16 +239,23 @@ const fn rule_context_rank(context: &PermissionRuleContext) -> u8 {
 }
 
 /// Invalid permission rule context.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PermissionRuleContextError {
     /// Context value is empty.
     EmptyValue,
+    /// One chained context tried to bind the same custom key to multiple values.
+    DuplicateCustomKey(PermissionSegment),
 }
 
 impl fmt::Display for PermissionRuleContextError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyValue => write!(f, "permission context value is empty"),
+            Self::DuplicateCustomKey(key) => write!(
+                f,
+                "custom permission context key '{}' cannot have multiple values",
+                key.as_str()
+            ),
         }
     }
 }
@@ -246,20 +301,33 @@ impl PermissionContext {
     ///
     /// # Errors
     ///
-    /// Returns an error when the value is empty.
+    /// Returns an error when the value is empty, or when this context already
+    /// has a different value for the same custom key.
     pub fn with_custom_context(
         mut self,
         key: PermissionSegment,
         value: impl Into<String>,
     ) -> Result<Self, PermissionRuleContextError> {
         let context = PermissionRuleContext::custom(key, value)?;
-        if !self
-            .custom_contexts
-            .iter()
-            .any(|existing| existing == &context)
-        {
-            self.custom_contexts.push(context);
+        if let PermissionRuleContext::Custom { key, value } = &context {
+            for existing in &self.custom_contexts {
+                let PermissionRuleContext::Custom {
+                    key: existing_key,
+                    value: existing_value,
+                } = existing
+                else {
+                    continue;
+                };
+                if existing_key != key {
+                    continue;
+                }
+                if existing_value == value {
+                    return Ok(self);
+                }
+                return Err(PermissionRuleContextError::DuplicateCustomKey(key.clone()));
+            }
         }
+        self.custom_contexts.push(context);
         Ok(self)
     }
 }
@@ -2070,7 +2138,7 @@ impl PermissionRuleContextConfig {
             return Err(PermissionRuleContextConfigError::EmptyContext);
         }
 
-        Ok(PermissionRuleContext::all(contexts))
+        PermissionRuleContext::all(contexts).map_err(permission_rule_context_config_error)
     }
 }
 
@@ -2094,6 +2162,19 @@ impl PermissionRuleCustomContextConfig {
         })?;
         PermissionRuleContext::custom(key, self.value)
             .map_err(|_| PermissionRuleContextConfigError::InvalidCustomValue)
+    }
+}
+
+fn permission_rule_context_config_error(
+    error: PermissionRuleContextError,
+) -> PermissionRuleContextConfigError {
+    match error {
+        PermissionRuleContextError::EmptyValue => {
+            PermissionRuleContextConfigError::InvalidCustomValue
+        }
+        PermissionRuleContextError::DuplicateCustomKey(key) => {
+            PermissionRuleContextConfigError::DuplicateCustomKey(key.as_str().to_owned())
+        }
     }
 }
 
@@ -2681,7 +2762,7 @@ fn register_context_catalog_entry(
             );
         }
         PermissionRuleContext::All(contexts) => {
-            for context in contexts {
+            for context in contexts.iter() {
                 register_context_catalog_entry(context, catalog);
             }
         }
@@ -2793,6 +2874,8 @@ pub enum PermissionRuleContextConfigError {
     },
     /// Custom context value is empty.
     InvalidCustomValue,
+    /// Custom context key appears with multiple values in the same rule context.
+    DuplicateCustomKey(String),
 }
 
 impl fmt::Display for PermissionConfigError {
@@ -2847,6 +2930,9 @@ impl fmt::Display for PermissionRuleContextConfigError {
                 write!(f, "invalid custom context key '{key}': {source}")
             }
             Self::InvalidCustomValue => write!(f, "custom context value is empty"),
+            Self::DuplicateCustomKey(key) => {
+                write!(f, "custom context key '{key}' cannot have multiple values")
+            }
         }
     }
 }
@@ -3135,7 +3221,7 @@ mod tests {
             PermissionEntry::allow_with_context(fly.clone(), world.clone()),
             PermissionEntry::deny_with_context(
                 fly.clone(),
-                PermissionRuleContext::all([world, region]),
+                PermissionRuleContext::all([world, region]).expect("context chain is valid"),
             ),
         ]);
         let matching_context = world_context("lobby", "spawn")
@@ -3161,14 +3247,48 @@ mod tests {
             world.clone(),
             domain.clone(),
             owner.clone(),
-        ]);
-        let second = PermissionRuleContext::all([owner, domain, region, world]);
+        ])
+        .expect("context chain is valid");
+        let second = PermissionRuleContext::all([owner, domain, region, world])
+            .expect("context chain is valid");
 
         assert_eq!(first, second);
         assert_eq!(
             first.to_string(),
             "domain lobby + world lobby:spawn + owner builders + region spawn"
         );
+    }
+
+    #[test]
+    fn chained_rule_contexts_reject_conflicting_custom_keys() {
+        let error = PermissionRuleContext::all([
+            rule_custom_context("region", "spawn"),
+            rule_custom_context("region", "market"),
+        ])
+        .expect_err("custom context key cannot have multiple values");
+
+        assert!(matches!(
+            error,
+            super::PermissionRuleContextError::DuplicateCustomKey(key) if key.as_str() == "region"
+        ));
+    }
+
+    #[test]
+    fn active_permission_contexts_reject_conflicting_custom_keys() {
+        let context = super::PermissionContext::global()
+            .with_custom_context(segment("region"), "spawn")
+            .expect("custom context is valid")
+            .with_custom_context(segment("region"), "spawn")
+            .expect("same custom context is idempotent");
+
+        let error = context
+            .with_custom_context(segment("region"), "market")
+            .expect_err("custom context key cannot have multiple values");
+
+        assert!(matches!(
+            error,
+            super::PermissionRuleContextError::DuplicateCustomKey(key) if key.as_str() == "region"
+        ));
     }
 
     #[test]
@@ -3192,7 +3312,8 @@ mod tests {
             PermissionRuleContext::world(Identifier::new("lobby", "spawn")),
             rule_custom_context("region", "spawn"),
             PermissionRuleContext::domain("lobby"),
-        ]);
+        ])
+        .expect("context chain is valid");
 
         assert_eq!(
             config
@@ -4176,6 +4297,41 @@ mod tests {
                 group,
                 source: super::PermissionRuleContextConfigError::EmptyContext,
             }) if group == "default"
+        ));
+    }
+
+    #[test]
+    fn group_rules_reject_conflicting_custom_context_keys() {
+        let mut config = PermissionGroupsConfig::default();
+        let default_group = config
+            .groups
+            .get_mut("default")
+            .expect("default group exists");
+        default_group.rules.push(super::PermissionRuleConfig {
+            key: "steel.region.build".to_owned(),
+            state: super::PermissionRuleStateConfig::Allow,
+            context: Some(super::PermissionRuleContextConfig {
+                domain: None,
+                world: None,
+                custom: vec![
+                    super::PermissionRuleCustomContextConfig {
+                        key: "region".to_owned(),
+                        value: "spawn".to_owned(),
+                    },
+                    super::PermissionRuleCustomContextConfig {
+                        key: "region".to_owned(),
+                        value: "market".to_owned(),
+                    },
+                ],
+            }),
+        });
+
+        assert!(matches!(
+            PermissionGroups::from_config(config),
+            Err(super::PermissionConfigError::InvalidRuleContext {
+                group,
+                source: super::PermissionRuleContextConfigError::DuplicateCustomKey(key),
+            }) if group == "default" && key == "region"
         ));
     }
 

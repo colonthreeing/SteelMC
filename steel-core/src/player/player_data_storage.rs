@@ -787,7 +787,7 @@ fn append_permission_context_file(
             });
         }
         PermissionRuleContext::All(contexts) => {
-            for context in contexts {
+            for context in contexts.iter() {
                 append_permission_context_file(file, context);
             }
         }
@@ -823,7 +823,7 @@ fn permission_context_from_file(
         return Err(invalid_permission_context("permission context is empty"));
     }
 
-    Ok(PermissionRuleContext::all(contexts))
+    PermissionRuleContext::all(contexts).map_err(permission_context_error)
 }
 
 fn permission_context_error(error: PermissionRuleContextError) -> io::Error {
@@ -1267,7 +1267,8 @@ mod tests {
                             "spawn",
                         )
                         .expect("custom context parses"),
-                    ]),
+                    ])
+                    .expect("context chain parses"),
                 ),
             ]),
             values: PermissionValueSet::default(),

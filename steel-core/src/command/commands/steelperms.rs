@@ -2259,7 +2259,7 @@ fn append_permission_rule_context_config(
             });
         }
         PermissionRuleContext::All(contexts) => {
-            for context in contexts {
+            for context in contexts.iter() {
                 append_permission_rule_context_config(config, context)?;
             }
         }
@@ -2623,7 +2623,7 @@ fn permission_rule_context(
         contexts.push(custom);
     }
 
-    Ok(PermissionRuleContext::all(contexts))
+    PermissionRuleContext::all(contexts).map_err(|error| CommandError::failure(error.to_string()))
 }
 
 fn permission_context(arguments: &ParsedArguments) -> Result<PermissionContext, CommandError> {
