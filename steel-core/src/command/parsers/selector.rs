@@ -245,10 +245,33 @@ impl InvertableOptionState {
 }
 
 #[derive(Clone, Debug, Default)]
+struct EntityTypeOptionState {
+    invertible: InvertableOptionState,
+    tags_seen: Vec<Identifier>,
+}
+
+impl EntityTypeOptionState {
+    fn parse_element(&mut self, inverted: bool, option: &str) -> Result<(), SelectorParseError> {
+        self.invertible.parse_element(inverted, option)
+    }
+
+    fn parse_tag(&mut self, tag: &Identifier, option: &str) -> Result<(), SelectorParseError> {
+        if self.tags_seen.iter().any(|existing| existing == tag) {
+            return Err(SelectorParseError::invalid(format!(
+                "option '{option}' cannot repeat tag '#{tag}'"
+            )));
+        }
+        self.invertible.parse_element(true, option)?;
+        self.tags_seen.push(tag.clone());
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 struct SelectorOptionState {
     name: InvertableOptionState,
     gamemode: InvertableOptionState,
-    entity_type: InvertableOptionState,
+    entity_type: EntityTypeOptionState,
     distance: bool,
     level: bool,
     x: bool,
@@ -359,6 +382,7 @@ impl EntitySelector {
         context: &dyn CommandInputContext,
         cursor: usize,
     ) -> Result<Vec<Arc<Player>>, CommandParseError> {
+        self.check_selector_permission(context, cursor)?;
         let Some(server) = context.server() else {
             return Err(CommandParseError::new(
                 CommandParseErrorKind::MissingCommandContext("server"),
@@ -371,7 +395,7 @@ impl EntitySelector {
             SelectorKind::PlayerName(name) => server
                 .get_players()
                 .into_iter()
-                .filter(|player| player.gameprofile.name == *name)
+                .filter(|player| player_name_matches(&player.gameprofile.name, name))
                 .collect::<Vec<_>>(),
             SelectorKind::EntityUuid(uuid) => server
                 .get_players()
@@ -402,6 +426,7 @@ impl EntitySelector {
         context: &dyn CommandInputContext,
         cursor: usize,
     ) -> Result<Vec<SharedEntity>, CommandParseError> {
+        self.check_selector_permission(context, cursor)?;
         let Some(server) = context.server() else {
             return Err(CommandParseError::new(
                 CommandParseErrorKind::MissingCommandContext("server"),
@@ -414,7 +439,7 @@ impl EntitySelector {
             SelectorKind::PlayerName(name) => server
                 .get_players()
                 .into_iter()
-                .filter(|player| player.gameprofile.name == *name)
+                .filter(|player| player_name_matches(&player.gameprofile.name, name))
                 .map(|player| player as SharedEntity)
                 .collect::<Vec<_>>(),
             SelectorKind::EntityUuid(uuid) => find_entity_by_uuid(server, uuid)
@@ -442,6 +467,20 @@ impl EntitySelector {
         }
         self.sort_and_limit_entities(position, &mut entities);
         Ok(entities)
+    }
+
+    fn check_selector_permission(
+        &self,
+        context: &dyn CommandInputContext,
+        cursor: usize,
+    ) -> Result<(), CommandParseError> {
+        if !matches!(self.kind, SelectorKind::Selector(_)) || allow_selectors(context) {
+            return Ok(());
+        }
+        Err(CommandParseError::new(
+            CommandParseErrorKind::EntitySelectorsNotAllowed,
+            cursor,
+        ))
     }
 
     fn candidate_players(
@@ -641,6 +680,10 @@ fn entity_nbt_filter_matches(expected: &NbtCompound, inverted: bool, entity: &dy
 
 fn entity_name_filter_matches(value: &str, inverted: bool, entity: &dyn Entity) -> bool {
     (entity.plain_text_name() == value) != inverted
+}
+
+fn player_name_matches(actual: &str, expected: &str) -> bool {
+    actual.eq_ignore_ascii_case(expected)
 }
 
 fn score_filter_matches(
@@ -1256,8 +1299,8 @@ fn parse_type_option(
     let inverted = reader.read_inversion();
     if reader.peek() == Some('#') {
         reader.read();
-        state.entity_type.parse_element(true, "type")?;
         let value = read_identifier(reader, value_cursor)?;
+        state.entity_type.parse_tag(&value, "type")?;
         selector
             .filters
             .push(SelectorFilter::EntityTypeTag { value, inverted });
@@ -1702,8 +1745,8 @@ mod tests {
 
     use super::{
         IntRange, SelectorFilter, SelectorParseErrorKind, SelectorType, entity_name_filter_matches,
-        entity_nbt_filter_matches, parse_selector_plan, read_selector_argument,
-        score_filter_matches,
+        entity_nbt_filter_matches, parse_selector_plan, player_name_matches,
+        read_selector_argument, score_filter_matches,
     };
 
     struct SelectorNbtTestEntity {
@@ -1760,6 +1803,13 @@ mod tests {
     }
 
     #[test]
+    fn selector_direct_player_name_matching_is_case_insensitive() {
+        assert!(player_name_matches("Steve", "steve"));
+        assert!(player_name_matches("STEVE", "Steve"));
+        assert!(!player_name_matches("Alex", "Steve"));
+    }
+
+    #[test]
     fn selector_parses_vanilla_core_options() {
         init_test_registry();
 
@@ -1797,6 +1847,24 @@ mod tests {
         assert!(selector.filters.iter().any(
             |filter| matches!(filter, SelectorFilter::Name { value, .. } if value == "Steve")
         ));
+    }
+
+    #[test]
+    fn selector_rejects_duplicate_entity_type_tags() {
+        init_test_registry();
+
+        let error = parse_selector_plan(
+            "@e[type=#minecraft:skeletons,type=!#minecraft:skeletons]".to_owned(),
+            true,
+        )
+        .expect_err("duplicate type tag is rejected");
+        assert!(matches!(error.kind, SelectorParseErrorKind::Invalid(_)));
+
+        parse_selector_plan(
+            "@e[type=#minecraft:skeletons,type=!#minecraft:raiders,type=!zombie]".to_owned(),
+            true,
+        )
+        .expect("distinct tags and inverted entities can repeat");
     }
 
     #[test]
