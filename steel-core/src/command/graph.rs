@@ -500,10 +500,8 @@ impl From<PermissionKeyError> for DynamicPermissionError {
 /// Command execution result.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommandResult {
-    /// Number of successful command results.
-    pub success_count: i32,
-    /// Integer result returned by the command.
-    pub result: i32,
+    /// Integer value returned by the command.
+    return_value: i32,
 }
 
 impl CommandResult {
@@ -517,8 +515,7 @@ impl CommandResult {
     #[must_use]
     pub const fn from_return_value(value: i32) -> Self {
         Self {
-            success_count: value,
-            result: value,
+            return_value: value,
         }
     }
 
@@ -534,13 +531,10 @@ impl CommandResult {
         Self::from_success_count(i32::try_from(success_count).map_or(i32::MAX, |count| count))
     }
 
-    /// Creates a command result with separate success-count and result values.
+    /// Returns the integer value returned by the command.
     #[must_use]
-    pub const fn with_result(success_count: i32, result: i32) -> Self {
-        Self {
-            success_count,
-            result,
-        }
+    pub const fn return_value(self) -> i32 {
+        self.return_value
     }
 }
 

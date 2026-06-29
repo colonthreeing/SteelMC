@@ -458,7 +458,7 @@ impl CommandDispatcher {
                     if active.is_forked() {
                         completed_forked_context = true;
                     }
-                    last_result = result.result;
+                    last_result = result.return_value();
                     total_success_count = total_success_count
                         .saturating_add(execution_success_count(result, active.is_forked()));
                     let Some(next) = queue.pop_front() else {
@@ -799,13 +799,13 @@ impl ActiveCommand<'_> {
 }
 
 fn execution_success_count(result: CommandResult, forked: bool) -> i32 {
-    if forked { 1 } else { result.success_count }
+    if forked { 1 } else { result.return_value() }
 }
 
 fn successful_command_callback_result(result: CommandResult) -> CommandCallbackResult {
     CommandCallbackResult {
         success: true,
-        result: result.result,
+        result: result.return_value(),
     }
 }
 
@@ -814,14 +814,11 @@ fn dispatch_result(
     last_result: i32,
     completed_forked_context: bool,
 ) -> CommandResult {
-    CommandResult::with_result(
-        total_success_count,
-        if completed_forked_context {
-            total_success_count
-        } else {
-            last_result
-        },
-    )
+    CommandResult::from_return_value(if completed_forked_context {
+        total_success_count
+    } else {
+        last_result
+    })
 }
 
 #[cfg(test)]
@@ -920,23 +917,23 @@ mod tests {
     #[test]
     fn forked_execution_counts_completed_source_not_command_result() {
         assert_eq!(
-            super::execution_success_count(CommandResult::with_result(12, 37), false),
+            super::execution_success_count(CommandResult::from_return_value(12), false),
             12
         );
         assert_eq!(
-            super::execution_success_count(CommandResult::with_result(12, 37), true),
+            super::execution_success_count(CommandResult::from_return_value(12), true),
             1
         );
         assert_eq!(
-            super::execution_success_count(CommandResult::with_result(0, 37), true),
+            super::execution_success_count(CommandResult::from_return_value(0), true),
             1
         );
     }
 
     #[test]
-    fn command_result_callback_receives_result_not_success_count() {
+    fn command_result_callback_receives_command_return_value() {
         let callback =
-            super::successful_command_callback_result(CommandResult::with_result(12, 37));
+            super::successful_command_callback_result(CommandResult::from_return_value(37));
 
         assert!(callback.success);
         assert_eq!(callback.result, 37);
@@ -946,7 +943,7 @@ mod tests {
     fn dispatch_result_preserves_non_forked_command_result() {
         assert_eq!(
             super::dispatch_result(12, 37, false),
-            CommandResult::with_result(12, 37)
+            CommandResult::from_return_value(37)
         );
     }
 
