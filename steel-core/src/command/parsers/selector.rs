@@ -20,6 +20,7 @@ use crate::{
     },
     entity::{Entity, SharedEntity},
     player::{Player, is_valid_player_name},
+    scoreboard::{ScoreHolder, Scoreboard},
     server::Server,
 };
 
@@ -133,6 +134,7 @@ enum SelectorFilter {
         value: String,
         inverted: bool,
     },
+    Scores(Vec<(String, IntRange)>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -183,6 +185,14 @@ struct IntRange {
 }
 
 impl IntRange {
+    #[cfg(test)]
+    const fn exactly(value: i32) -> Self {
+        Self {
+            min: Some(value),
+            max: Some(value),
+        }
+    }
+
     fn matches(self, value: i32) -> bool {
         if let Some(min) = self.min
             && value < min
@@ -242,6 +252,7 @@ struct SelectorOptionState {
     y_rotation: bool,
     limit: bool,
     sort: bool,
+    scores: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -360,7 +371,7 @@ impl EntitySelector {
                 .collect::<Vec<_>>(),
             SelectorKind::Selector(SelectorType::SelfEntity) => {
                 context.player().map_or_else(Vec::new, |player| {
-                    if self.matches_entity(player.as_ref(), position, aabb) {
+                    if self.matches_entity(player.as_ref(), position, aabb, server) {
                         vec![Arc::clone(player)]
                     } else {
                         Vec::new()
@@ -371,7 +382,7 @@ impl EntitySelector {
         };
 
         if !matches!(self.kind, SelectorKind::Selector(SelectorType::SelfEntity)) {
-            players.retain(|player| self.matches_entity(player.as_ref(), position, aabb));
+            players.retain(|player| self.matches_entity(player.as_ref(), position, aabb, server));
         }
         self.sort_and_limit_players(position, &mut players);
         Ok(players)
@@ -402,7 +413,7 @@ impl EntitySelector {
                 .collect::<Vec<_>>(),
             SelectorKind::Selector(SelectorType::SelfEntity) => {
                 context.entity().map_or_else(Vec::new, |entity| {
-                    if self.matches_entity(entity.as_ref(), position, aabb) {
+                    if self.matches_entity(entity.as_ref(), position, aabb, server) {
                         vec![Arc::clone(entity)]
                     } else {
                         Vec::new()
@@ -418,7 +429,7 @@ impl EntitySelector {
         };
 
         if !matches!(self.kind, SelectorKind::Selector(SelectorType::SelfEntity)) {
-            entities.retain(|entity| self.matches_entity(entity.as_ref(), position, aabb));
+            entities.retain(|entity| self.matches_entity(entity.as_ref(), position, aabb, server));
         }
         self.sort_and_limit_entities(position, &mut entities);
         Ok(entities)
@@ -503,6 +514,7 @@ impl EntitySelector {
         entity: &dyn Entity,
         position: DVec3,
         aabb: Option<WorldAabb>,
+        server: &Server,
     ) -> bool {
         if let Some(aabb) = aabb
             && !aabb.intersects(entity.bounding_box())
@@ -532,7 +544,9 @@ impl EntitySelector {
         {
             return false;
         }
-        self.filters.iter().all(|filter| filter.matches(entity))
+        self.filters
+            .iter()
+            .all(|filter| filter.matches(entity, server))
     }
 
     fn sort_and_limit_players(&self, position: DVec3, players: &mut Vec<Arc<Player>>) {
@@ -575,7 +589,7 @@ impl EntitySelector {
 }
 
 impl SelectorFilter {
-    fn matches(&self, entity: &dyn Entity) -> bool {
+    fn matches(&self, entity: &dyn Entity, server: &Server) -> bool {
         match self {
             Self::Alive => entity.is_alive(),
             Self::Name { value, inverted } => {
@@ -607,8 +621,28 @@ impl SelectorFilter {
                 };
                 matches != *inverted
             }
+            Self::Scores(scores) => {
+                let holder_name = entity.scoreboard_name();
+                score_filter_matches(scores, &holder_name, &server.scoreboard)
+            }
         }
     }
+}
+
+fn score_filter_matches(
+    scores: &[(String, IntRange)],
+    holder_name: &str,
+    scoreboard: &Scoreboard,
+) -> bool {
+    let holder = ScoreHolder::new(holder_name.to_owned());
+    scores.iter().all(|(objective_name, range)| {
+        let Some(objective) = scoreboard.objective(objective_name) else {
+            return false;
+        };
+        scoreboard
+            .score(&holder, &objective)
+            .is_some_and(|score| range.matches(score))
+    })
 }
 
 pub(super) fn parse_player_selector(
@@ -1012,12 +1046,11 @@ fn parse_option(
         "gamemode" => parse_gamemode_option(reader, selector, state),
         "type" => parse_type_option(reader, selector, state),
         "tag" => parse_tag_option(reader, selector),
-        "team" | "nbt" | "scores" | "advancements" | "predicate" => {
-            Err(SelectorParseError::unsupported(
-                format!("{key} needs an unimplemented runtime foundation"),
-                key_cursor,
-            ))
-        }
+        "scores" => parse_scores_option(reader, selector, state, key_cursor),
+        "team" | "nbt" | "advancements" | "predicate" => Err(SelectorParseError::unsupported(
+            format!("{key} needs an unimplemented runtime foundation"),
+            key_cursor,
+        )),
         _ => Err(SelectorParseError::invalid_at(
             format!("unknown selector option '{key}'"),
             key_cursor,
@@ -1051,6 +1084,20 @@ fn parse_name_option(
     selector
         .filters
         .push(SelectorFilter::Name { value, inverted });
+    Ok(())
+}
+
+fn parse_scores_option(
+    reader: &mut SelectorReader<'_>,
+    selector: &mut EntitySelector,
+    state: &mut SelectorOptionState,
+    key_cursor: usize,
+) -> Result<(), SelectorParseError> {
+    ensure_set_once(&mut state.scores, "scores", key_cursor)?;
+    let scores = reader.read_scores()?;
+    if !scores.is_empty() {
+        selector.filters.push(SelectorFilter::Scores(scores));
+    }
     Ok(())
 }
 
@@ -1421,6 +1468,60 @@ impl<'a> SelectorReader<'a> {
         Ok(self.input[start..self.cursor].to_owned())
     }
 
+    fn read_scores(&mut self) -> Result<Vec<(String, IntRange)>, SelectorParseError> {
+        self.expect('{')?;
+        let mut scores = Vec::new();
+        self.skip_whitespace();
+        while self.peek().is_some_and(|ch| ch != '}') {
+            self.skip_whitespace();
+            let name_cursor = self.cursor;
+            let name = self.read_unquoted_string();
+            if name.is_empty() {
+                return Err(SelectorParseError::invalid_at(
+                    "expected scoreboard objective name",
+                    name_cursor,
+                ));
+            }
+            self.skip_whitespace();
+            self.expect('=')?;
+            self.skip_whitespace();
+            let range = parse_int_range(&self.read_score_range()?)?;
+            upsert_score_filter(&mut scores, name, range);
+            self.skip_whitespace();
+            if self.peek() == Some(',') {
+                self.read();
+                self.skip_whitespace();
+            }
+        }
+        self.expect('}')?;
+        Ok(scores)
+    }
+
+    fn read_unquoted_string(&mut self) -> String {
+        let start = self.cursor;
+        while self.peek().is_some_and(is_brigadier_unquoted_char) {
+            self.read();
+        }
+        self.input[start..self.cursor].to_owned()
+    }
+
+    fn read_score_range(&mut self) -> Result<String, SelectorParseError> {
+        let start = self.cursor;
+        while self
+            .peek()
+            .is_some_and(|ch| ch != ',' && ch != '}' && !ch.is_whitespace())
+        {
+            self.read();
+        }
+        if self.cursor == start {
+            return Err(SelectorParseError::invalid_at(
+                "expected score range",
+                start,
+            ));
+        }
+        Ok(self.input[start..self.cursor].to_owned())
+    }
+
     fn read_inversion(&mut self) -> bool {
         self.skip_whitespace();
         if self.peek() == Some('!') {
@@ -1510,11 +1611,31 @@ impl<'a> SelectorReader<'a> {
     }
 }
 
+fn upsert_score_filter(scores: &mut Vec<(String, IntRange)>, name: String, range: IntRange) {
+    if let Some((_, existing)) = scores
+        .iter_mut()
+        .find(|(existing_name, _)| existing_name == &name)
+    {
+        *existing = range;
+        return;
+    }
+    scores.push((name, range));
+}
+
+fn is_brigadier_unquoted_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '+')
+}
+
 #[cfg(test)]
 mod tests {
     use steel_registry::test_support::init_test_registry;
 
-    use super::{SelectorParseErrorKind, SelectorType, parse_selector_plan};
+    use crate::scoreboard::{ScoreHolder, Scoreboard};
+
+    use super::{
+        IntRange, SelectorFilter, SelectorParseErrorKind, SelectorType, parse_selector_plan,
+        score_filter_matches,
+    };
 
     #[test]
     fn selector_permission_gate_rejects_selector_syntax() {
@@ -1559,9 +1680,83 @@ mod tests {
     }
 
     #[test]
+    fn selector_parses_score_filters() {
+        let selector = parse_selector_plan(
+            "@e[scores={kills=1..,deaths=..2,kills=5,}]".to_owned(),
+            true,
+        )
+        .expect("score filter parses");
+
+        let Some(SelectorFilter::Scores(scores)) = selector
+            .filters
+            .iter()
+            .find(|filter| matches!(filter, SelectorFilter::Scores(_)))
+        else {
+            panic!("expected scores filter");
+        };
+        assert_eq!(scores.len(), 2);
+        assert!(
+            scores.iter().any(|(name, range)| name == "kills"
+                && range.min == Some(5)
+                && range.max == Some(5))
+        );
+        assert!(
+            scores.iter().any(|(name, range)| name == "deaths"
+                && range.min.is_none()
+                && range.max == Some(2))
+        );
+    }
+
+    #[test]
+    fn selector_rejects_repeated_score_filter() {
+        let error = parse_selector_plan(
+            "@e[scores={kills=1..},scores={deaths=..2}]".to_owned(),
+            true,
+        )
+        .expect_err("scores option can only be used once");
+        assert!(matches!(error.kind, SelectorParseErrorKind::Invalid(_)));
+    }
+
+    #[test]
+    fn selector_score_filter_matches_scoreboard_holder() {
+        let scoreboard = Scoreboard::new();
+        let kills = scoreboard
+            .add_objective("kills")
+            .expect("objective should be added");
+        let deaths = scoreboard
+            .add_objective("deaths")
+            .expect("objective should be added");
+        let steve = ScoreHolder::new("Steve");
+        scoreboard
+            .set_score(&steve, &kills, 5)
+            .expect("score should be writable");
+        scoreboard
+            .set_score(&steve, &deaths, 1)
+            .expect("score should be writable");
+
+        let filters = vec![
+            (kills.name().to_owned(), IntRange::exactly(5)),
+            (
+                deaths.name().to_owned(),
+                IntRange {
+                    min: None,
+                    max: Some(2),
+                },
+            ),
+        ];
+        assert!(score_filter_matches(&filters, steve.name(), &scoreboard));
+
+        let filters = vec![(kills.name().to_owned(), IntRange::exactly(4))];
+        assert!(!score_filter_matches(&filters, steve.name(), &scoreboard));
+
+        let filters = vec![("missing".to_owned(), IntRange::exactly(1))];
+        assert!(!score_filter_matches(&filters, steve.name(), &scoreboard));
+    }
+
+    #[test]
     fn selector_rejects_missing_runtime_foundations_by_option_name() {
-        let error = parse_selector_plan("@e[scores={kills=1..}]".to_owned(), true)
-            .expect_err("scores need scoreboard foundation");
+        let error = parse_selector_plan("@e[predicate=minecraft:test]".to_owned(), true)
+            .expect_err("predicate needs predicate foundation");
         assert!(matches!(error.kind, SelectorParseErrorKind::Unsupported(_)));
     }
 }
