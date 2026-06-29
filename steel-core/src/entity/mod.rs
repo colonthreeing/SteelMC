@@ -5,8 +5,9 @@ use std::sync::{Arc, LazyLock, Weak};
 use glam::DVec3;
 use rand::{SeedableRng as _, rngs::StdRng};
 use rustc_hash::FxHashSet;
+use simdnbt::ToNbtTag;
 use simdnbt::borrow::NbtCompound as BorrowedNbtCompoundView;
-use simdnbt::owned::NbtCompound;
+use simdnbt::owned::{NbtCompound, NbtList, NbtTag};
 use steel_protocol::packets::game::{
     AnimateAction, AttributeSnapshot, CAnimate, CDamageEvent, CEntityEvent, CHurtAnimation,
     EquipmentSlotItem, SoundSource,
@@ -42,7 +43,9 @@ use steel_utils::entity_events::EntityStatus;
 use steel_utils::locks::SyncMutex;
 use steel_utils::random::Random as _;
 use steel_utils::types::{Difficulty, InteractionHand};
-use steel_utils::{BlockPos, BlockStateId, ChunkPos, Direction, Identifier, WorldAabb, axis::Axis};
+use steel_utils::{
+    BlockPos, BlockStateId, ChunkPos, Direction, Identifier, UuidExt, WorldAabb, axis::Axis,
+};
 use text_components::TextComponent;
 use uuid::Uuid;
 
@@ -752,6 +755,10 @@ pub type SharedEntity = Arc<dyn Entity>;
 /// Type alias for a weak entity reference.
 pub type WeakEntity = Weak<dyn Entity>;
 
+fn nbt_bool(value: bool) -> NbtTag {
+    NbtTag::Byte(i8::from(value))
+}
+
 pub(crate) fn start_riding_entities(
     passenger: &SharedEntity,
     entity_to_ride: &SharedEntity,
@@ -1322,6 +1329,117 @@ pub trait Entity: EntityEventSource + Send + Sync {
     /// Mirrors `TraceableEntity.getOwner` for `execute on origin`.
     fn origin_entity(&self) -> Option<SharedEntity> {
         None
+    }
+
+    /// Returns the vanilla-shaped entity NBT data used by command data and NBT predicates.
+    ///
+    /// Mirrors vanilla `NbtPredicate.getEntityTagToCompare`, which delegates to
+    /// `Entity.saveWithoutId` and adds `SelectedItem` for players.
+    fn nbt_for_data_compare(&self) -> NbtCompound {
+        let mut nbt = NbtCompound::new();
+        let position = self.vehicle().map_or_else(
+            || self.position(),
+            |vehicle| {
+                DVec3::new(
+                    vehicle.position().x,
+                    self.position().y,
+                    vehicle.position().z,
+                )
+            },
+        );
+        let velocity = self.velocity();
+        let (yaw, pitch) = self.rotation();
+        let fire_freeze = self.fire_freeze_state();
+
+        nbt.insert(
+            "Pos",
+            NbtList::Double(vec![position.x, position.y, position.z]),
+        );
+        nbt.insert(
+            "Motion",
+            NbtList::Double(vec![velocity.x, velocity.y, velocity.z]),
+        );
+        nbt.insert("Rotation", NbtList::Float(vec![yaw, pitch]));
+        nbt.insert("fall_distance", self.fall_distance());
+        nbt.insert(
+            "Fire",
+            NbtTag::Short(fire_freeze.remaining_fire_ticks() as i16),
+        );
+        nbt.insert("Air", NbtTag::Short(self.air_supply() as i16));
+        nbt.insert("OnGround", nbt_bool(self.on_ground()));
+        nbt.insert("Invulnerable", nbt_bool(self.is_invulnerable()));
+        nbt.insert("PortalCooldown", self.portal_cooldown());
+        nbt.insert(
+            "UUID",
+            NbtTag::IntArray(self.uuid().to_int_array().to_vec()),
+        );
+
+        if let Some(custom_name) = self.custom_name() {
+            nbt.insert("CustomName", custom_name.to_nbt_tag());
+        }
+        if self.is_custom_name_visible() {
+            nbt.insert("CustomNameVisible", nbt_bool(true));
+        }
+        if self.is_silent() {
+            nbt.insert("Silent", nbt_bool(true));
+        }
+        if self.is_no_gravity() {
+            nbt.insert("NoGravity", nbt_bool(true));
+        }
+        if self.has_glowing_tag() {
+            nbt.insert("Glowing", nbt_bool(true));
+        }
+        if fire_freeze.ticks_frozen() > 0 {
+            nbt.insert("TicksFrozen", fire_freeze.ticks_frozen());
+        }
+        if fire_freeze.has_visual_fire() {
+            nbt.insert("HasVisualFire", nbt_bool(true));
+        }
+
+        let tags = self.tags();
+        if !tags.is_empty() {
+            nbt.insert("Tags", NbtList::from(tags));
+        }
+        let custom_data = self.custom_data();
+        if !custom_data.is_empty() {
+            nbt.insert("data", NbtTag::Compound(custom_data));
+        }
+
+        self.save_additional(&mut nbt);
+
+        let passengers = self
+            .passengers()
+            .into_iter()
+            .filter_map(|passenger| passenger.nbt_for_passenger_save())
+            .collect::<Vec<_>>();
+        if !passengers.is_empty() {
+            nbt.insert("Passengers", NbtList::Compound(passengers));
+        }
+
+        if let Some(player) = self.as_player() {
+            let inventory = player.inventory.lock();
+            let selected_item = inventory.get_selected_item();
+            if !selected_item.is_empty() {
+                nbt.insert("SelectedItem", selected_item.to_nbt_tag_ref());
+            }
+        }
+
+        nbt
+    }
+
+    /// Returns this entity's vanilla passenger-save NBT, including the entity id.
+    ///
+    /// Mirrors vanilla `Entity.saveAsPassenger`.
+    fn nbt_for_passenger_save(&self) -> Option<NbtCompound> {
+        if !self.removal_reason().is_none_or(RemovalReason::should_save)
+            || !self.entity_type().can_serialize
+        {
+            return None;
+        }
+
+        let mut nbt = self.nbt_for_data_compare();
+        nbt.insert("id", self.entity_type().key.to_string());
+        Some(nbt)
     }
 
     /// Returns whether this entity can control a vehicle it is riding.
@@ -6529,6 +6647,7 @@ mod tests {
     use std::sync::{Arc, Weak};
 
     use glam::DVec3;
+    use simdnbt::owned::{NbtList, NbtTag};
     use steel_registry::blocks::{
         block_state_ext::BlockStateExt as _,
         properties::{BlockStateProperties, Direction as BlockDirection},
@@ -6545,7 +6664,7 @@ mod tests {
     };
     use steel_utils::locks::SyncMutex;
     use steel_utils::types::InteractionHand;
-    use steel_utils::{BlockPos, BlockStateId, Direction, Identifier, WorldAabb};
+    use steel_utils::{BlockPos, BlockStateId, Direction, Identifier, UuidExt, WorldAabb};
     use uuid::Uuid;
 
     use crate::behavior::init_behaviors;
@@ -6558,10 +6677,10 @@ mod tests {
     use super::{
         AttributeModifier, AttributeModifierOperation, DAMAGE_KNOCKBACK_POWER,
         DEFAULT_SWING_DURATION, DEFAULT_TICKS_REQUIRED_TO_FREEZE, Entity, EntityBase,
-        EntityFluidContact, EntityLevelCallback, EntityMoveError, EntitySyncedData,
-        EntityVerticalMovementStateUpdate, InsideBlockEffectType, LivingEntity, LivingEntityBase,
-        LivingTravelInput, RemovalReason, SPEED_MODIFIER_POWDER_SNOW_ID, SharedEntity,
-        block_state_suffocates_eye_box, closest_open_space_direction,
+        EntityFireFreezeState, EntityFluidContact, EntityLevelCallback, EntityMoveError,
+        EntitySyncedData, EntityVerticalMovementStateUpdate, InsideBlockEffectType, LivingEntity,
+        LivingEntityBase, LivingTravelInput, RemovalReason, SPEED_MODIFIER_POWDER_SNOW_ID,
+        SharedEntity, block_state_suffocates_eye_box, closest_open_space_direction,
         fall_damage_reset_clip_target, fall_flying_collision_damage,
         fall_flying_free_fall_interval, get_input_vector, should_apply_entity_cramming_damage,
         should_apply_resolved_movement, start_riding_entities, transfer_leashables_to_holder,
@@ -8565,6 +8684,88 @@ mod tests {
             .map(|entity| entity.id())
             .collect::<Vec<_>>();
         assert_eq!(passenger_ids, vec![3, 2]);
+    }
+
+    #[test]
+    fn entity_data_compare_nbt_contains_vanilla_base_fields() {
+        init_test_registry();
+
+        let entity = PushableTestEntity::shared(1, DVec3::new(1.0, 2.0, 3.0));
+        entity.set_velocity(DVec3::new(0.25, -0.5, 0.75));
+        entity.set_rotation((45.0, 10.0));
+        entity.set_fall_distance(2.5);
+        entity.set_remaining_fire_ticks(12);
+        entity.set_air_supply(234);
+        entity.set_on_ground(true);
+        entity.set_invulnerable(true);
+        entity.set_portal_cooldown(8);
+        entity.set_no_gravity(true);
+        entity.set_silent(true);
+        entity.set_glowing_tag(true);
+        entity.set_ticks_frozen(6);
+        entity
+            .base()
+            .set_fire_freeze_state(EntityFireFreezeState::from_parts(12, 6, false, false, true));
+        entity.add_tag("keep".to_owned());
+
+        let nbt = entity.nbt_for_data_compare();
+
+        assert_eq!(
+            nbt.get("Pos"),
+            Some(&NbtTag::List(NbtList::Double(vec![1.0, 2.0, 3.0])))
+        );
+        assert_eq!(
+            nbt.get("Motion"),
+            Some(&NbtTag::List(NbtList::Double(vec![0.25, -0.5, 0.75])))
+        );
+        assert_eq!(
+            nbt.get("Rotation"),
+            Some(&NbtTag::List(NbtList::Float(vec![45.0, 10.0])))
+        );
+        assert_eq!(nbt.get("fall_distance"), Some(&NbtTag::Double(2.5)));
+        assert_eq!(nbt.get("Fire"), Some(&NbtTag::Short(12)));
+        assert_eq!(nbt.get("Air"), Some(&NbtTag::Short(234)));
+        assert_eq!(nbt.get("OnGround"), Some(&NbtTag::Byte(1)));
+        assert_eq!(nbt.get("Invulnerable"), Some(&NbtTag::Byte(1)));
+        assert_eq!(nbt.get("PortalCooldown"), Some(&NbtTag::Int(8)));
+        assert_eq!(
+            nbt.get("UUID"),
+            Some(&NbtTag::IntArray(entity.uuid().to_int_array().to_vec()))
+        );
+        assert_eq!(nbt.get("NoGravity"), Some(&NbtTag::Byte(1)));
+        assert_eq!(nbt.get("Silent"), Some(&NbtTag::Byte(1)));
+        assert_eq!(nbt.get("Glowing"), Some(&NbtTag::Byte(1)));
+        assert_eq!(nbt.get("TicksFrozen"), Some(&NbtTag::Int(6)));
+        assert_eq!(nbt.get("HasVisualFire"), Some(&NbtTag::Byte(1)));
+        assert!(
+            matches!(nbt.get("Tags"), Some(NbtTag::List(NbtList::String(tags))) if tags.len() == 1 && tags[0].to_string() == "keep")
+        );
+    }
+
+    #[test]
+    fn entity_data_compare_nbt_includes_passengers() {
+        init_test_registry();
+
+        let vehicle = MultiPassengerTestEntity::shared(1);
+        let passenger = PushableTestEntity::shared(2, DVec3::new(3.0, 4.0, 5.0));
+        assert!(start_riding_entities(&passenger, &vehicle));
+
+        let nbt = vehicle.nbt_for_data_compare();
+
+        let Some(NbtTag::List(NbtList::Compound(passengers))) = nbt.get("Passengers") else {
+            panic!("vehicle should include passenger list");
+        };
+        assert_eq!(passengers.len(), 1);
+        assert_eq!(
+            passengers[0].get("id"),
+            Some(&NbtTag::String(
+                passenger.entity_type().key.to_string().into()
+            ))
+        );
+        assert_eq!(
+            passengers[0].get("UUID"),
+            Some(&NbtTag::IntArray(passenger.uuid().to_int_array().to_vec()))
+        );
     }
 
     #[test]

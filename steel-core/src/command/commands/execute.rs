@@ -1,9 +1,9 @@
 //! Handler for the "execute" command.
 //!
-//! Store target nodes, scoreboards, entity/storage data accessors, predicates,
-//! functions, item predicates, and stopwatch predicates are not registered here
-//! yet because their backing foundations are not implemented in Steel's
-//! command/runtime layer.
+//! Store target nodes, scoreboards, storage data accessors, predicates, functions,
+//! item predicates, and stopwatch predicates are not registered here yet because
+//! their backing foundations are not implemented in Steel's command/runtime
+//! layer.
 
 use std::{borrow::Cow, sync::Arc};
 
@@ -192,17 +192,31 @@ fn conditionals(name: &'static str, expected: bool) -> CommandNodeBuilder {
                     fork_loaded_condition(context, arguments, expected)
                 }),
         ))
-        .then(literal("data").then(literal("block").then(
-            argument("pos", BlockPosParser).then(
-                argument("path", NbtPathParser)
-                    .executes(move |context, arguments| {
-                        execute_block_data_condition(context, arguments, expected)
-                    })
-                    .forks(CommandRedirectTarget::Current, move |context, arguments| {
-                        fork_block_data_condition(context, arguments, expected)
-                    }),
-            ),
-        )))
+        .then(
+            literal("data")
+                .then(literal("block").then(
+                    argument("pos", BlockPosParser).then(
+                        argument("path", NbtPathParser)
+                            .executes(move |context, arguments| {
+                                execute_block_data_condition(context, arguments, expected)
+                            })
+                            .forks(CommandRedirectTarget::Current, move |context, arguments| {
+                                fork_block_data_condition(context, arguments, expected)
+                            }),
+                    ),
+                ))
+                .then(literal("entity").then(
+                    argument("source", EntityParser::one()).then(
+                        argument("path", NbtPathParser)
+                            .executes(move |context, arguments| {
+                                execute_entity_data_condition(context, arguments, expected)
+                            })
+                            .forks(CommandRedirectTarget::Current, move |context, arguments| {
+                                fork_entity_data_condition(context, arguments, expected)
+                            }),
+                    ),
+                )),
+        )
         .then(literal("blocks").then(
             argument("start", BlockPosParser).then(
                 argument("end", BlockPosParser).then(
@@ -632,6 +646,49 @@ fn block_data_match_count(
     Ok(nbt_path(arguments)?.count_matching(&tag))
 }
 
+fn execute_entity_data_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+) -> Result<CommandResult, CommandError> {
+    let count = entity_data_match_count(arguments)?;
+    if expected {
+        if count == 0 {
+            return Err(conditional_failed(count));
+        }
+        send_condition_pass_count(context, count);
+        return Ok(CommandResult {
+            success_count: success_count(count),
+        });
+    }
+
+    if count == 0 {
+        send_condition_pass(context);
+        Ok(CommandResult::success())
+    } else {
+        Err(conditional_failed(count))
+    }
+}
+
+fn fork_entity_data_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+) -> Result<Vec<CommandContext>, CommandError> {
+    let matches = entity_data_match_count(arguments)? > 0;
+    Ok(if matches == expected {
+        vec![context.clone()]
+    } else {
+        Vec::new()
+    })
+}
+
+fn entity_data_match_count(arguments: &ParsedArguments) -> Result<usize, CommandError> {
+    let entity = source_entity(arguments)?;
+    let tag = NbtTag::Compound(entity.nbt_for_data_compare());
+    Ok(nbt_path(arguments)?.count_matching(&tag))
+}
+
 fn block_entity_full_nbt(block_entity: &dyn crate::block_entity::BlockEntity) -> NbtCompound {
     let mut nbt = NbtCompound::new();
     let entity_pos = block_entity.get_block_pos();
@@ -961,6 +1018,22 @@ fn nbt_path(arguments: &ParsedArguments) -> Result<NbtPath, CommandError> {
         .map_err(super::invalid_parsed_argument)
 }
 
+fn source_entity(arguments: &ParsedArguments) -> Result<SharedEntity, CommandError> {
+    let mut entities = arguments
+        .get::<Vec<SharedEntity>>("source")
+        .map_err(super::invalid_parsed_argument)?;
+    if entities.len() != 1 {
+        return Err(super::invalid_parsed_argument(
+            crate::command::graph::ParsedArgumentError::WrongType {
+                name: "source".to_owned(),
+                expected: "single_entity",
+                actual: "entities",
+            },
+        ));
+    }
+    Ok(entities.remove(0))
+}
+
 fn heightmap(arguments: &ParsedArguments) -> Result<HeightmapType, CommandError> {
     arguments
         .get::<HeightmapType>("heightmap")
@@ -1222,6 +1295,23 @@ mod tests {
             redirected.path(),
             ["execute", "unless", "data", "block", "pos", "path"]
         );
+    }
+
+    #[test]
+    fn data_condition_suggests_entity_accessor() {
+        let graph = graph();
+        let context = TestContext;
+
+        let suggestions = graph
+            .suggest("execute if data ", &context)
+            .expect("data condition suggestions");
+        let suggestions = suggestions
+            .suggestions
+            .iter()
+            .map(|suggestion| suggestion.text.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(suggestions.contains(&"entity"));
     }
 
     #[test]
