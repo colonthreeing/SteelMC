@@ -16,8 +16,8 @@ use text_components::TextComponent;
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandGraph, CommandGraphError, CommandNodeBuilder, CommandParseError, CommandParseErrorKind,
-    CommandResult, validate_command_node_name,
+    CommandExecutionStep, CommandGraph, CommandGraphError, CommandNodeBuilder, CommandParseError,
+    CommandParseErrorKind, CommandResult, validate_command_node_name,
 };
 use crate::command::requirement::RequirementContext;
 use crate::command::sender::CommandSender;
@@ -366,15 +366,35 @@ impl CommandDispatcher {
 
     pub(crate) fn dispatch_with_budget(
         &self,
-        command: String,
+        mut command: String,
         context: &mut CommandContext,
         budget: &mut CommandExecutionBudget,
     ) -> Result<CommandResult, CommandError> {
-        budget.consume()?;
-        self.graph
-            .parse(&command, context)
-            .map_err(|error| Self::parse_error_to_command_error(&command, error))?
-            .execute_with_dispatcher(context, self, budget)
+        let mut redirected_context = None;
+        loop {
+            budget.consume()?;
+            let step = {
+                let active_context = match &mut redirected_context {
+                    Some(context) => context,
+                    None => &mut *context,
+                };
+                self.graph
+                    .parse(&command, active_context)
+                    .map_err(|error| Self::parse_error_to_command_error(&command, error))?
+                    .execute_step(active_context)?
+            };
+
+            match step {
+                CommandExecutionStep::Complete(result) => return Ok(result),
+                CommandExecutionStep::Redirect {
+                    command: next_command,
+                    context: next_context,
+                } => {
+                    command = next_command;
+                    redirected_context = Some(next_context);
+                }
+            }
+        }
     }
 
     fn parse_error_to_command_error(input: &str, error: CommandParseError) -> CommandError {

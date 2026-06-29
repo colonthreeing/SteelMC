@@ -5,7 +5,6 @@ use std::{error::Error, fmt, sync::Arc};
 use steel_protocol::packets::game::{CommandNode as ProtocolCommandNode, SuggestionEntry};
 
 use crate::command::{
-    CommandDispatcher, CommandExecutionBudget,
     context::CommandContext,
     error::CommandError,
     reader::CommandReader,
@@ -595,6 +594,14 @@ struct ParsedRedirect {
     executor: CommandExecutor,
 }
 
+pub(crate) enum CommandExecutionStep {
+    Complete(CommandResult),
+    Redirect {
+        command: String,
+        context: CommandContext,
+    },
+}
+
 /// A successfully parsed command.
 #[derive(Clone)]
 pub struct ParseResults {
@@ -640,9 +647,28 @@ impl ParseResults {
     ///
     /// Returns a command execution error from the matched executor.
     pub fn execute(&self, context: &mut CommandContext) -> Result<CommandResult, CommandError> {
+        match self.execute_step(context)? {
+            CommandExecutionStep::Complete(result) => Ok(result),
+            CommandExecutionStep::Redirect { command, .. } => Err(CommandError::failure(format!(
+                "Command redirect target '{command}' is unavailable"
+            ))),
+        }
+    }
+
+    /// Executes this parsed command or returns the next redirected command tail.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error from the matched executor.
+    pub(crate) fn execute_step(
+        &self,
+        context: &mut CommandContext,
+    ) -> Result<CommandExecutionStep, CommandError> {
         self.check_dynamic_permissions(context)?;
         match &self.action {
-            ParsedCommandAction::Execute(executor) => executor(context, &self.arguments),
+            ParsedCommandAction::Execute(executor) => {
+                executor(context, &self.arguments).map(CommandExecutionStep::Complete)
+            }
             ParsedCommandAction::Redirect(redirect) => {
                 let mut redirect_context = context.clone();
                 (redirect.executor)(&mut redirect_context, &self.arguments)?;
@@ -652,41 +678,10 @@ impl ParseResults {
                     }
                     CommandRedirectTarget::All => redirect.command.clone(),
                 };
-                Err(CommandError::failure(format!(
-                    "Command redirect target '{command}' is unavailable"
-                )))
-            }
-        }
-    }
-
-    /// Executes this parsed command, using `dispatcher` for redirected command tails.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error from either this command's executor or the redirected command.
-    pub(crate) fn execute_with_dispatcher(
-        &self,
-        context: &mut CommandContext,
-        dispatcher: &CommandDispatcher,
-        budget: &mut CommandExecutionBudget,
-    ) -> Result<CommandResult, CommandError> {
-        self.check_dynamic_permissions(context)?;
-        match &self.action {
-            ParsedCommandAction::Execute(executor) => executor(context, &self.arguments),
-            ParsedCommandAction::Redirect(redirect) => {
-                let mut redirect_context = context.clone();
-                (redirect.executor)(&mut redirect_context, &self.arguments)?;
-                match redirect.target {
-                    CommandRedirectTarget::Current => {
-                        let command = format!("{} {}", redirect.current_root, redirect.command);
-                        dispatcher.dispatch_with_budget(command, &mut redirect_context, budget)
-                    }
-                    CommandRedirectTarget::All => dispatcher.dispatch_with_budget(
-                        redirect.command.clone(),
-                        &mut redirect_context,
-                        budget,
-                    ),
-                }
+                Ok(CommandExecutionStep::Redirect {
+                    command,
+                    context: redirect_context,
+                })
             }
         }
     }
