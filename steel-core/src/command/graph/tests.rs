@@ -811,6 +811,21 @@ fn redirect_node_captures_remaining_command_tail() {
 }
 
 #[test]
+fn redirects_invoke_result_callbacks_on_errors() {
+    let graph = graph_with_root(literal("execute").then(
+        literal("if").redirects(CommandRedirectTarget::Current, |_, _| {
+            Ok(CommandResult::success())
+        }),
+    ));
+
+    let result = graph
+        .parse("execute if run say hello", &player_context())
+        .expect("redirect parses");
+
+    assert!(result.invokes_result_callback_on_error());
+}
+
+#[test]
 fn fork_redirect_node_captures_remaining_command_tail() {
     let graph = graph_with_root(literal("execute").then(
         literal("as").forks(CommandRedirectTarget::Current, |context, _| {
