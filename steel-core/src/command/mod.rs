@@ -28,8 +28,54 @@ use crate::permission::{
 use crate::player::Player;
 use crate::server::Server;
 use std::{error::Error, fmt, sync::Arc};
+use steel_registry::{game_rules::GameRuleValue, vanilla_game_rules::MAX_COMMAND_SEQUENCE_LENGTH};
 
 pub(crate) use executor::CommandQueue;
+
+pub(crate) struct CommandExecutionBudget {
+    remaining: usize,
+    limit: usize,
+}
+
+impl CommandExecutionBudget {
+    fn for_context(context: &CommandContext) -> Self {
+        Self::new(command_sequence_limit(context))
+    }
+
+    fn new(limit: usize) -> Self {
+        let limit = limit.max(1);
+        Self {
+            remaining: limit,
+            limit,
+        }
+    }
+
+    pub(crate) fn consume(&mut self) -> Result<(), CommandError> {
+        if self.remaining == 0 {
+            return Err(CommandError::failure(format!(
+                "Command execution stopped due to command sequence limit ({})",
+                self.limit
+            )));
+        }
+
+        self.remaining -= 1;
+        Ok(())
+    }
+}
+
+fn command_sequence_limit(context: &CommandContext) -> usize {
+    match context.world.get_game_rule(&MAX_COMMAND_SEQUENCE_LENGTH) {
+        GameRuleValue::Int(value) => value.max(1) as usize,
+        GameRuleValue::Bool(_) => default_command_sequence_limit(),
+    }
+}
+
+fn default_command_sequence_limit() -> usize {
+    match MAX_COMMAND_SEQUENCE_LENGTH.default_value {
+        GameRuleValue::Int(value) => value.max(1) as usize,
+        GameRuleValue::Bool(_) => 1,
+    }
+}
 
 /// Parses and dispatches commands through the command graph.
 #[derive(Clone, Default)]
@@ -314,18 +360,21 @@ impl CommandDispatcher {
         command: String,
         context: &mut CommandContext,
     ) -> Result<CommandResult, CommandError> {
-        self.execute_graph(&command, context)
+        let mut budget = CommandExecutionBudget::for_context(context);
+        self.dispatch_with_budget(command, context, &mut budget)
     }
 
-    fn execute_graph(
+    pub(crate) fn dispatch_with_budget(
         &self,
-        command: &str,
+        command: String,
         context: &mut CommandContext,
+        budget: &mut CommandExecutionBudget,
     ) -> Result<CommandResult, CommandError> {
+        budget.consume()?;
         self.graph
-            .parse(command, context)
-            .map_err(|error| Self::parse_error_to_command_error(command, error))?
-            .execute_with_dispatcher(context, self)
+            .parse(&command, context)
+            .map_err(|error| Self::parse_error_to_command_error(&command, error))?
+            .execute_with_dispatcher(context, self, budget)
     }
 
     fn parse_error_to_command_error(input: &str, error: CommandParseError) -> CommandError {
@@ -542,7 +591,9 @@ impl CommandDispatcher {
 
 #[cfg(test)]
 mod tests {
-    use super::{CommandDispatcher, CommandRegistration, CommandRegistrationError};
+    use super::{
+        CommandDispatcher, CommandExecutionBudget, CommandRegistration, CommandRegistrationError,
+    };
     use crate::command::{
         error::CommandError,
         graph::{CommandGraphError, CommandParseErrorKind, CommandResult, literal},
@@ -617,6 +668,14 @@ mod tests {
             panic!("component should be translated");
         };
         &message.key
+    }
+
+    #[test]
+    fn command_execution_budget_rejects_after_limit() {
+        let mut budget = CommandExecutionBudget::new(1);
+
+        assert!(budget.consume().is_ok());
+        assert!(budget.consume().is_err());
     }
 
     #[test]

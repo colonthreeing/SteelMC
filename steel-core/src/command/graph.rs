@@ -5,7 +5,7 @@ use std::{error::Error, fmt, sync::Arc};
 use steel_protocol::packets::game::{CommandNode as ProtocolCommandNode, SuggestionEntry};
 
 use crate::command::{
-    CommandDispatcher,
+    CommandDispatcher, CommandExecutionBudget,
     context::CommandContext,
     error::CommandError,
     reader::CommandReader,
@@ -644,7 +644,8 @@ impl ParseResults {
         match &self.action {
             ParsedCommandAction::Execute(executor) => executor(context, &self.arguments),
             ParsedCommandAction::Redirect(redirect) => {
-                (redirect.executor)(context, &self.arguments)?;
+                let mut redirect_context = context.clone();
+                (redirect.executor)(&mut redirect_context, &self.arguments)?;
                 let command = match redirect.target {
                     CommandRedirectTarget::Current => {
                         format!("{} {}", redirect.current_root, redirect.command)
@@ -667,20 +668,24 @@ impl ParseResults {
         &self,
         context: &mut CommandContext,
         dispatcher: &CommandDispatcher,
+        budget: &mut CommandExecutionBudget,
     ) -> Result<CommandResult, CommandError> {
         self.check_dynamic_permissions(context)?;
         match &self.action {
             ParsedCommandAction::Execute(executor) => executor(context, &self.arguments),
             ParsedCommandAction::Redirect(redirect) => {
-                (redirect.executor)(context, &self.arguments)?;
+                let mut redirect_context = context.clone();
+                (redirect.executor)(&mut redirect_context, &self.arguments)?;
                 match redirect.target {
                     CommandRedirectTarget::Current => {
                         let command = format!("{} {}", redirect.current_root, redirect.command);
-                        dispatcher.dispatch_with_context(command, context)
+                        dispatcher.dispatch_with_budget(command, &mut redirect_context, budget)
                     }
-                    CommandRedirectTarget::All => {
-                        dispatcher.dispatch_with_context(redirect.command.clone(), context)
-                    }
+                    CommandRedirectTarget::All => dispatcher.dispatch_with_budget(
+                        redirect.command.clone(),
+                        &mut redirect_context,
+                        budget,
+                    ),
                 }
             }
         }
