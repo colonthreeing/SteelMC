@@ -1,7 +1,7 @@
 use std::{fmt, sync::Arc};
 
 use glam::DVec3;
-use simdnbt::owned::NbtCompound;
+use simdnbt::owned::{NbtCompound, NbtTag};
 use steel_registry::{
     REGISTRY, biome::BiomeRef, blocks::BlockRef, enchantment::EnchantmentRef,
     entity_type::EntityTypeRef, items::ItemRef, structure::StructureRef,
@@ -60,6 +60,8 @@ pub enum ParsedArgument {
     Item(ItemRef),
     /// Item slot range argument.
     ItemSlots(ItemSlotRangeArgumentValue),
+    /// Item predicate argument.
+    ItemPredicate(ItemPredicateArgumentValue),
     /// Enchantment argument.
     Enchantment(EnchantmentRef),
     /// Biome or biome tag argument.
@@ -150,6 +152,61 @@ pub enum StructureArgumentValue {
 pub struct ItemSlotRangeArgumentValue {
     name: String,
     slots: Vec<i32>,
+}
+
+/// Item predicate command argument value.
+#[derive(Clone, Debug)]
+pub struct ItemPredicateArgumentValue {
+    target: ItemPredicateTarget,
+    conditions: Vec<ItemPredicateCondition>,
+}
+
+/// Item predicate target selector.
+#[derive(Clone, Debug)]
+pub enum ItemPredicateTarget {
+    /// Any item type.
+    Any,
+    /// A single item type.
+    Item(ItemRef),
+    /// An item tag.
+    Tag {
+        /// Tag key without the leading `#`.
+        key: Identifier,
+        /// Items in the tag.
+        items: Vec<ItemRef>,
+    },
+}
+
+/// One AND-ed item predicate condition group.
+#[derive(Clone, Debug)]
+pub struct ItemPredicateCondition {
+    alternatives: Vec<ItemPredicateTerm>,
+}
+
+/// One item predicate term.
+#[derive(Clone, Debug)]
+pub enum ItemPredicateTerm {
+    /// Component presence test.
+    ComponentPresence {
+        /// Component key.
+        key: Identifier,
+    },
+    /// Component exact-value test using parsed SNBT.
+    ComponentValue {
+        /// Component key.
+        key: Identifier,
+        /// Expected component value.
+        value: NbtTag,
+    },
+    /// Component predicate test using parsed SNBT.
+    PredicateValue {
+        /// Predicate key.
+        key: Identifier,
+        /// Expected predicate value.
+        value: NbtTag,
+    },
+    /// Negated test term.
+    Not(Box<ItemPredicateTerm>),
 }
 
 /// Player target for permission-management commands.
@@ -354,6 +411,40 @@ impl ItemSlotRangeArgumentValue {
     }
 }
 
+impl ItemPredicateArgumentValue {
+    /// Creates an item predicate value.
+    #[must_use]
+    pub fn new(target: ItemPredicateTarget, conditions: Vec<ItemPredicateCondition>) -> Self {
+        Self { target, conditions }
+    }
+
+    /// Returns the item target selector.
+    #[must_use]
+    pub const fn target(&self) -> &ItemPredicateTarget {
+        &self.target
+    }
+
+    /// Returns the AND-ed condition groups.
+    #[must_use]
+    pub fn conditions(&self) -> &[ItemPredicateCondition] {
+        &self.conditions
+    }
+}
+
+impl ItemPredicateCondition {
+    /// Creates an item predicate condition group.
+    #[must_use]
+    pub fn new(alternatives: Vec<ItemPredicateTerm>) -> Self {
+        Self { alternatives }
+    }
+
+    /// Returns the OR-ed alternatives in this condition group.
+    #[must_use]
+    pub fn alternatives(&self) -> &[ItemPredicateTerm] {
+        &self.alternatives
+    }
+}
+
 impl BiomeArgumentValue {
     /// Returns whether this value matches `biome`.
     #[must_use]
@@ -448,6 +539,7 @@ impl fmt::Debug for ParsedArgument {
             Self::EntityType(value) => f.debug_tuple("EntityType").field(&value.key).finish(),
             Self::Item(value) => f.debug_tuple("Item").field(&value.key).finish(),
             Self::ItemSlots(value) => f.debug_tuple("ItemSlots").field(value).finish(),
+            Self::ItemPredicate(value) => f.debug_tuple("ItemPredicate").field(value).finish(),
             Self::Enchantment(value) => f.debug_tuple("Enchantment").field(&value.key).finish(),
             Self::Biome(value) => f.debug_tuple("Biome").field(value).finish(),
             Self::BlockPredicate(value) => f.debug_tuple("BlockPredicate").field(value).finish(),
@@ -534,6 +626,7 @@ impl ParsedArgument {
             Self::EntityType(_) => "entity_type",
             Self::Item(_) => "item",
             Self::ItemSlots(_) => "item_slots",
+            Self::ItemPredicate(_) => "item_predicate",
             Self::Enchantment(_) => "enchantment",
             Self::Biome(_) => "biome",
             Self::BlockPredicate(_) => "block_predicate",
@@ -815,6 +908,17 @@ impl FromParsedArgument for ItemSlotRangeArgumentValue {
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
         let ParsedArgument::ItemSlots(value) = value else {
+            return None;
+        };
+        Some(value.clone())
+    }
+}
+
+impl FromParsedArgument for ItemPredicateArgumentValue {
+    const TYPE_NAME: &'static str = "item_predicate";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::ItemPredicate(value) = value else {
             return None;
         };
         Some(value.clone())

@@ -2,6 +2,7 @@
 
 mod block;
 mod game;
+mod item_predicate;
 mod nbt;
 mod permission;
 mod position;
@@ -14,6 +15,7 @@ mod world;
 
 pub use block::BlockPredicateParser;
 pub use game::GameModeParser;
+pub use item_predicate::ItemPredicateParser;
 pub use nbt::NbtPathParser;
 pub use permission::{PermissionGroupParser, PermissionKeyParser, PermissionRuleExpressionParser};
 pub use position::{BlockPosParser, HeightmapParser, RotationParser, Vec3Parser};
@@ -40,15 +42,17 @@ mod tests {
         chunk::heightmap::HeightmapType,
         command::{
             graph::{
-                CommandArgumentParser, CommandParseErrorKind, ParsedArgument, ParsedArguments,
+                CommandArgumentParser, CommandParseErrorKind, ItemPredicateTarget,
+                ItemPredicateTerm, ParsedArgument, ParsedArguments,
             },
             parsers::{
                 BiomeParser, BlockPosParser, BlockPredicateParser, ComponentParser, DomainParser,
                 EnchantmentParser, EntityParser, EntitySummonParser, GameModeParser,
-                HeightmapParser, IntRangeParser, ItemParser, ItemSlotsParser, NbtPathParser,
-                ObjectiveParser, PermissionKeyParser, PermissionRuleExpressionParser,
-                PermissionTargetParser, PlayerParser, RotationParser, ScoreHolderParser,
-                StructureParser, TimeParser, Vec3Parser, WorldParser,
+                HeightmapParser, IntRangeParser, ItemParser, ItemPredicateParser, ItemSlotsParser,
+                NbtPathParser, ObjectiveParser, PermissionKeyParser,
+                PermissionRuleExpressionParser, PermissionTargetParser, PlayerParser,
+                RotationParser, ScoreHolderParser, StructureParser, TimeParser, Vec3Parser,
+                WorldParser,
             },
             reader::CommandReader,
             requirement::{
@@ -614,6 +618,159 @@ mod tests {
         assert!(texts.contains(&"weapon.mainhand".to_owned()));
         assert!(texts.contains(&"weapon.offhand".to_owned()));
         assert!(texts.contains(&"weapon.*".to_owned()));
+    }
+
+    #[test]
+    fn item_predicate_parser_accepts_vanilla_target_forms() {
+        init_test_registry();
+
+        let mut reader = CommandReader::new("stone run");
+        let ParsedArgument::ItemPredicate(predicate) = ItemPredicateParser
+            .parse(&mut reader, &TestContext)
+            .expect("item predicate parses")
+        else {
+            panic!("expected item predicate");
+        };
+        assert!(matches!(
+            predicate.target(),
+            ItemPredicateTarget::Item(item) if *item == &vanilla_items::ITEMS.stone
+        ));
+        assert!(predicate.conditions().is_empty());
+        assert_eq!(reader.remaining(), " run");
+
+        let mut reader = CommandReader::new("#logs [ count = 1 ] next");
+        let ParsedArgument::ItemPredicate(predicate) = ItemPredicateParser
+            .parse(&mut reader, &TestContext)
+            .expect("tag item predicate parses")
+        else {
+            panic!("expected item predicate");
+        };
+        assert!(matches!(
+            predicate.target(),
+            ItemPredicateTarget::Tag { key, items } if key == &Identifier::vanilla_static("logs") && !items.is_empty()
+        ));
+        assert_eq!(predicate.conditions().len(), 1);
+        assert_eq!(reader.remaining(), " next");
+
+        let mut reader = CommandReader::new("*[]");
+        let ParsedArgument::ItemPredicate(predicate) = ItemPredicateParser
+            .parse(&mut reader, &TestContext)
+            .expect("any item predicate parses")
+        else {
+            panic!("expected item predicate");
+        };
+        assert!(matches!(predicate.target(), ItemPredicateTarget::Any));
+        assert!(predicate.conditions().is_empty());
+    }
+
+    #[test]
+    fn item_predicate_parser_preserves_condition_ast() {
+        init_test_registry();
+
+        let mut reader = CommandReader::new("stone[count=1,!damage|count~{min:2}]");
+        let ParsedArgument::ItemPredicate(predicate) = ItemPredicateParser
+            .parse(&mut reader, &TestContext)
+            .expect("item predicate parses")
+        else {
+            panic!("expected item predicate");
+        };
+
+        assert_eq!(predicate.conditions().len(), 2);
+        let first = &predicate.conditions()[0].alternatives()[0];
+        assert!(matches!(
+            first,
+            ItemPredicateTerm::ComponentValue { key, value }
+                if key == &Identifier::vanilla_static("count")
+                    && value == &simdnbt::owned::NbtTag::Int(1)
+        ));
+
+        let second = predicate.conditions()[1].alternatives();
+        assert_eq!(second.len(), 2);
+        assert!(matches!(
+            &second[0],
+            ItemPredicateTerm::Not(term)
+                if matches!(
+                    term.as_ref(),
+                    ItemPredicateTerm::ComponentPresence { key }
+                        if key == &Identifier::vanilla_static("damage")
+                )
+        ));
+        assert!(matches!(
+            &second[1],
+            ItemPredicateTerm::PredicateValue { key, value }
+                if key == &Identifier::vanilla_static("count")
+                    && matches!(value, simdnbt::owned::NbtTag::Compound(_))
+        ));
+    }
+
+    #[test]
+    fn item_predicate_parser_rejects_unknown_registry_keys() {
+        init_test_registry();
+
+        let mut reader = CommandReader::new("missing_item");
+        let error = ItemPredicateParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("unknown item rejects");
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidItemPredicate(value)
+                if value == "unknown item 'minecraft:missing_item'"
+        ));
+
+        let mut reader = CommandReader::new("stone[missing_component=1]");
+        let error = ItemPredicateParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("unknown component rejects");
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidItemPredicate(value)
+                if value == "unknown item component 'minecraft:missing_component'"
+        ));
+    }
+
+    #[test]
+    fn item_predicate_parser_uses_native_client_type() {
+        let (argument_type, suggestion_type) =
+            ItemPredicateParser.client_parser().into_protocol_argument();
+        assert!(matches!(argument_type, ArgumentType::ItemPredicate));
+        assert!(matches!(suggestion_type, Some(SuggestionType::AskServer)));
+    }
+
+    #[test]
+    fn item_predicate_parser_suggests_targets_and_components() {
+        init_test_registry();
+
+        let item_suggestions =
+            ItemPredicateParser.suggest("planks", &ParsedArguments::default(), &TestContext);
+        assert!(
+            item_suggestions
+                .iter()
+                .any(|suggestion| suggestion.text == "minecraft:oak_planks")
+        );
+
+        let tag_suggestions =
+            ItemPredicateParser.suggest("#log", &ParsedArguments::default(), &TestContext);
+        assert!(
+            tag_suggestions
+                .iter()
+                .any(|suggestion| suggestion.text == "#minecraft:logs")
+        );
+
+        let component_suggestions =
+            ItemPredicateParser.suggest("stone[da", &ParsedArguments::default(), &TestContext);
+        assert!(
+            component_suggestions
+                .iter()
+                .any(|suggestion| suggestion.text == "stone[minecraft:damage")
+        );
+
+        let count_suggestions =
+            ItemPredicateParser.suggest("stone[co", &ParsedArguments::default(), &TestContext);
+        assert!(
+            count_suggestions
+                .iter()
+                .any(|suggestion| suggestion.text == "stone[minecraft:count")
+        );
     }
 
     #[test]

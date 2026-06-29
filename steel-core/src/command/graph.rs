@@ -20,7 +20,8 @@ mod traversal;
 
 pub use arguments::{
     BiomeArgumentValue, BlockPredicateArgumentValue, CommandPermissionArgument, FromParsedArgument,
-    IntRangeArgumentValue, ItemSlotRangeArgumentValue, ParsedArgument, ParsedArgumentError,
+    IntRangeArgumentValue, ItemPredicateArgumentValue, ItemPredicateCondition, ItemPredicateTarget,
+    ItemPredicateTerm, ItemSlotRangeArgumentValue, ParsedArgument, ParsedArgumentError,
     ParsedArguments, PermissionTarget, ScoreHolderArgumentValue, ScoreboardObjectiveName,
     StructureArgumentValue,
 };
@@ -165,6 +166,8 @@ pub enum CommandParseErrorKind {
     InvalidItem(String),
     /// An item slot range argument was invalid.
     InvalidItemSlot(String),
+    /// An item predicate argument was invalid.
+    InvalidItemPredicate(String),
     /// An enchantment argument was invalid.
     InvalidEnchantment(String),
     /// A biome argument was invalid.
@@ -244,6 +247,7 @@ impl CommandParseErrorKind {
             | Self::InvalidEntityType(_)
             | Self::InvalidItem(_)
             | Self::InvalidItemSlot(_)
+            | Self::InvalidItemPredicate(_)
             | Self::InvalidEnchantment(_)
             | Self::InvalidBiome(_)
             | Self::InvalidBlockPredicate(_)
