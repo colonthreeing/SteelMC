@@ -20,12 +20,10 @@ use crate::command::requirement::RequirementContext;
 use crate::command::sender::CommandSender;
 use crate::command::CommandRegistrationSpec;
 use crate::permission::{
-    PermissionContext, PermissionContextKey, PermissionEntry, PermissionExpr, PermissionGroupConfig,
-    PermissionKey, PermissionKeyError, PermissionMetadataCatalog, PermissionResolution,
-    PermissionResolutionSource, PermissionRuleConfig, PermissionRuleContext,
-    PermissionRuleContextConfig, PermissionRuleExpression, PermissionSegment, PermissionSet,
-    PermissionState, PermissionValue, PermissionValueEntry, PermissionValueResolution,
-    PermissionValueRuleConfig, PermissionValueSet, parse_permission_value_key,
+    PermissionContext, PermissionContextKey, PermissionExpr, PermissionGroupConfig, PermissionKey,
+    PermissionKeyError, PermissionMetadataCatalog, PermissionRuleConfig, PermissionRuleContext,
+    PermissionRuleExpression, PermissionSegment, PermissionSet, PermissionState, PermissionValue,
+    PermissionValueSet, parse_permission_value_key,
 };
 use crate::server::Server;
 use crate::world::World;
@@ -34,17 +32,38 @@ use steel_utils::Identifier;
 use super::permission_targets;
 #[path = "steelperms/config.rs"]
 mod config;
+#[path = "steelperms/messages.rs"]
+mod messages;
 #[path = "steelperms/parsers.rs"]
 mod parsers;
 
-use self::config::{
-    PermissionGroupEditError, add_default_group_config, create_group_config, delete_group_config,
-    permission_state_from_rule_config, remove_default_group_config, set_group_config_metadata,
-    set_group_config_permission, set_group_config_priority, unset_group_config_metadata,
-    unset_group_config_permission,
+use self::messages::{
+    command_result, group_list_text, group_metadata_list_text, group_rule_list_text,
+    permission_key_list_text, send_add_default_group_summary, send_background_error,
+    send_default_group_already_set_summary, send_default_group_not_set_summary,
+    send_group_metadata_not_set_summary, send_group_metadata_unchanged_summary,
+    send_group_permission_not_set_summary, send_group_permission_unchanged_summary,
+    send_group_priority_unchanged_summary, send_group_update_error, send_metadata_check,
+    send_permission_check, send_remove_default_group_summary, send_set_group_metadata_summary,
+    send_set_group_permission_summary, send_set_group_priority_summary, send_set_metadata_summary,
+    send_set_permission_summary, send_unset_group_metadata_summary,
+    send_unset_group_permission_summary, send_unset_metadata_summary, send_unset_permission_summary,
+    send_user_info, target_count_text,
 };
 #[cfg(test)]
-use self::config::{group_config_metadata_value, group_config_permission_states};
+use self::messages::{
+    metadata_resolution_text, permission_check_result_text, permission_resolution_source_text,
+    permission_rule_context_suffix,
+};
+use self::config::{
+    add_default_group_config, create_group_config, delete_group_config, remove_default_group_config,
+    set_group_config_metadata, set_group_config_permission, set_group_config_priority,
+    unset_group_config_metadata, unset_group_config_permission,
+};
+#[cfg(test)]
+use self::config::{
+    PermissionGroupEditError, group_config_metadata_value, group_config_permission_states,
+};
 use self::parsers::{
     PermissionAssignedGroupParser, PermissionContextKeyParser, PermissionContextValueParser,
     PermissionGroupMetadataParser, PermissionGroupNameParser, PermissionGroupRuleParser,
@@ -1415,272 +1434,6 @@ async fn save_or_report(
         )
 }
 
-fn send_user_info(
-    sender: &CommandSender,
-    target: &PermissionTarget,
-    state: &permission_targets::PermissionTargetState,
-) {
-    let groups = group_list_text(&state.groups);
-    let overrides = permission_entries_text(state.overrides.entries());
-    let metadata = metadata_entries_text(state.value_overrides.entries());
-
-    sender.send_message(&TextComponent::plain(format!(
-        "{}: groups [{}], direct permissions [{}], metadata [{}]",
-        target.name(),
-        groups,
-        overrides,
-        metadata
-    )));
-}
-
-fn send_permission_check(
-    sender: &CommandSender,
-    target: &PermissionTarget,
-    permission: &PermissionKey,
-    rule_context: &PermissionRuleContext,
-    resolution: Option<&PermissionResolution>,
-) {
-    let state = resolution.map_or(PermissionState::Deny, PermissionResolution::state);
-    let detail = resolution.map_or_else(|| "unset".to_owned(), permission_resolution_text);
-    sender.send_message(&TextComponent::plain(format!(
-        "{}: permission '{}' in {} is {} ({detail})",
-        target.name(),
-        permission.as_str(),
-        rule_context,
-        permission_check_result_text(state)
-    )));
-}
-
-fn send_metadata_check(
-    sender: &CommandSender,
-    target: &PermissionTarget,
-    key: &Identifier,
-    rule_context: &PermissionRuleContext,
-    resolution: Option<&PermissionValueResolution>,
-) {
-    let value = resolution
-        .map(|resolution| permission_value_text(resolution.value()))
-        .unwrap_or_else(|| "unset".to_owned());
-    let detail = resolution.map_or_else(|| "unset".to_owned(), metadata_resolution_text);
-    sender.send_message(&TextComponent::plain(format!(
-        "{}: metadata '{key}' in {rule_context} is {value} ({detail})",
-        target.name()
-    )));
-}
-
-fn send_set_permission_summary(
-    sender: &CommandSender,
-    state: PermissionState,
-    permission: &PermissionKey,
-    rule_context: &PermissionRuleContext,
-    count: usize,
-) {
-    sender.send_message(&TextComponent::plain(format!(
-        "{} permission '{}'{} for {}",
-        permission_action_text(state),
-        permission.as_str(),
-        permission_rule_context_suffix(rule_context),
-        target_count_text(count)
-    )));
-}
-
-fn send_unset_permission_summary(
-    sender: &CommandSender,
-    permission: &PermissionKey,
-    rule_context: &PermissionRuleContext,
-    count: usize,
-) {
-    sender.send_message(&TextComponent::plain(format!(
-        "Unset direct permission '{}'{} for {}",
-        permission.as_str(),
-        permission_rule_context_suffix(rule_context),
-        target_count_text(count)
-    )));
-}
-
-fn send_set_metadata_summary(
-    sender: &CommandSender,
-    key: &Identifier,
-    value: &PermissionValue,
-    rule_context: &PermissionRuleContext,
-    count: usize,
-) {
-    sender.send_message(&TextComponent::plain(format!(
-        "Set metadata '{key}'{} = {} for {}",
-        permission_rule_context_suffix(rule_context),
-        permission_value_text(value),
-        target_count_text(count)
-    )));
-}
-
-fn send_unset_metadata_summary(
-    sender: &CommandSender,
-    key: &Identifier,
-    rule_context: &PermissionRuleContext,
-    count: usize,
-) {
-    sender.send_message(&TextComponent::plain(format!(
-        "Unset metadata '{key}'{} for {}",
-        permission_rule_context_suffix(rule_context),
-        target_count_text(count)
-    )));
-}
-
-fn send_set_group_permission_summary(
-    sender: &CommandSender,
-    state: PermissionState,
-    group: &str,
-    permission: &PermissionKey,
-    rule_context: &PermissionRuleContext,
-) {
-    sender.send_message(&TextComponent::plain(format!(
-        "{} permission '{}'{} for group '{group}'",
-        permission_action_text(state),
-        permission.as_str(),
-        permission_rule_context_suffix(rule_context)
-    )));
-}
-
-fn send_set_group_priority_summary(sender: &CommandSender, group: &str, priority: i32) {
-    sender.send_message(&TextComponent::plain(format!(
-        "Set priority {priority} for group '{group}'"
-    )));
-}
-
-fn send_group_priority_unchanged_summary(sender: &CommandSender, group: &str, priority: i32) {
-    sender.send_message(&TextComponent::plain(format!(
-        "Group '{group}' already has priority {priority}"
-    )));
-}
-
-fn send_add_default_group_summary(sender: &CommandSender, group: &str) {
-    sender.send_message(&TextComponent::plain(format!(
-        "Added group '{group}' to default groups"
-    )));
-}
-
-fn send_default_group_already_set_summary(sender: &CommandSender, group: &str) {
-    sender.send_message(&TextComponent::plain(format!(
-        "Group '{group}' is already a default group"
-    )));
-}
-
-fn send_remove_default_group_summary(sender: &CommandSender, group: &str) {
-    sender.send_message(&TextComponent::plain(format!(
-        "Removed group '{group}' from default groups"
-    )));
-}
-
-fn send_default_group_not_set_summary(sender: &CommandSender, group: &str) {
-    sender.send_message(&TextComponent::plain(format!(
-        "Group '{group}' is not a default group"
-    )));
-}
-
-fn send_set_group_metadata_summary(
-    sender: &CommandSender,
-    group: &str,
-    key: &Identifier,
-    value: &PermissionValue,
-    rule_context: &PermissionRuleContext,
-) {
-    sender.send_message(&TextComponent::plain(format!(
-        "Set metadata '{key}'{} = {} for group '{group}'",
-        permission_rule_context_suffix(rule_context),
-        permission_value_text(value)
-    )));
-}
-
-fn send_group_metadata_unchanged_summary(
-    sender: &CommandSender,
-    group: &str,
-    key: &Identifier,
-    value: &PermissionValue,
-    rule_context: &PermissionRuleContext,
-) {
-    sender.send_message(&TextComponent::plain(format!(
-        "Group '{group}' already sets metadata '{key}'{} = {}",
-        permission_rule_context_suffix(rule_context),
-        permission_value_text(value)
-    )));
-}
-
-fn send_group_permission_unchanged_summary(
-    sender: &CommandSender,
-    state: PermissionState,
-    group: &str,
-    permission: &PermissionKey,
-    rule_context: &PermissionRuleContext,
-) {
-    sender.send_message(&TextComponent::plain(format!(
-        "Group '{group}' already {} permission '{}'{}",
-        permission_state_text(state),
-        permission.as_str(),
-        permission_rule_context_suffix(rule_context)
-    )));
-}
-
-fn send_unset_group_metadata_summary(
-    sender: &CommandSender,
-    group: &str,
-    key: &Identifier,
-    rule_context: &PermissionRuleContext,
-) {
-    sender.send_message(&TextComponent::plain(format!(
-        "Unset metadata '{key}'{} for group '{group}'",
-        permission_rule_context_suffix(rule_context)
-    )));
-}
-
-fn send_group_metadata_not_set_summary(
-    sender: &CommandSender,
-    group: &str,
-    key: &Identifier,
-    rule_context: &PermissionRuleContext,
-) {
-    sender.send_message(&TextComponent::plain(format!(
-        "Group '{group}' does not set metadata '{key}'{}",
-        permission_rule_context_suffix(rule_context)
-    )));
-}
-
-fn send_unset_group_permission_summary(
-    sender: &CommandSender,
-    group: &str,
-    permission: &PermissionKey,
-    rule_context: &PermissionRuleContext,
-) {
-    sender.send_message(&TextComponent::plain(format!(
-        "Unset permission '{}'{} for group '{group}'",
-        permission.as_str(),
-        permission_rule_context_suffix(rule_context)
-    )));
-}
-
-fn send_group_permission_not_set_summary(
-    sender: &CommandSender,
-    group: &str,
-    permission: &PermissionKey,
-    rule_context: &PermissionRuleContext,
-) {
-    sender.send_message(&TextComponent::plain(format!(
-        "Group '{group}' does not set permission '{}'{}",
-        permission.as_str(),
-        permission_rule_context_suffix(rule_context)
-    )));
-}
-
-fn send_background_error(sender: &CommandSender, command: &str, error: CommandError) {
-    sender.send_failure_feedback(error.into_feedback(command));
-}
-
-fn send_group_update_error(
-    sender: &CommandSender,
-    error: crate::permission::PermissionGroupUpdateError<PermissionGroupEditError>,
-) {
-    sender.send_failure(error.to_string());
-}
-
 fn targets(arguments: &ParsedArguments) -> Result<Vec<PermissionTarget>, CommandError> {
     let targets = arguments
         .get::<Vec<PermissionTarget>>("targets")
@@ -1818,124 +1571,6 @@ fn custom_permission_context(
     let key = PermissionContextKey::parse(key)
         .map_err(|error| CommandError::failure(format!("Invalid context key: {error}")))?;
     Ok(Some((key, value)))
-}
-
-fn group_list_text(groups: &[String]) -> String {
-    if groups.is_empty() {
-        return "none".to_owned();
-    }
-
-    groups.join(", ")
-}
-
-fn permission_key_list_text(permissions: &[String]) -> String {
-    if permissions.is_empty() {
-        return "none".to_owned();
-    }
-
-    permissions.join(", ")
-}
-
-fn group_rule_list_text(rules: &[PermissionRuleConfig]) -> String {
-    if rules.is_empty() {
-        return "none".to_owned();
-    }
-
-    rules
-        .iter()
-        .map(|rule| {
-            format!(
-                "{} {}{}",
-                permission_state_text(permission_state_from_rule_config(rule.state)),
-                rule.key,
-                permission_rule_config_suffix(rule.context.as_ref())
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn group_metadata_list_text(values: &[PermissionValueRuleConfig]) -> String {
-    if values.is_empty() {
-        return "none".to_owned();
-    }
-
-    values
-        .iter()
-        .map(|value| {
-            format!(
-                "{} = {}{}",
-                value.key,
-                permission_value_text(&value.value),
-                permission_rule_config_suffix(value.context.as_ref())
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn permission_entries_text(entries: &[PermissionEntry]) -> String {
-    if entries.is_empty() {
-        return "none".to_owned();
-    }
-
-    entries
-        .iter()
-        .map(|entry| {
-            format!(
-                "{} {}{}",
-                permission_state_text(entry.state()),
-                entry.key().as_str(),
-                permission_rule_context_suffix(entry.context())
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn metadata_entries_text(entries: &[PermissionValueEntry]) -> String {
-    if entries.is_empty() {
-        return "none".to_owned();
-    }
-
-    entries
-        .iter()
-        .map(|entry| {
-            format!(
-                "{} = {}{}",
-                entry.key(),
-                permission_value_text(entry.value()),
-                permission_rule_context_suffix(entry.context())
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn permission_value_text(value: &PermissionValue) -> String {
-    match value {
-        PermissionValue::Bool(value) => value.to_string(),
-        PermissionValue::Integer(value) => value.to_string(),
-        PermissionValue::String(value) => format!("{value:?}"),
-    }
-}
-
-fn permission_rule_context_suffix(rule_context: &PermissionRuleContext) -> String {
-    if rule_context.is_global() {
-        String::new()
-    } else {
-        format!(" ({rule_context})")
-    }
-}
-
-fn permission_rule_config_suffix(context: Option<&PermissionRuleContextConfig>) -> String {
-    match context {
-        None => String::new(),
-        Some(context) => context.clone().into_rule_context().map_or_else(
-            |_| " (invalid context)".to_owned(),
-            |context| permission_rule_context_suffix(&context),
-        ),
-    }
 }
 
 fn direct_permission_override_suggestions(
@@ -2180,74 +1815,6 @@ fn assigned_group_suggestions(
         .into_iter()
         .map(SuggestionEntry::new)
         .collect()
-}
-
-fn permission_state_text(state: PermissionState) -> &'static str {
-    match state {
-        PermissionState::Allow => "allow",
-        PermissionState::Deny => "deny",
-    }
-}
-
-fn permission_check_result_text(state: PermissionState) -> &'static str {
-    match state {
-        PermissionState::Allow => "allowed",
-        PermissionState::Deny => "denied",
-    }
-}
-
-fn permission_action_text(state: PermissionState) -> &'static str {
-    match state {
-        PermissionState::Allow => "Allowed",
-        PermissionState::Deny => "Denied",
-    }
-}
-
-fn permission_resolution_text(resolution: &PermissionResolution) -> String {
-    format!(
-        "{} by {}, rule {} {}{}, key specificity {}, context specificity {}",
-        permission_check_result_text(resolution.state()),
-        permission_resolution_source_text(resolution.source()),
-        permission_state_text(resolution.state()),
-        resolution.key().as_str(),
-        permission_rule_context_suffix(resolution.context()),
-        resolution.key_specificity(),
-        resolution.context_specificity()
-    )
-}
-
-fn permission_resolution_source_text(source: &PermissionResolutionSource) -> String {
-    match source {
-        PermissionResolutionSource::Subject => "direct permission".to_owned(),
-        PermissionResolutionSource::Group { name, priority } => {
-            format!("group '{name}' priority {priority}")
-        }
-    }
-}
-
-fn metadata_resolution_text(resolution: &PermissionValueResolution) -> String {
-    format!(
-        "set by {}, rule {} = {}{}, context specificity {}, insertion {}",
-        permission_resolution_source_text(resolution.source()),
-        resolution.key(),
-        permission_value_text(resolution.value()),
-        permission_rule_context_suffix(resolution.context()),
-        resolution.context_specificity(),
-        resolution.insertion_index()
-    )
-}
-
-fn target_count_text(count: usize) -> String {
-    match count {
-        1 => "1 player".to_owned(),
-        _ => format!("{count} players"),
-    }
-}
-
-fn command_result(count: usize) -> CommandResult {
-    CommandResult {
-        success_count: i32::try_from(count).map_or(i32::MAX, |count| count),
-    }
 }
 
 #[cfg(test)]
