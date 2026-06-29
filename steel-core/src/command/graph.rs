@@ -170,6 +170,8 @@ pub enum CommandParseErrorKind {
     InvalidEntityType(String),
     /// An item argument was invalid.
     InvalidItem(String),
+    /// An item stack argument was invalid.
+    InvalidItemStack(String),
     /// An item slot range argument was invalid.
     InvalidItemSlot(String),
     /// An item predicate argument was invalid.
@@ -255,6 +257,7 @@ impl CommandParseErrorKind {
             | Self::UnsupportedEntitySelectorOption(_)
             | Self::InvalidEntityType(_)
             | Self::InvalidItem(_)
+            | Self::InvalidItemStack(_)
             | Self::InvalidItemSlot(_)
             | Self::InvalidItemPredicate(_)
             | Self::InvalidEnchantment(_)

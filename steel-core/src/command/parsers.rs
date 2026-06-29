@@ -3,6 +3,7 @@
 mod block;
 mod game;
 mod item_predicate;
+mod item_stack;
 mod nbt;
 mod permission;
 mod position;
@@ -17,6 +18,7 @@ mod world;
 pub use block::BlockPredicateParser;
 pub use game::GameModeParser;
 pub use item_predicate::ItemPredicateParser;
+pub use item_stack::ItemStackParser;
 pub use nbt::NbtPathParser;
 pub use permission::{PermissionGroupParser, PermissionKeyParser, PermissionRuleExpressionParser};
 pub use position::{BlockPosParser, HeightmapParser, RotationParser, Vec3Parser};
@@ -35,8 +37,9 @@ mod tests {
     use glam::DVec3;
     use steel_protocol::packets::game::{ArgumentType, SuggestionType};
     use steel_registry::{
-        REGISTRY, item_stack::ItemStack, test_support::init_test_registry, vanilla_biomes,
-        vanilla_blocks, vanilla_enchantments, vanilla_entities, vanilla_items,
+        REGISTRY, data_components::vanilla_components, item_stack::ItemStack,
+        test_support::init_test_registry, vanilla_biomes, vanilla_blocks, vanilla_enchantments,
+        vanilla_entities, vanilla_items,
     };
 
     use crate::{
@@ -50,7 +53,7 @@ mod tests {
                 BiomeParser, BlockPosParser, BlockPredicateParser, ComponentParser, DomainParser,
                 EnchantmentParser, EntityParser, EntitySummonParser, GameModeParser,
                 HeightmapParser, IntRangeParser, ItemParser, ItemPredicateParser, ItemSlotsParser,
-                NbtPathParser, ObjectiveParser, PermissionKeyParser,
+                ItemStackParser, NbtPathParser, ObjectiveParser, PermissionKeyParser,
                 PermissionRuleExpressionParser, PermissionTargetParser, PlayerParser,
                 RotationParser, ScoreHolderParser, StructureParser, TimeParser, Vec3Parser,
                 WorldParser,
@@ -598,6 +601,88 @@ mod tests {
             suggestions
                 .iter()
                 .any(|suggestion| suggestion.text == "minecraft:oak_planks")
+        );
+    }
+
+    #[test]
+    fn item_stack_parser_accepts_component_patch_syntax() {
+        init_test_registry();
+
+        let mut reader = CommandReader::new("stone[max_stack_size=1,!damage] next");
+        let ParsedArgument::ItemStack(stack) = ItemStackParser
+            .parse(&mut reader, &TestContext)
+            .expect("item stack parses")
+        else {
+            panic!("expected item stack");
+        };
+
+        assert!(stack.is(&vanilla_items::ITEMS.stone));
+        assert_eq!(
+            stack.get(vanilla_components::MAX_STACK_SIZE).copied(),
+            Some(1)
+        );
+        assert!(stack.patch().is_removed(&vanilla_components::DAMAGE.key));
+        assert_eq!(reader.remaining(), " next");
+    }
+
+    #[test]
+    fn item_stack_parser_rejects_repeated_components() {
+        init_test_registry();
+
+        let mut reader = CommandReader::new("stone[damage=1,damage=2]");
+        let error = ItemStackParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("repeated components are rejected");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidItemStack(value)
+                if value == "repeated item component 'minecraft:damage'"
+        ));
+    }
+
+    #[test]
+    fn item_stack_parser_rejects_placeholder_component_values() {
+        init_test_registry();
+
+        let mut reader = CommandReader::new("stone[custom_data={foo:1}]");
+        let error = ItemStackParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("placeholder components are rejected for set values");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidItemStack(value)
+                if value == "unsupported item component 'minecraft:custom_data'"
+        ));
+    }
+
+    #[test]
+    fn item_stack_parser_uses_native_client_type() {
+        let (argument_type, suggestion_type) =
+            ItemStackParser.client_parser().into_protocol_argument();
+        assert!(matches!(argument_type, ArgumentType::ItemStack));
+        assert!(matches!(suggestion_type, Some(SuggestionType::AskServer)));
+    }
+
+    #[test]
+    fn item_stack_parser_suggests_components_with_assignment_suffix() {
+        init_test_registry();
+
+        let suggestions =
+            ItemStackParser.suggest("stone[da", &ParsedArguments::default(), &TestContext);
+        assert!(
+            suggestions
+                .iter()
+                .any(|suggestion| suggestion.text == "stone[minecraft:damage=")
+        );
+
+        let removal_suggestions =
+            ItemStackParser.suggest("stone[!da", &ParsedArguments::default(), &TestContext);
+        assert!(
+            removal_suggestions
+                .iter()
+                .any(|suggestion| suggestion.text == "stone[!minecraft:damage")
         );
     }
 

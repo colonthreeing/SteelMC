@@ -102,7 +102,7 @@ fn can_summon_entity_type(entity_type: EntityTypeRef) -> bool {
             .is_some_and(|registry| registry.has_factory(entity_type))
 }
 
-/// Item stack argument parser.
+/// Item resource argument parser.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ItemParser;
 
@@ -114,9 +114,14 @@ impl CommandArgumentParser for ItemParser {
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
         let raw = reader.read_token()?;
-        let key = raw.strip_prefix("minecraft:").unwrap_or(&raw).to_owned();
+        let Some(key) = parse_resource_identifier(&raw) else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidItem(raw),
+                cursor,
+            ));
+        };
 
-        let Some(item) = REGISTRY.items.by_key(&Identifier::vanilla(key)) else {
+        let Some(item) = REGISTRY.items.by_key(&key) else {
             return Err(CommandParseError::new(
                 CommandParseErrorKind::InvalidItem(raw),
                 cursor,

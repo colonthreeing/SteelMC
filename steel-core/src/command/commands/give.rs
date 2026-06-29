@@ -1,7 +1,7 @@
 //! /// Handler for the "give" command.
 use std::sync::Arc;
 
-use steel_registry::{data_components::vanilla_components, item_stack::ItemStack, items::ItemRef};
+use steel_registry::item_stack::ItemStack;
 use steel_utils::translations;
 use text_components::{Modifier, TextComponent, interactivity::HoverEvent};
 
@@ -13,7 +13,7 @@ use crate::{
         graph::{
             CommandNodeBuilder, CommandResult, IntegerParser, ParsedArguments, argument, literal,
         },
-        parsers::{ItemParser, PlayerParser},
+        parsers::{ItemStackParser, PlayerParser},
         sender::CommandSender,
     },
     inventory::container::Container,
@@ -27,7 +27,7 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 pub(crate) fn command() -> CommandNodeBuilder {
     literal("give").then(
         argument("targets", PlayerParser::multiple()).then(
-            argument("item", ItemParser) // FIXME: should be item predicate instead to also handle tags and components
+            argument("item", ItemStackParser)
                 .executes(give_default_count)
                 .then(
                     argument("count", IntegerParser::bounded(Some(1), None))
@@ -42,9 +42,9 @@ fn give_default_count(
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
     let targets = targets(arguments)?;
-    let item = item(arguments)?;
+    let item_stack = item_stack(arguments)?;
 
-    give(&targets, item, 1, &context.sender);
+    give(&targets, item_stack, 1, &context.sender);
 
     Ok(CommandResult::success())
 }
@@ -54,19 +54,17 @@ fn give_with_count(
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
     let targets = targets(arguments)?;
-    let item = item(arguments)?;
+    let item_stack = item_stack(arguments)?;
     let count = count(arguments)?;
 
-    give(&targets, item, count, &context.sender);
+    give(&targets, item_stack, count, &context.sender);
 
     Ok(CommandResult::success())
 }
 
-fn give(targets: &[Arc<Player>], item: ItemRef, count: i32, sender: &CommandSender) {
-    let max_stack_size = item
-        .components
-        .get(vanilla_components::MAX_STACK_SIZE)
-        .unwrap_or(1);
+fn give(targets: &[Arc<Player>], stack: ItemStack, count: i32, sender: &CommandSender) {
+    let item = stack.item();
+    let max_stack_size = stack.max_stack_size();
 
     if count > max_stack_size * 100 {
         sender.send_message(
@@ -82,8 +80,6 @@ fn give(targets: &[Arc<Player>], item: ItemRef, count: i32, sender: &CommandSend
         );
         return;
     }
-
-    let stack = ItemStack::new(item);
 
     for target in targets {
         let mut remaining = count;
@@ -137,9 +133,9 @@ fn targets(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError
         .map_err(super::invalid_parsed_argument)
 }
 
-fn item(arguments: &ParsedArguments) -> Result<ItemRef, CommandError> {
+fn item_stack(arguments: &ParsedArguments) -> Result<ItemStack, CommandError> {
     arguments
-        .get::<ItemRef>("item")
+        .get::<ItemStack>("item")
         .map_err(super::invalid_parsed_argument)
 }
 

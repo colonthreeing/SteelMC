@@ -59,6 +59,8 @@ pub enum ParsedArgument {
     EntityType(EntityTypeRef),
     /// Item argument.
     Item(ItemRef),
+    /// Item stack argument.
+    ItemStack(ItemStack),
     /// Item slot range argument.
     ItemSlots(ItemSlotRangeArgumentValue),
     /// Item predicate argument.
@@ -731,6 +733,7 @@ impl fmt::Debug for ParsedArgument {
                 .finish(),
             Self::EntityType(value) => f.debug_tuple("EntityType").field(&value.key).finish(),
             Self::Item(value) => f.debug_tuple("Item").field(&value.key).finish(),
+            Self::ItemStack(value) => f.debug_tuple("ItemStack").field(value).finish(),
             Self::ItemSlots(value) => f.debug_tuple("ItemSlots").field(value).finish(),
             Self::ItemPredicate(value) => f.debug_tuple("ItemPredicate").field(value).finish(),
             Self::Enchantment(value) => f.debug_tuple("Enchantment").field(&value.key).finish(),
@@ -818,6 +821,7 @@ impl ParsedArgument {
             Self::Entities(_) => "entities",
             Self::EntityType(_) => "entity_type",
             Self::Item(_) => "item",
+            Self::ItemStack(_) => "item_stack",
             Self::ItemSlots(_) => "item_slots",
             Self::ItemPredicate(_) => "item_predicate",
             Self::Enchantment(_) => "enchantment",
@@ -1093,6 +1097,17 @@ impl FromParsedArgument for ItemRef {
             return None;
         };
         Some(*value)
+    }
+}
+
+impl FromParsedArgument for ItemStack {
+    const TYPE_NAME: &'static str = "item_stack";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::ItemStack(value) = value else {
+            return None;
+        };
+        Some(value.clone())
     }
 }
 

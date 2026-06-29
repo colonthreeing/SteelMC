@@ -597,6 +597,9 @@ impl CommandDispatcher {
             CommandParseErrorKind::InvalidItem(value) => translations::ARGUMENT_ITEM_ID_INVALID
                 .message([TextComponent::from(value.clone())])
                 .into(),
+            CommandParseErrorKind::InvalidItemStack(value) => {
+                TextComponent::plain(format!("Invalid item stack: {value}"))
+            }
             CommandParseErrorKind::InvalidItemSlot(value) => {
                 TextComponent::plain(format!("Invalid item slot '{value}'"))
             }
