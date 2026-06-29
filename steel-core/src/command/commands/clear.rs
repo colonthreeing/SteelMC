@@ -57,9 +57,9 @@ fn clear_self(
         1,
         Some(player.gameprofile.name.clone()),
         false,
-    );
+    )?;
 
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_success_count(count))
 }
 
 fn clear_targets(
@@ -79,9 +79,9 @@ fn clear_targets(
         targets.len(),
         targets.first().map(|it| it.gameprofile.name.clone()),
         false,
-    );
+    )?;
 
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_success_count(count))
 }
 
 fn clear_targets_with_item(
@@ -98,9 +98,9 @@ fn clear_targets_with_item(
         targets.len(),
         targets.first().map(|it| it.gameprofile.name.clone()),
         false,
-    );
+    )?;
 
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_success_count(count))
 }
 
 fn clear_targets_with_max_amount(
@@ -118,9 +118,9 @@ fn clear_targets_with_max_amount(
         targets.len(),
         targets.first().map(|it| it.gameprofile.name.clone()),
         max_amount == 0,
-    );
+    )?;
 
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_success_count(count))
 }
 
 fn clear_targets_matching(
@@ -228,22 +228,19 @@ fn clear_messages(
     player_amount: usize,
     target_name: Option<String>,
     count_only: bool,
-) {
+) -> Result<(), CommandError> {
     if count == 0
         && player_amount == 1
         && let Some(name) = target_name
     {
-        sender.send_message(
-            &translations::CLEAR_FAILED_SINGLE
-                .message([TextComponent::from(name)])
-                .into(),
-        );
+        return Err(CommandError::failure(
+            translations::CLEAR_FAILED_SINGLE.message([TextComponent::from(name)]),
+        ));
     } else if count == 0 {
-        sender.send_message(
-            &translations::CLEAR_FAILED_MULTIPLE
-                .message([TextComponent::from(format!("{player_amount}"))])
-                .into(),
-        );
+        return Err(CommandError::failure(
+            translations::CLEAR_FAILED_MULTIPLE
+                .message([TextComponent::from(format!("{player_amount}"))]),
+        ));
     } else if count_only
         && player_amount == 1
         && let Some(name) = target_name
@@ -283,7 +280,8 @@ fn clear_messages(
                     TextComponent::from(format!("{count}")),
                     TextComponent::from(format!("{player_amount}")),
                 ])
-                .into(),
+            .into(),
         );
     }
+    Ok(())
 }

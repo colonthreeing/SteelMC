@@ -510,19 +510,28 @@ impl CommandResult {
     /// Creates a successful command result.
     #[must_use]
     pub const fn success() -> Self {
+        Self::from_return_value(1)
+    }
+
+    /// Creates a direct command result with the same command return value and callback result.
+    #[must_use]
+    pub const fn from_return_value(value: i32) -> Self {
         Self {
-            success_count: 1,
-            result: 1,
+            success_count: value,
+            result: value,
         }
     }
 
     /// Creates a command result where the result value is the success count.
     #[must_use]
     pub const fn from_success_count(success_count: i32) -> Self {
-        Self {
-            success_count,
-            result: success_count,
-        }
+        Self::from_return_value(success_count)
+    }
+
+    /// Creates a command result from a `usize` success count, saturating at `i32::MAX`.
+    #[must_use]
+    pub fn from_usize_success_count(success_count: usize) -> Self {
+        Self::from_success_count(i32::try_from(success_count).map_or(i32::MAX, |count| count))
     }
 
     /// Creates a command result with separate success-count and result values.

@@ -75,7 +75,7 @@ fn query_time(
             .message([TextComponent::from(format!("{number}"))])
             .into(),
     );
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_return_value(wrap_time(number)))
 }
 
 #[derive(Clone, Copy)]
@@ -139,7 +139,7 @@ fn apply_time(
 
     send_time_set_message(context, new_day_time);
 
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_return_value(wrap_time(new_day_time)))
 }
 
 fn set_const_time(
@@ -165,7 +165,7 @@ fn set_const_time(
 
     send_time_set_message(context, daytime);
 
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_return_value(wrap_time(daytime)))
 }
 
 fn send_time_set_message(context: &CommandContext, daytime: i64) {
@@ -181,4 +181,16 @@ fn advance_time(world: &World) -> Result<bool, CommandError> {
         .get_game_rule(&ADVANCE_TIME)
         .as_bool()
         .ok_or_else(|| CommandError::failure("gamerule advance_time should always be a bool"))
+}
+
+fn wrap_time(ticks: i64) -> i32 {
+    (ticks % 2_147_483_647) as i32
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn command_result_wraps_time_like_vanilla() {
+        assert_eq!(super::wrap_time(2_147_483_648), 1);
+    }
 }

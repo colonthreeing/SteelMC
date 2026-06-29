@@ -94,5 +94,5 @@ fn execute_weather(
         }
     }
 
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_return_value(duration))
 }

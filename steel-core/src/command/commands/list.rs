@@ -14,17 +14,19 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 pub(crate) fn command() -> CommandNodeBuilder {
     literal("list")
         .executes(|context: &mut CommandContext, _: &ParsedArguments| {
-            list_players(context, false);
-            Ok(CommandResult::success())
+            Ok(CommandResult::from_usize_success_count(list_players(
+                context, false,
+            )))
         })
         .then(
             literal("uuids").executes(|context: &mut CommandContext, _: &ParsedArguments| {
-                list_players(context, true);
-                Ok(CommandResult::success())
+                Ok(CommandResult::from_usize_success_count(list_players(
+                    context, true,
+                )))
             }),
         )
 }
-fn list_players(context: &mut CommandContext, show_uuids: bool) {
+fn list_players(context: &mut CommandContext, show_uuids: bool) -> usize {
     let player_number = context.server.player_count();
     let max_player = context.server.config.max_players;
     let formatted_player_list = context
@@ -56,4 +58,5 @@ fn list_players(context: &mut CommandContext, show_uuids: bool) {
             ])
             .into(),
     );
+    player_number
 }

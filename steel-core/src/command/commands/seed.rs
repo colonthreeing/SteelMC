@@ -24,14 +24,17 @@ fn send_seed(
     context: &mut CommandContext,
     _: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let seed = context.world.seed().to_string();
+    let seed = context.world.seed();
+    let seed_text = seed.to_string();
     context.sender.send_message(
         &translations::COMMANDS_SEED_SUCCESS
-            .message([TextComponent::from(seed.clone())
+            .message([TextComponent::from(seed_text.clone())
                 .color(Color::Green)
                 .hover_event(HoverEvent::show_text(&translations::CHAT_COPY_CLICK))
-                .click_event(ClickEvent::CopyToClipboard { value: seed.into() })])
+                .click_event(ClickEvent::CopyToClipboard {
+                    value: seed_text.into(),
+                })])
             .component(),
     );
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_return_value(seed as i32))
 }

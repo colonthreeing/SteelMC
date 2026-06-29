@@ -28,7 +28,7 @@ pub(crate) fn command() -> CommandNodeBuilder {
     literal("xp")
         .then(
             literal("query").then(
-                argument("target", PlayerParser::multiple())
+                argument("target", PlayerParser::one())
                     .then(literal("points").executes(query_points))
                     .then(literal("levels").executes(query_levels)),
             ),
@@ -79,30 +79,29 @@ fn query_experience(
     arguments: &ParsedArguments,
     xp_type: ExperienceType,
 ) -> Result<CommandResult, CommandError> {
-    for player in players(arguments)? {
-        let amount = {
-            let experience = player.experience.lock();
-            match xp_type {
-                ExperienceType::Points => experience.points(),
-                ExperienceType::Levels => experience.level(),
-            }
-        };
-        let translation = match xp_type {
-            ExperienceType::Points => &translations::COMMANDS_EXPERIENCE_QUERY_POINTS,
-            ExperienceType::Levels => &translations::COMMANDS_EXPERIENCE_QUERY_LEVELS,
-        };
+    let player = single_player(arguments)?;
+    let amount = {
+        let experience = player.experience.lock();
+        match xp_type {
+            ExperienceType::Points => experience.points(),
+            ExperienceType::Levels => experience.level(),
+        }
+    };
+    let translation = match xp_type {
+        ExperienceType::Points => &translations::COMMANDS_EXPERIENCE_QUERY_POINTS,
+        ExperienceType::Levels => &translations::COMMANDS_EXPERIENCE_QUERY_LEVELS,
+    };
 
-        context.sender.send_message(
-            &translation
-                .message([
-                    TextComponent::from(player.gameprofile.name.clone()),
-                    TextComponent::from(amount.to_string()),
-                ])
-                .into(),
-        );
-    }
+    context.sender.send_message(
+        &translation
+            .message([
+                TextComponent::from(player.gameprofile.name.clone()),
+                TextComponent::from(amount.to_string()),
+            ])
+            .into(),
+    );
 
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_return_value(amount))
 }
 
 fn set_points(
@@ -133,26 +132,26 @@ fn add_points(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    add_experience(
+    let count = add_experience(
         players(arguments)?,
         amount(arguments)?,
         ExperienceType::Points,
         context,
     );
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_usize_success_count(count))
 }
 
 fn add_levels(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    add_experience(
+    let count = add_experience(
         players(arguments)?,
         amount(arguments)?,
         ExperienceType::Levels,
         context,
     );
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_usize_success_count(count))
 }
 
 #[expect(
@@ -173,16 +172,25 @@ fn clear_targets(
     _context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    for player in players(arguments)? {
+    let players = players(arguments)?;
+    let count = players.len();
+    for player in players {
         player.experience.lock().set_total_points(0);
     }
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_usize_success_count(count))
 }
 
 fn players(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
     arguments
         .get::<Vec<Arc<Player>>>("target")
         .map_err(super::invalid_parsed_argument)
+}
+
+fn single_player(arguments: &ParsedArguments) -> Result<Arc<Player>, CommandError> {
+    players(arguments)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| CommandError::InvalidConsumption(Some("target selector produced no players".to_owned())))
 }
 
 fn amount(arguments: &ParsedArguments) -> Result<i32, CommandError> {
@@ -247,7 +255,7 @@ fn set_experience(
         );
     }
 
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_usize_success_count(players.len()))
 }
 
 fn add_experience(
@@ -255,7 +263,8 @@ fn add_experience(
     amount: i32,
     xp_type: ExperienceType,
     ctx: &mut CommandContext,
-) {
+) -> usize {
+    let count = players.len();
     for player in &players {
         let mut experience = player.experience.lock();
         match xp_type {
@@ -295,6 +304,7 @@ fn add_experience(
                     TextComponent::from(players.len().to_string()),
                 ])
                 .into(),
-        );
+            );
     }
+    count
 }

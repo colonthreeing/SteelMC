@@ -102,9 +102,9 @@ fn set_own_game_mode(
         .get_player()
         .ok_or(CommandError::InvalidRequirement)?;
 
-    player.set_game_mode(gamemode);
+    let changed = i32::from(player.set_game_mode(gamemode));
 
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_success_count(changed))
 }
 
 fn set_target_game_mode(
@@ -120,8 +120,10 @@ fn set_target_game_mode(
 
     let mode_translation = get_gamemode_translation(gamemode);
 
-    for target in targets {
+    let mut changed_count = 0usize;
+    for target in &targets {
         if target.set_game_mode(gamemode) {
+            changed_count += 1;
             let sender_is_target = if let Some(sender_player) = context.sender.get_player() {
                 sender_player.id() == target.id()
             } else {
@@ -141,7 +143,7 @@ fn set_target_game_mode(
         }
     }
 
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_usize_success_count(changed_count))
 }
 
 /// Retrieves the translation for a `GameType`

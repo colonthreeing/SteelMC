@@ -143,7 +143,7 @@ fn query_tick(
             .into(),
     );
 
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_return_value(tick_rate as i32))
 }
 
 fn set_tick_rate(
@@ -164,7 +164,7 @@ fn set_tick_rate(
             .into(),
     );
 
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_return_value(rate as i32))
 }
 
 #[expect(
@@ -196,7 +196,7 @@ fn freeze_tick(
         .sender
         .send_message(&translations::COMMANDS_TICK_STATUS_FROZEN.msg().into());
 
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_return_value(1))
 }
 
 #[expect(
@@ -214,7 +214,7 @@ fn unfreeze_tick(
         .sender
         .send_message(&translations::COMMANDS_TICK_STATUS_RUNNING.msg().into());
 
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_return_value(0))
 }
 
 fn step_default(
@@ -248,11 +248,12 @@ fn step_impl(ticks: i32, context: &mut CommandContext) -> Result<CommandResult, 
                 .message([TextComponent::from(format!("{ticks}"))])
                 .into(),
         );
-        Ok(CommandResult::success())
+        Ok(CommandResult::from_return_value(1))
     } else {
-        Err(CommandError::failure(
-            translations::COMMANDS_TICK_STEP_FAIL.msg(),
-        ))
+        context
+            .sender
+            .send_failure(translations::COMMANDS_TICK_STEP_FAIL.msg());
+        Ok(CommandResult::from_return_value(1))
     }
 }
 
@@ -267,11 +268,12 @@ fn stop_step(
         context
             .sender
             .send_message(&translations::COMMANDS_TICK_STEP_STOP_SUCCESS.msg().into());
-        Ok(CommandResult::success())
+        Ok(CommandResult::from_return_value(1))
     } else {
-        Err(CommandError::failure(
-            translations::COMMANDS_TICK_STEP_STOP_FAIL.msg(),
-        ))
+        context
+            .sender
+            .send_failure(translations::COMMANDS_TICK_STEP_STOP_FAIL.msg());
+        Ok(CommandResult::from_return_value(0))
     }
 }
 
@@ -302,7 +304,7 @@ fn sprint_ticks(
         .sender
         .send_message(&translations::COMMANDS_TICK_STATUS_SPRINTING.msg().into());
 
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_return_value(1))
 }
 
 fn stop_sprint(
@@ -324,10 +326,11 @@ fn stop_sprint(
                 ])
                 .into(),
         );
-        Ok(CommandResult::success())
+        Ok(CommandResult::from_return_value(1))
     } else {
-        Err(CommandError::failure(
-            translations::COMMANDS_TICK_SPRINT_STOP_FAIL.msg(),
-        ))
+        context
+            .sender
+            .send_failure(translations::COMMANDS_TICK_SPRINT_STOP_FAIL.msg());
+        Ok(CommandResult::from_return_value(0))
     }
 }

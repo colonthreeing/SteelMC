@@ -44,9 +44,7 @@ fn give_default_count(
     let targets = targets(arguments)?;
     let item_stack = item_stack(arguments)?;
 
-    give(&targets, item_stack, 1, &context.sender);
-
-    Ok(CommandResult::success())
+    Ok(give(&targets, item_stack, 1, &context.sender))
 }
 
 fn give_with_count(
@@ -57,12 +55,10 @@ fn give_with_count(
     let item_stack = item_stack(arguments)?;
     let count = count(arguments)?;
 
-    give(&targets, item_stack, count, &context.sender);
-
-    Ok(CommandResult::success())
+    Ok(give(&targets, item_stack, count, &context.sender))
 }
 
-fn give(targets: &[Arc<Player>], stack: ItemStack, count: i32, sender: &CommandSender) {
+fn give(targets: &[Arc<Player>], stack: ItemStack, count: i32, sender: &CommandSender) -> CommandResult {
     let item = stack.item();
     let max_stack_size = stack.max_stack_size();
 
@@ -78,7 +74,7 @@ fn give(targets: &[Arc<Player>], stack: ItemStack, count: i32, sender: &CommandS
                 ])
                 .into(),
         );
-        return;
+        return CommandResult::from_return_value(0);
     }
 
     for target in targets {
@@ -125,6 +121,8 @@ fn give(targets: &[Arc<Player>], stack: ItemStack, count: i32, sender: &CommandS
                 .into(),
         );
     }
+
+    CommandResult::from_usize_success_count(targets.len())
 }
 
 fn targets(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {

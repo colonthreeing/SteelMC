@@ -47,9 +47,12 @@ fn enchant_default_level(
     let targets = targets(arguments)?;
     let enchantment = enchantment(arguments)?;
 
-    enchant(&targets, enchantment, 1, context)?;
-
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_success_count(enchant(
+        &targets,
+        enchantment,
+        1,
+        context,
+    )?))
 }
 
 fn enchant_with_level(
@@ -60,9 +63,12 @@ fn enchant_with_level(
     let enchantment = enchantment(arguments)?;
     let level = level(arguments)?;
 
-    enchant(&targets, enchantment, level, context)?;
-
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_success_count(enchant(
+        &targets,
+        enchantment,
+        level,
+        context,
+    )?))
 }
 
 fn enchant(
@@ -70,7 +76,7 @@ fn enchant(
     enchantment: EnchantmentRef,
     level: i32,
     ctx: &mut CommandContext,
-) -> Result<(), CommandError> {
+) -> Result<i32, CommandError> {
     if level > enchantment.max_level as i32 {
         return Err(CommandError::failure(
             translations::COMMANDS_ENCHANT_FAILED_LEVEL.message([
@@ -80,7 +86,7 @@ fn enchant(
         ));
     }
 
-    let mut success = 0u32;
+    let mut success = 0;
     let enchantment_key = enchantment.key.clone();
 
     for target in targets {
@@ -145,7 +151,7 @@ fn enchant(
         );
     }
 
-    Ok(())
+    Ok(success)
 }
 
 fn targets(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {

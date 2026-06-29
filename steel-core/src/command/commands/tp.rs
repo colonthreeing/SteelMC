@@ -146,12 +146,9 @@ fn teleport_to_pos(
     ctx: &mut CommandContext,
 ) -> Result<CommandResult, CommandError> {
     if !World::is_in_spawnable_bounds(BlockPos::from(pos)) {
-        ctx.sender.send_message(
-            &translations::COMMANDS_TELEPORT_INVALID_POSITION
-                .message([] as [TextComponent; 0])
-                .into(),
-        );
-        return Ok(CommandResult::success());
+        return Err(CommandError::failure(
+            translations::COMMANDS_TELEPORT_INVALID_POSITION.message([] as [TextComponent; 0]),
+        ));
     }
 
     let targets = current_players(targets, ctx)?;
@@ -182,7 +179,7 @@ fn teleport_to_pos(
                 .into(),
         );
     }
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_usize_success_count(targets.len()))
 }
 
 fn teleport_to_player(
@@ -222,7 +219,7 @@ fn teleport_to_player(
                 .into(),
         );
     }
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_usize_success_count(targets.len()))
 }
 
 fn current_players(

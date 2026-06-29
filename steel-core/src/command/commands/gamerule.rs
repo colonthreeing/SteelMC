@@ -65,7 +65,7 @@ fn query_rule(
             .into(),
     );
 
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_return_value(game_rule_result(value)))
 }
 
 fn set_bool_rule(
@@ -116,5 +116,12 @@ fn set_rule(
             .into(),
     );
 
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_return_value(game_rule_result(value)))
+}
+
+fn game_rule_result(value: GameRuleValue) -> i32 {
+    match value {
+        GameRuleValue::Bool(value) => i32::from(value),
+        GameRuleValue::Int(value) => value,
+    }
 }

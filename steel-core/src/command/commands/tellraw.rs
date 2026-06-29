@@ -39,9 +39,10 @@ fn send_tellraw(
         CommandSender::Rcon => "Rcon",
     };
     log::info!("{}'s tellraw: {:p}", sender, &message);
+    let target_count = targets.len();
     for player in targets {
         player.send_message(&message);
     }
 
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_usize_success_count(target_count))
 }

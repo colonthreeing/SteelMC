@@ -79,11 +79,7 @@ fn kill_targets(
         );
     }
 
-    Ok(CommandResult::from_success_count(success_count(victim_count)))
-}
-
-fn success_count(count: usize) -> i32 {
-    i32::try_from(count).unwrap_or(i32::MAX)
+    Ok(CommandResult::from_usize_success_count(victim_count))
 }
 
 #[cfg(test)]

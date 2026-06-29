@@ -88,7 +88,9 @@ fn query_difficulty(
             .into(),
     );
 
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_return_value(i32::from(u8::from(
+        difficulty,
+    ))))
 }
 
 #[cfg(test)]
@@ -176,5 +178,5 @@ fn set_difficulty(
             .into(),
     );
 
-    Ok(CommandResult::success())
+    Ok(CommandResult::from_return_value(0))
 }
