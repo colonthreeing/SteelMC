@@ -1,6 +1,5 @@
 //! Target command argument parsers.
 
-use rand::seq::IteratorRandom;
 use steel_protocol::packets::game::{ArgumentType, SuggestionEntry, SuggestionType};
 use steel_utils::translations::{
     ARGUMENT_ENTITY_SELECTOR_ALL_PLAYERS, ARGUMENT_ENTITY_SELECTOR_NEAREST_PLAYER,
@@ -14,9 +13,7 @@ use crate::{
             CommandArgumentClientParser, CommandArgumentParser, CommandParseError,
             CommandParseErrorKind, ParsedArgument, ParsedArguments, PermissionTarget,
         },
-        parsers::selector::{
-            allow_selectors, parse_entity_selector, parse_player_selector, selector_suggestions,
-        },
+        parsers::selector::{parse_entity_selector, parse_player_selector, selector_suggestions},
         reader::CommandReader,
         requirement::CommandInputContext,
     },
@@ -101,6 +98,15 @@ impl CommandArgumentParser for PermissionTargetParser {
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
+        if reader.peek() == Some('@') {
+            let players = parse_player_selector(reader, context, false)?;
+            let targets = players
+                .iter()
+                .map(|player| PermissionTarget::online(player))
+                .collect();
+            return Ok(ParsedArgument::PermissionTargets(targets));
+        }
+
         let value = reader.read_token()?;
         let Some(server) = context.server() else {
             return Err(CommandParseError::new(
@@ -110,88 +116,26 @@ impl CommandArgumentParser for PermissionTargetParser {
         };
 
         let players = server.get_players();
-        let targets = match value.as_str() {
-            "@a" if !allow_selectors(context) => {
-                return Err(CommandParseError::new(
-                    CommandParseErrorKind::EntitySelectorsNotAllowed,
-                    cursor,
-                ));
-            }
-            "@a" => players
-                .into_iter()
-                .map(|player| PermissionTarget::online(&player))
-                .collect::<Vec<_>>(),
-            "@p" if !allow_selectors(context) => {
-                return Err(CommandParseError::new(
-                    CommandParseErrorKind::EntitySelectorsNotAllowed,
-                    cursor,
-                ));
-            }
-            "@p" => {
-                let Some(position) = context.position() else {
-                    return Err(CommandParseError::new(
-                        CommandParseErrorKind::MissingCommandContext("position"),
-                        cursor,
-                    ));
-                };
-
-                let Some(nearest) = players.into_iter().min_by(|left, right| {
-                    let left_distance = left.position().distance_squared(position);
-                    let right_distance = right.position().distance_squared(position);
-                    left_distance.total_cmp(&right_distance)
-                }) else {
-                    return Ok(ParsedArgument::PermissionTargets(Vec::new()));
-                };
-                vec![PermissionTarget::online(&nearest)]
-            }
-            "@r" if !allow_selectors(context) => {
-                return Err(CommandParseError::new(
-                    CommandParseErrorKind::EntitySelectorsNotAllowed,
-                    cursor,
-                ));
-            }
-            "@r" => players
-                .into_iter()
-                .choose(&mut rand::rng())
-                .map_or_else(Vec::new, |player| vec![PermissionTarget::online(&player)]),
-            "@s" if !allow_selectors(context) => {
-                return Err(CommandParseError::new(
-                    CommandParseErrorKind::EntitySelectorsNotAllowed,
-                    cursor,
-                ));
-            }
-            "@s" => context
-                .player()
-                .map_or_else(Vec::new, |player| vec![PermissionTarget::online(player)]),
-            selector if selector.starts_with('@') => {
-                return Err(CommandParseError::new(
-                    CommandParseErrorKind::InvalidPlayer(value),
-                    cursor,
-                ));
-            }
-            name => {
-                let uuid = Uuid::parse_str(name).ok();
-                if let Some(player) = players.into_iter().find(|player| {
-                    player.gameprofile.name.eq_ignore_ascii_case(name)
-                        || uuid.is_some_and(|uuid| player.uuid() == uuid)
-                }) {
-                    vec![PermissionTarget::online(&player)]
-                } else {
-                    let known_players = server.known_players();
-                    let known = uuid
-                        .and_then(|uuid| known_players.by_uuid(uuid))
-                        .or_else(|| known_players.by_name(name));
-                    known.map_or_else(
-                        || vec![PermissionTarget::unresolved(name.to_owned())],
-                        |known| {
-                            vec![PermissionTarget::offline(
-                                known.uuid(),
-                                known.last_known_name().to_owned(),
-                            )]
-                        },
-                    )
-                }
-            }
+        let uuid = Uuid::parse_str(&value).ok();
+        let targets = if let Some(player) = players.into_iter().find(|player| {
+            player.gameprofile.name.eq_ignore_ascii_case(&value)
+                || uuid.is_some_and(|uuid| player.uuid() == uuid)
+        }) {
+            vec![PermissionTarget::online(&player)]
+        } else {
+            let known_players = server.known_players();
+            let known = uuid
+                .and_then(|uuid| known_players.by_uuid(uuid))
+                .or_else(|| known_players.by_name(&value));
+            known.map_or_else(
+                || vec![PermissionTarget::unresolved(value)],
+                |known| {
+                    vec![PermissionTarget::offline(
+                        known.uuid(),
+                        known.last_known_name().to_owned(),
+                    )]
+                },
+            )
         };
 
         Ok(ParsedArgument::PermissionTargets(targets))

@@ -500,6 +500,20 @@ mod tests {
     }
 
     #[test]
+    fn permission_target_parser_rejects_selector_without_permission() {
+        let mut reader = CommandReader::new("@a");
+        let error = match PermissionTargetParser.parse(&mut reader, &TestContext) {
+            Ok(_) => panic!("selector unexpectedly parsed"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error.kind(),
+            &CommandParseErrorKind::EntitySelectorsNotAllowed
+        );
+    }
+
+    #[test]
     fn player_parser_suggests_selectors_without_live_server() {
         let suggestions = PlayerParser::multiple().suggest(
             "@",
