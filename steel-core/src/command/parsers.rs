@@ -38,8 +38,8 @@ mod tests {
     use steel_protocol::packets::game::{ArgumentType, SuggestionType};
     use steel_registry::{
         REGISTRY, data_components::vanilla_components, item_stack::ItemStack,
-        test_support::init_test_registry, vanilla_biomes, vanilla_blocks, vanilla_enchantments,
-        vanilla_entities, vanilla_items,
+        test_support::init_test_registry, vanilla_attributes, vanilla_biomes, vanilla_blocks,
+        vanilla_enchantments, vanilla_entities, vanilla_items,
     };
 
     use crate::{
@@ -981,6 +981,73 @@ mod tests {
     }
 
     #[test]
+    fn item_predicate_matches_attribute_modifier_component_predicates() {
+        init_test_registry();
+
+        let mut sword = ItemStack::new(&vanilla_items::ITEMS.diamond_sword);
+        sword.set(
+            vanilla_components::ATTRIBUTE_MODIFIERS,
+            test_attribute_modifiers(),
+        );
+
+        let predicate = parse_item_predicate_for_test(
+            "diamond_sword[attribute_modifiers~{modifiers:{contains:[{attribute:\"minecraft:attack_damage\",id:\"minecraft:test_modifier\",amount:{min:3.5,max:4.5},operation:\"add_value\",slot:\"mainhand\"}],size:1}}]",
+        );
+        assert!(
+            predicate
+                .matches_stack(&sword)
+                .expect("predicate evaluates")
+        );
+
+        let predicate = parse_item_predicate_for_test(
+            "diamond_sword[attribute_modifiers~{modifiers:{contains:[{attribute:[\"minecraft:attack_speed\",\"minecraft:attack_damage\"],amount:4.0}]}}]",
+        );
+        assert!(
+            predicate
+                .matches_stack(&sword)
+                .expect("predicate evaluates")
+        );
+
+        let predicate = parse_item_predicate_for_test(
+            "diamond_sword[attribute_modifiers~{modifiers:{contains:[{slot:\"offhand\"}]}}]",
+        );
+        assert!(
+            !predicate
+                .matches_stack(&sword)
+                .expect("predicate evaluates")
+        );
+    }
+
+    #[test]
+    fn item_predicate_matches_attribute_modifier_count_predicates() {
+        init_test_registry();
+
+        let mut sword = ItemStack::new(&vanilla_items::ITEMS.diamond_sword);
+        sword.set(
+            vanilla_components::ATTRIBUTE_MODIFIERS,
+            test_attribute_modifiers(),
+        );
+
+        let predicate = parse_item_predicate_for_test(
+            "diamond_sword[attribute_modifiers~{modifiers:{count:[{test:{operation:\"add_value\"},count:1}]}}]",
+        );
+        assert!(
+            predicate
+                .matches_stack(&sword)
+                .expect("predicate evaluates")
+        );
+
+        let predicate = parse_item_predicate_for_test(
+            "diamond_sword[attribute_modifiers~{modifiers:{count:[{test:{attribute:\"minecraft:attack_speed\"},count:1}]}}]",
+        );
+        assert!(
+            !predicate
+                .matches_stack(&sword)
+                .expect("predicate evaluates")
+        );
+    }
+
+    #[test]
     fn item_predicate_reports_malformed_component_predicates() {
         init_test_registry();
 
@@ -1016,6 +1083,28 @@ mod tests {
             error,
             ItemPredicateMatchError::MalformedComponentPredicate(key)
                 if key == Identifier::vanilla_static("enchantments")
+        ));
+
+        let predicate = parse_item_predicate_for_test("diamond_sword[attribute_modifiers~5]");
+        let error = predicate
+            .matches_stack(&ItemStack::new(&vanilla_items::ITEMS.diamond_sword))
+            .expect_err("malformed predicate reports an error");
+        assert!(matches!(
+            error,
+            ItemPredicateMatchError::MalformedComponentPredicate(key)
+                if key == Identifier::vanilla_static("attribute_modifiers")
+        ));
+
+        let predicate = parse_item_predicate_for_test(
+            "diamond_sword[attribute_modifiers~{modifiers:{contains:{attribute:\"minecraft:attack_damage\"}}}]",
+        );
+        let error = predicate
+            .matches_stack(&ItemStack::new(&vanilla_items::ITEMS.diamond_sword))
+            .expect_err("malformed predicate reports an error");
+        assert!(matches!(
+            error,
+            ItemPredicateMatchError::MalformedComponentPredicate(key)
+                if key == Identifier::vanilla_static("attribute_modifiers")
         ));
     }
 
@@ -1116,6 +1205,19 @@ mod tests {
             panic!("expected item predicate");
         };
         predicate
+    }
+
+    fn test_attribute_modifiers() -> vanilla_components::ItemAttributeModifiers {
+        vanilla_components::ItemAttributeModifiers {
+            modifiers: vec![vanilla_components::ItemAttributeModifierEntry {
+                attribute: vanilla_attributes::ATTACK_DAMAGE,
+                id: Identifier::vanilla_static("test_modifier"),
+                amount: 4.0,
+                operation: vanilla_components::AttributeModifierOperation::AddValue,
+                slot: vanilla_components::EquipmentSlotGroup::MainHand,
+                display: vanilla_components::ItemAttributeModifierDisplay::Default,
+            }],
+        }
     }
 
     #[test]
