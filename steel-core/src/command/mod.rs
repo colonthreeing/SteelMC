@@ -244,6 +244,8 @@ pub enum CommandRegistrationError {
     InvalidPermissionKey(PermissionKeyError),
     /// The command graph rejected a node registration.
     InvalidGraph(CommandGraphError),
+    /// Command graph validation found diagnostics after registration.
+    InvalidGraphValidation(crate::command::graph::CommandGraphValidation),
 }
 
 impl fmt::Display for CommandRegistrationError {
@@ -252,6 +254,19 @@ impl fmt::Display for CommandRegistrationError {
             Self::RootMustBeLiteral => write!(f, "command root must be a literal node"),
             Self::InvalidPermissionKey(error) => write!(f, "{error}"),
             Self::InvalidGraph(error) => write!(f, "{error}"),
+            Self::InvalidGraphValidation(validation) => {
+                write!(f, "command graph validation failed")?;
+                if let Some(ambiguity) = validation.ambiguities().first() {
+                    write!(
+                        f,
+                        ": ambiguous child '{}' and sibling '{}' under '{}'",
+                        ambiguity.child,
+                        ambiguity.sibling,
+                        ambiguity.parent_path.join(" ")
+                    )?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -338,6 +353,10 @@ impl CommandDispatcher {
                 .with_literal_name(alias)
                 .ok_or(CommandRegistrationError::RootMustBeLiteral)?;
             graph.register_root(root)?;
+        }
+        let validation = graph.validate();
+        if !validation.is_empty() {
+            return Err(CommandRegistrationError::InvalidGraphValidation(validation));
         }
         self.graph = graph;
         self.permission_catalog.extend(&command_catalog);
@@ -730,7 +749,11 @@ mod tests {
     };
     use crate::command::{
         error::CommandError,
-        graph::{CommandGraphError, CommandParseErrorKind, CommandResult, literal},
+        graph::{
+            CommandGraphError, CommandParseErrorKind, CommandResult, StringParser, argument,
+            literal,
+        },
+        reader::StringMode,
         requirement::{CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext},
     };
     use crate::permission::{
@@ -1030,6 +1053,53 @@ mod tests {
                 .iter()
                 .any(|key| key == "steel.command.sp")
         );
+    }
+
+    #[test]
+    fn built_in_command_graph_has_no_validation_diagnostics() {
+        init_test_registry();
+
+        let dispatcher = CommandDispatcher::new().expect("built-in commands register");
+        let validation = dispatcher.graph.validate();
+
+        assert!(validation.is_empty());
+    }
+
+    #[test]
+    fn command_registration_rejects_ambiguous_graph_atomically() {
+        let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
+        let mut dispatcher = CommandDispatcher::new_empty();
+        dispatcher
+            .register_command(
+                CommandRegistration::new(
+                    literal("other").executes(|_, _| Ok(CommandResult::success())),
+                    minecraft.clone(),
+                )
+                .public(),
+            )
+            .expect("existing command registers");
+
+        let registration = CommandRegistration::new(
+            literal("root").then_all([
+                argument("value", StringParser::new(StringMode::SingleWord))
+                    .executes(|_, _| Ok(CommandResult::success())),
+                literal("run").executes(|_, _| Ok(CommandResult::success())),
+            ]),
+            minecraft,
+        )
+        .public();
+
+        let Err(error) = dispatcher.register_command(registration) else {
+            panic!("ambiguous command should fail registration");
+        };
+        let CommandRegistrationError::InvalidGraphValidation(validation) = error else {
+            panic!("expected graph validation error, got {error:?}");
+        };
+        assert_eq!(validation.ambiguities().len(), 1);
+
+        let player = player_context();
+        assert!(!dispatcher.graph.has_root("root", &player));
+        assert!(dispatcher.graph.has_root("other", &player));
     }
 
     #[test]
