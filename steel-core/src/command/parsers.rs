@@ -110,7 +110,7 @@ impl CommandArgumentParser for PlayerParser {
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let value = reader.read_string(StringMode::SingleWord)?;
+        let value = reader.read_token()?;
         let Some(server) = context.server() else {
             return Err(CommandParseError::new(
                 CommandParseErrorKind::MissingCommandContext("server"),
@@ -237,7 +237,7 @@ impl CommandArgumentParser for PermissionTargetParser {
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let value = reader.read_string(StringMode::SingleWord)?;
+        let value = reader.read_token()?;
         let Some(server) = context.server() else {
             return Err(CommandParseError::new(
                 CommandParseErrorKind::MissingCommandContext("server"),
@@ -365,7 +365,7 @@ impl CommandArgumentParser for PermissionKeyParser {
         _context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let value = reader.read_string(StringMode::SingleWord)?;
+        let value = reader.read_token()?;
         let permission = PermissionKey::parse(value.clone()).map_err(|_| {
             CommandParseError::new(CommandParseErrorKind::InvalidPermissionKey(value), cursor)
         })?;
@@ -415,7 +415,7 @@ impl CommandArgumentParser for PermissionRuleExpressionParser {
         _context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let value = reader.read_string(StringMode::SingleWord)?;
+        let value = reader.read_token()?;
         let expression = PermissionRuleExpression::parse(value).map_err(|error| {
             CommandParseError::new(
                 CommandParseErrorKind::InvalidPermissionExpression(error.to_string()),
@@ -705,7 +705,7 @@ impl CommandArgumentParser for EntityParser {
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let value = reader.read_string(StringMode::SingleWord)?;
+        let value = reader.read_token()?;
         let Some(server) = context.server() else {
             return Err(CommandParseError::new(
                 CommandParseErrorKind::MissingCommandContext("server"),
@@ -841,7 +841,7 @@ impl CommandArgumentParser for EntitySummonParser {
         _context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let raw = reader.read_string(StringMode::SingleWord)?;
+        let raw = reader.read_token()?;
         let Some(entity_type) = resolve_summon_entity_type(&raw) else {
             return Err(CommandParseError::new(
                 CommandParseErrorKind::InvalidEntityType(raw),
@@ -924,7 +924,7 @@ impl CommandArgumentParser for ItemParser {
         _context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let raw = reader.read_string(StringMode::SingleWord)?;
+        let raw = reader.read_token()?;
         let key = raw.strip_prefix("minecraft:").unwrap_or(&raw).to_owned();
 
         let Some(item) = REGISTRY.items.by_key(&Identifier::vanilla(key)) else {
@@ -978,7 +978,7 @@ impl CommandArgumentParser for EnchantmentParser {
         _context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let raw = reader.read_string(StringMode::SingleWord)?;
+        let raw = reader.read_token()?;
         let key = raw.strip_prefix("minecraft:").unwrap_or(&raw).to_owned();
 
         let Some(enchantment) = REGISTRY.enchantments.by_key(&Identifier::vanilla(key)) else {
@@ -1037,7 +1037,7 @@ impl CommandArgumentParser for StructureParser {
         _context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let raw = reader.read_string(StringMode::SingleWord)?;
+        let raw = reader.read_token()?;
 
         if let Some(tag) = raw.strip_prefix('#') {
             let Some(key) = parse_resource_identifier(tag) else {
@@ -1162,7 +1162,7 @@ impl CommandArgumentParser for DomainParser {
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let domain = reader.read_string(StringMode::SingleWord)?;
+        let domain = reader.read_token()?;
         let Some(server) = context.server() else {
             return Err(CommandParseError::new(
                 CommandParseErrorKind::MissingCommandContext("server"),
@@ -1218,7 +1218,7 @@ impl CommandArgumentParser for WorldParser {
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let raw = reader.read_string(StringMode::SingleWord)?;
+        let raw = reader.read_token()?;
         let Some(server) = context.server() else {
             return Err(CommandParseError::new(
                 CommandParseErrorKind::MissingCommandContext("server"),
@@ -1302,11 +1302,11 @@ impl CommandArgumentParser for Vec3Parser {
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let x = reader.read_string(StringMode::SingleWord)?;
+        let x = reader.read_token()?;
         reader.expect_whitespace()?;
-        let y = reader.read_string(StringMode::SingleWord)?;
+        let y = reader.read_token()?;
         reader.expect_whitespace()?;
-        let z = reader.read_string(StringMode::SingleWord)?;
+        let z = reader.read_token()?;
         let raw = format!("{x} {y} {z}");
 
         if x.starts_with('^') {
@@ -1368,11 +1368,11 @@ impl CommandArgumentParser for BlockPosParser {
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let x = reader.read_string(StringMode::SingleWord)?;
+        let x = reader.read_token()?;
         reader.expect_whitespace()?;
-        let y = reader.read_string(StringMode::SingleWord)?;
+        let y = reader.read_token()?;
         reader.expect_whitespace()?;
-        let z = reader.read_string(StringMode::SingleWord)?;
+        let z = reader.read_token()?;
         let raw = format!("{x} {y} {z}");
 
         if x.starts_with('^') {
@@ -1436,9 +1436,9 @@ impl CommandArgumentParser for RotationParser {
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let yaw = reader.read_string(StringMode::SingleWord)?;
+        let yaw = reader.read_token()?;
         reader.expect_whitespace()?;
-        let pitch = reader.read_string(StringMode::SingleWord)?;
+        let pitch = reader.read_token()?;
         let raw = format!("{yaw} {pitch}");
 
         let (origin_yaw, origin_pitch) = context.rotation().unwrap_or((0.0, 0.0));

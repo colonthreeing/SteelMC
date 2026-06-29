@@ -8,10 +8,7 @@ use super::{
     DynamicPermission, ParseResults, ParsedArguments, ParsedCommandAction, ParsedRedirect,
     SuggestionResult, dynamic_permissions_allow,
 };
-use crate::command::{
-    reader::{CommandReader, StringMode},
-    requirement::CommandInputContext,
-};
+use crate::command::{reader::CommandReader, requirement::CommandInputContext};
 
 pub(super) fn parse_children(
     input: &str,
@@ -286,8 +283,7 @@ impl CommandNode {
         match &self.kind {
             CommandNodeKind::Literal(expected) => {
                 let cursor = reader.absolute_cursor();
-                let actual = reader.read_string(StringMode::SingleWord)?;
-                if actual == *expected {
+                if reader.read_literal(expected) {
                     Ok(())
                 } else {
                     Err(CommandParseError::new(

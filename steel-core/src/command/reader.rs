@@ -134,7 +134,7 @@ impl<'a> CommandReader<'a> {
         match mode {
             StringMode::SingleWord => self.read_unquoted_string(),
             StringMode::QuotablePhrase => {
-                if self.peek() == Some('"') {
+                if self.peek().is_some_and(is_quoted_string_start) {
                     self.read_quoted_string()
                 } else {
                     self.read_unquoted_string()
@@ -148,9 +148,42 @@ impl<'a> CommandReader<'a> {
         }
     }
 
+    /// Reads one whitespace-delimited token.
+    ///
+    /// Use this for custom server-side argument parsers whose token syntax is
+    /// not Brigadier's `StringArgumentType.word()` syntax.
+    ///
+    /// # Errors
+    ///
+    /// Returns a parse error if there is no token at the current cursor.
+    pub fn read_token(&mut self) -> Result<String, CommandParseError> {
+        self.read_while(|ch| !ch.is_whitespace())
+    }
+
+    /// Reads a literal if it appears at the current cursor and is followed by a boundary.
+    pub fn read_literal(&mut self, literal: &str) -> bool {
+        let Some(remaining) = self.remaining().strip_prefix(literal) else {
+            return false;
+        };
+        if remaining
+            .chars()
+            .next()
+            .is_some_and(|ch| !ch.is_whitespace())
+        {
+            return false;
+        }
+
+        self.cursor += literal.len();
+        true
+    }
+
     fn read_unquoted_string(&mut self) -> Result<String, CommandParseError> {
+        self.read_while(is_allowed_in_unquoted_string)
+    }
+
+    fn read_while(&mut self, allowed: impl Fn(char) -> bool) -> Result<String, CommandParseError> {
         let start = self.cursor;
-        while self.peek().is_some_and(|ch| !ch.is_whitespace()) {
+        while self.peek().is_some_and(&allowed) {
             self.read();
         }
 
@@ -165,14 +198,20 @@ impl<'a> CommandReader<'a> {
     }
 
     fn read_quoted_string(&mut self) -> Result<String, CommandParseError> {
+        let Some(terminator) = self.peek().filter(|ch| is_quoted_string_start(*ch)) else {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::ExpectedArgument,
+                self.absolute_cursor(),
+            ));
+        };
         let quote_cursor = self.absolute_cursor();
-        debug_assert_eq!(self.read(), Some('"'));
+        debug_assert_eq!(self.read(), Some(terminator));
 
         let mut value = String::new();
         while let Some(ch) = self.read() {
             match ch {
-                '"' => return Ok(value),
-                '\\' => value.push(self.read_escaped_char()?),
+                ch if ch == terminator => return Ok(value),
+                '\\' => value.push(self.read_escaped_char(terminator)?),
                 _ => value.push(ch),
             }
         }
@@ -183,10 +222,10 @@ impl<'a> CommandReader<'a> {
         ))
     }
 
-    fn read_escaped_char(&mut self) -> Result<char, CommandParseError> {
+    fn read_escaped_char(&mut self, terminator: char) -> Result<char, CommandParseError> {
         let escape_cursor = self.absolute_cursor();
         match self.read() {
-            Some(ch @ ('\\' | '"')) => Ok(ch),
+            Some(ch) if ch == '\\' || ch == terminator => Ok(ch),
             Some(ch) => Err(CommandParseError::new(
                 CommandParseErrorKind::InvalidEscape(ch),
                 escape_cursor,
@@ -197,6 +236,14 @@ impl<'a> CommandReader<'a> {
             )),
         }
     }
+}
+
+fn is_quoted_string_start(ch: char) -> bool {
+    matches!(ch, '"' | '\'')
+}
+
+fn is_allowed_in_unquoted_string(ch: char) -> bool {
+    matches!(ch, '0'..='9' | 'A'..='Z' | 'a'..='z' | '_' | '-' | '.' | '+')
 }
 
 #[cfg(test)]
@@ -218,6 +265,42 @@ mod tests {
     }
 
     #[test]
+    fn single_word_uses_brigadier_unquoted_characters() {
+        let mut reader = CommandReader::new("plugin:region");
+
+        assert_eq!(
+            reader
+                .read_string(StringMode::SingleWord)
+                .expect("single word parses"),
+            "plugin"
+        );
+        assert_eq!(reader.remaining(), ":region");
+    }
+
+    #[test]
+    fn token_reads_until_whitespace() {
+        let mut reader = CommandReader::new("plugin:region{world=spawn} tail");
+
+        assert_eq!(
+            reader.read_token().expect("token parses"),
+            "plugin:region{world=spawn}"
+        );
+        assert_eq!(reader.remaining(), " tail");
+    }
+
+    #[test]
+    fn literal_requires_boundary() {
+        let mut reader = CommandReader::new("root:tail");
+
+        assert!(!reader.read_literal("root"));
+        assert_eq!(reader.cursor(), 0);
+
+        let mut reader = CommandReader::new("root tail");
+        assert!(reader.read_literal("root"));
+        assert_eq!(reader.remaining(), " tail");
+    }
+
+    #[test]
     fn quoted_phrase_handles_escapes() {
         let mut reader = CommandReader::new("\"hello \\\"world\\\"\" tail");
 
@@ -226,6 +309,19 @@ mod tests {
                 .read_string(StringMode::QuotablePhrase)
                 .expect("quoted phrase parses"),
             "hello \"world\""
+        );
+        assert_eq!(reader.remaining(), " tail");
+    }
+
+    #[test]
+    fn quoted_phrase_handles_single_quotes() {
+        let mut reader = CommandReader::new("'hello \\'world\\'' tail");
+
+        assert_eq!(
+            reader
+                .read_string(StringMode::QuotablePhrase)
+                .expect("quoted phrase parses"),
+            "hello 'world'"
         );
         assert_eq!(reader.remaining(), " tail");
     }

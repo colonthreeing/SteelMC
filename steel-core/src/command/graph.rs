@@ -1244,6 +1244,20 @@ mod tests {
     }
 
     #[test]
+    fn literals_do_not_partially_match_before_punctuation() {
+        let graph = graph_with_root(literal("root").executes(|_, _| Ok(CommandResult::success())));
+        let error = graph
+            .parse("/root:tail", &player_context())
+            .expect_err("literal should not partially match");
+
+        assert_eq!(
+            error.kind(),
+            &CommandParseErrorKind::ExpectedLiteral("root".to_owned())
+        );
+        assert_eq!(error.cursor(), 1);
+    }
+
+    #[test]
     fn parses_long_argument() {
         let graph = graph_with_root(literal("meta").then(
             argument("value", LongParser::new()).executes(|_, _| Ok(CommandResult::success())),
@@ -1268,7 +1282,10 @@ mod tests {
             .parse(" list", &player_context())
             .expect_err("leading whitespace should not be accepted");
 
-        assert_eq!(error.kind(), &CommandParseErrorKind::ExpectedArgument);
+        assert_eq!(
+            error.kind(),
+            &CommandParseErrorKind::ExpectedLiteral("list".to_owned())
+        );
         assert_eq!(error.cursor(), 0);
     }
 

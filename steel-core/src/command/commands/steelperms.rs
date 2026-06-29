@@ -575,7 +575,7 @@ impl CommandArgumentParser for PermissionContextKeyParser {
         _context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let value = reader.read_string(StringMode::SingleWord)?;
+        let value = reader.read_token()?;
         PermissionContextKey::parse(value.as_str()).map_err(|_| {
             CommandParseError::new(
                 CommandParseErrorKind::InvalidPermissionKey(value.clone()),
@@ -587,12 +587,7 @@ impl CommandArgumentParser for PermissionContextKeyParser {
     }
 
     fn client_parser(&self) -> CommandArgumentClientParser {
-        CommandArgumentClientParser::new(
-            ArgumentType::String {
-                behavior: steel_protocol::packets::game::ArgumentStringTypeBehavior::SingleWord,
-            },
-            Some(SuggestionType::AskServer),
-        )
+        CommandArgumentClientParser::new(ArgumentType::Identifier, Some(SuggestionType::AskServer))
     }
 
     fn parsed_type(&self) -> &'static str {
@@ -686,7 +681,7 @@ impl CommandArgumentParser for PermissionMetadataKeyParser {
         _context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let value = reader.read_string(StringMode::SingleWord)?;
+        let value = reader.read_token()?;
         let key = parse_permission_value_key(value.clone()).map_err(|_| {
             CommandParseError::new(
                 CommandParseErrorKind::InvalidPermissionMetadataKey(value),
@@ -3330,9 +3325,13 @@ mod tests {
 
     #[test]
     fn context_key_and_value_parsers_request_server_suggestions() {
-        let (_, key_suggestion_type) = PermissionContextKeyParser
+        let (key_argument_type, key_suggestion_type) = PermissionContextKeyParser
             .client_parser()
             .into_protocol_argument();
+        assert!(matches!(
+            key_argument_type,
+            steel_protocol::packets::game::ArgumentType::Identifier
+        ));
         assert!(matches!(
             key_suggestion_type,
             Some(steel_protocol::packets::game::SuggestionType::AskServer)
@@ -3344,6 +3343,20 @@ mod tests {
             value_suggestion_type,
             Some(steel_protocol::packets::game::SuggestionType::AskServer)
         ));
+    }
+
+    #[test]
+    fn context_key_parser_accepts_namespaced_keys() {
+        let mut reader = CommandReader::new("plugin:region");
+        let parsed = PermissionContextKeyParser
+            .parse(&mut reader, &TestContext::empty())
+            .expect("namespaced context key parses");
+
+        assert!(
+            matches!(parsed, ParsedArgument::String(ref value) if value == "plugin:region"),
+            "expected parsed context key string, got {parsed:?}"
+        );
+        assert_eq!(reader.remaining(), "");
     }
 
     #[test]
