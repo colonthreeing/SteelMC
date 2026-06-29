@@ -428,7 +428,7 @@ impl CommandArgumentParser for PermissionRuleExpressionParser {
     fn usage(&self) -> (ArgumentType, Option<SuggestionType>) {
         (
             ArgumentType::String {
-                behavior: steel_protocol::packets::game::ArgumentStringTypeBehavior::SingleWord,
+                behavior: steel_protocol::packets::game::ArgumentStringTypeBehavior::GreedyPhrase,
             },
             Some(SuggestionType::AskServer),
         )
@@ -1858,6 +1858,16 @@ mod tests {
         ));
         assert!(matches!(
             PermissionKeyParser.usage().1,
+            Some(SuggestionType::AskServer)
+        ));
+        assert!(matches!(
+            PermissionRuleExpressionParser.usage().0,
+            steel_protocol::packets::game::ArgumentType::String {
+                behavior: steel_protocol::packets::game::ArgumentStringTypeBehavior::GreedyPhrase
+            }
+        ));
+        assert!(matches!(
+            PermissionRuleExpressionParser.usage().1,
             Some(SuggestionType::AskServer)
         ));
         assert!(matches!(
