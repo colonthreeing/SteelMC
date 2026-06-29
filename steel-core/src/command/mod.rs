@@ -14,6 +14,7 @@ pub(crate) mod suggestions;
 use steel_protocol::packets::game::{CCommandSuggestions, CCommands, CommandNode, SuggestionEntry};
 use steel_utils::translations;
 use text_components::TextComponent;
+use text_components::translation::TranslatedMessage;
 
 use crate::command::context::{CommandCallbackResult, CommandContext};
 use crate::command::error::CommandError;
@@ -29,8 +30,11 @@ use crate::permission::{
 };
 use crate::player::Player;
 use crate::server::Server;
-use std::{collections::VecDeque, error::Error, fmt, sync::Arc};
-use steel_registry::{game_rules::GameRuleValue, vanilla_game_rules::MAX_COMMAND_SEQUENCE_LENGTH};
+use std::{borrow::Cow, collections::VecDeque, error::Error, fmt, sync::Arc};
+use steel_registry::{
+    game_rules::GameRuleValue,
+    vanilla_game_rules::{MAX_COMMAND_FORKS, MAX_COMMAND_SEQUENCE_LENGTH},
+};
 
 pub(crate) use executor::CommandQueue;
 
@@ -77,6 +81,47 @@ fn default_command_sequence_limit() -> usize {
         GameRuleValue::Int(value) => value.max(1) as usize,
         GameRuleValue::Bool(_) => 1,
     }
+}
+
+fn command_fork_limit(context: &CommandContext) -> usize {
+    match context.world.get_game_rule(&MAX_COMMAND_FORKS) {
+        GameRuleValue::Int(value) => value.max(0) as usize,
+        GameRuleValue::Bool(_) => default_command_fork_limit(),
+    }
+}
+
+fn default_command_fork_limit() -> usize {
+    match MAX_COMMAND_FORKS.default_value {
+        GameRuleValue::Int(value) => value.max(0) as usize,
+        GameRuleValue::Bool(_) => 0,
+    }
+}
+
+fn check_command_fork_limit(
+    existing_stage_contexts: usize,
+    new_stage_contexts: usize,
+    limit: usize,
+) -> Result<(), CommandError> {
+    if fork_limit_reached(existing_stage_contexts, new_stage_contexts, limit) {
+        return Err(command_fork_limit_error(limit));
+    }
+    Ok(())
+}
+
+fn fork_limit_reached(
+    existing_stage_contexts: usize,
+    new_stage_contexts: usize,
+    limit: usize,
+) -> bool {
+    existing_stage_contexts.saturating_add(new_stage_contexts) >= limit
+}
+
+fn command_fork_limit_error(limit: usize) -> CommandError {
+    CommandError::failure(TextComponent::translated(TranslatedMessage {
+        key: Cow::Borrowed("command.forkLimit"),
+        fallback: None,
+        args: Some(Box::new([TextComponent::from(limit.to_string())])),
+    }))
 }
 
 /// Parses and dispatches commands through the command graph.
@@ -407,6 +452,7 @@ impl CommandDispatcher {
     ) -> Result<CommandResult, CommandError> {
         let mut queue = VecDeque::new();
         let mut active = ActiveCommand::Borrowed { command, context };
+        let fork_limit = command_fork_limit(active.context());
         let mut total_success_count = 0_i32;
         let mut last_result = 0_i32;
         let mut completed_forked_context = false;
@@ -476,11 +522,20 @@ impl CommandDispatcher {
                     forked,
                 } => {
                     let next_forked = active.is_forked() || forked;
+                    let next_fork_stage = active.next_fork_stage(forked);
+                    if forked {
+                        check_command_fork_limit(
+                            queued_fork_stage_contexts(&queue, next_fork_stage, &next_command),
+                            contexts.len(),
+                            fork_limit,
+                        )?;
+                    }
                     for context in contexts {
                         queue.push_back(QueuedCommand {
                             command: next_command.clone(),
                             context,
                             forked: next_forked,
+                            fork_stage: next_fork_stage,
                         });
                     }
                     let Some(next) = queue.pop_front() else {
@@ -771,6 +826,7 @@ struct QueuedCommand {
     command: String,
     context: CommandContext,
     forked: bool,
+    fork_stage: usize,
 }
 
 impl ActiveCommand<'_> {
@@ -780,6 +836,13 @@ impl ActiveCommand<'_> {
             Self::Owned(QueuedCommand {
                 command, context, ..
             }) => (command, context),
+        }
+    }
+
+    fn context(&self) -> &CommandContext {
+        match self {
+            Self::Borrowed { context, .. } => context,
+            Self::Owned(QueuedCommand { context, .. }) => context,
         }
     }
 
@@ -796,6 +859,32 @@ impl ActiveCommand<'_> {
             Self::Owned(QueuedCommand { forked, .. }) => *forked,
         }
     }
+
+    fn fork_stage(&self) -> usize {
+        match self {
+            Self::Borrowed { .. } => 0,
+            Self::Owned(QueuedCommand { fork_stage, .. }) => *fork_stage,
+        }
+    }
+
+    fn next_fork_stage(&self, forked: bool) -> usize {
+        if forked {
+            self.fork_stage().saturating_add(1)
+        } else {
+            self.fork_stage()
+        }
+    }
+}
+
+fn queued_fork_stage_contexts(
+    queue: &VecDeque<QueuedCommand>,
+    fork_stage: usize,
+    command: &str,
+) -> usize {
+    queue
+        .iter()
+        .filter(|queued| queued.fork_stage == fork_stage && queued.command == command)
+        .count()
 }
 
 fn execution_success_count(result: CommandResult, forked: bool) -> i32 {
@@ -912,6 +1001,24 @@ mod tests {
 
         assert!(budget.consume().is_ok());
         assert!(budget.consume().is_err());
+    }
+
+    #[test]
+    fn command_fork_limit_uses_vanilla_exclusive_boundary() {
+        assert!(super::fork_limit_reached(0, 0, 0));
+        assert!(!super::fork_limit_reached(0, 1, 2));
+        assert!(super::fork_limit_reached(1, 1, 2));
+        assert!(super::fork_limit_reached(0, 2, 2));
+    }
+
+    #[test]
+    fn command_fork_limit_error_uses_vanilla_translation_key() {
+        let error = super::command_fork_limit_error(12);
+        let CommandError::CommandFailed(component) = error else {
+            panic!("fork limit should be a command failure");
+        };
+
+        assert_eq!(translation_key(&component), "command.forkLimit");
     }
 
     #[test]
