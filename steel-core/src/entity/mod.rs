@@ -1310,6 +1310,20 @@ pub trait Entity: EntityEventSource + Send + Sync {
         None
     }
 
+    /// Returns the entity that owns this entity for vanilla owner relations.
+    ///
+    /// Mirrors `OwnableEntity.getOwner` for `execute on owner`.
+    fn owning_entity(&self) -> Option<SharedEntity> {
+        None
+    }
+
+    /// Returns the source entity that originated this entity.
+    ///
+    /// Mirrors `TraceableEntity.getOwner` for `execute on origin`.
+    fn origin_entity(&self) -> Option<SharedEntity> {
+        None
+    }
+
     /// Returns whether this entity can control a vehicle it is riding.
     ///
     /// Mirrors vanilla `Entity.canControlVehicle`.

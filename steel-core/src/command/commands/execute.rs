@@ -226,12 +226,14 @@ fn blocks_conditional(name: &'static str, expected: bool, skip_air: bool) -> Com
 
 fn on_relations() -> CommandNodeBuilder {
     literal("on")
-        .then(literal("attacker").forks(CommandRedirectTarget::Current, fork_on_attacker))
-        .then(literal("controller").forks(CommandRedirectTarget::Current, fork_on_controller))
+        .then(literal("owner").forks(CommandRedirectTarget::Current, fork_on_owner))
         .then(literal("leasher").forks(CommandRedirectTarget::Current, fork_on_leasher))
-        .then(literal("passengers").forks(CommandRedirectTarget::Current, fork_on_passengers))
         .then(literal("target").forks(CommandRedirectTarget::Current, fork_on_target))
+        .then(literal("attacker").forks(CommandRedirectTarget::Current, fork_on_attacker))
         .then(literal("vehicle").forks(CommandRedirectTarget::Current, fork_on_vehicle))
+        .then(literal("controller").forks(CommandRedirectTarget::Current, fork_on_controller))
+        .then(literal("origin").forks(CommandRedirectTarget::Current, fork_on_origin))
+        .then(literal("passengers").forks(CommandRedirectTarget::Current, fork_on_passengers))
 }
 
 fn fork_as(
@@ -812,6 +814,19 @@ fn fork_on_attacker(
     ))
 }
 
+fn fork_on_owner(
+    context: &mut CommandContext,
+    _arguments: &ParsedArguments,
+) -> Result<Vec<CommandContext>, CommandError> {
+    Ok(one_relation_context(
+        context,
+        context
+            .entity
+            .as_ref()
+            .and_then(|entity| entity.owning_entity()),
+    ))
+}
+
 fn fork_on_controller(
     context: &mut CommandContext,
     _arguments: &ParsedArguments,
@@ -836,6 +851,19 @@ fn fork_on_leasher(
             .as_ref()
             .and_then(|entity| entity.as_mob())
             .and_then(Mob::leash_holder),
+    ))
+}
+
+fn fork_on_origin(
+    context: &mut CommandContext,
+    _arguments: &ParsedArguments,
+) -> Result<Vec<CommandContext>, CommandError> {
+    Ok(one_relation_context(
+        context,
+        context
+            .entity
+            .as_ref()
+            .and_then(|entity| entity.origin_entity()),
     ))
 }
 
@@ -1243,5 +1271,27 @@ mod tests {
                 "masked"
             ]
         );
+    }
+
+    #[test]
+    fn on_relations_parse_vanilla_relation_names() {
+        let graph = graph();
+        let context = TestContext;
+
+        for relation in [
+            "owner",
+            "leasher",
+            "target",
+            "attacker",
+            "vehicle",
+            "controller",
+            "origin",
+            "passengers",
+        ] {
+            let parsed = graph
+                .parse(&format!("execute on {relation} run seed"), &context)
+                .expect("relation redirect parses");
+            assert_eq!(parsed.path(), ["execute", "on", relation]);
+        }
     }
 }
