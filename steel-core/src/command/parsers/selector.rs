@@ -1084,8 +1084,16 @@ fn parse_option(
         "tag" => parse_tag_option(reader, selector),
         "nbt" => parse_nbt_option(reader, selector),
         "scores" => parse_scores_option(reader, selector, state, key_cursor),
-        "team" | "advancements" | "predicate" => Err(SelectorParseError::unsupported(
-            format!("{key} needs an unimplemented runtime foundation"),
+        "team" => Err(SelectorParseError::unsupported(
+            "team needs scoreboard team foundation",
+            key_cursor,
+        )),
+        "advancements" => Err(SelectorParseError::unsupported(
+            "advancements needs player advancement foundation",
+            key_cursor,
+        )),
+        "predicate" => Err(SelectorParseError::unsupported(
+            "predicate needs loot predicate registry foundation",
             key_cursor,
         )),
         _ => Err(SelectorParseError::invalid_at(
@@ -1901,6 +1909,8 @@ mod tests {
     fn selector_rejects_missing_runtime_foundations_by_option_name() {
         let error = parse_selector_plan("@e[predicate=minecraft:test]".to_owned(), true)
             .expect_err("predicate needs predicate foundation");
-        assert!(matches!(error.kind, SelectorParseErrorKind::Unsupported(_)));
+        assert!(
+            matches!(error.kind, SelectorParseErrorKind::Unsupported(message) if message == "predicate needs loot predicate registry foundation")
+        );
     }
 }
