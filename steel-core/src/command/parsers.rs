@@ -26,7 +26,7 @@ pub(crate) use resource::parse_resource_identifier;
 pub use resource::{
     BiomeParser, EnchantmentParser, EntitySummonParser, ItemParser, StructureParser,
 };
-pub use scoreboard::{IntRangeParser, ObjectiveParser, ScoreHolderParser};
+pub use scoreboard::{DoubleRangeParser, IntRangeParser, ObjectiveParser, ScoreHolderParser};
 pub use slot::ItemSlotsParser;
 pub use target::{EntityParser, PermissionTargetParser, PlayerParser};
 pub use text::{ComponentParser, TimeParser};
@@ -51,12 +51,12 @@ mod tests {
             },
             parsers::{
                 BiomeParser, BlockPosParser, BlockPredicateParser, ComponentParser, DomainParser,
-                EnchantmentParser, EntityParser, EntitySummonParser, GameModeParser,
-                HeightmapParser, IntRangeParser, ItemParser, ItemPredicateParser, ItemSlotsParser,
-                ItemStackParser, NbtPathParser, ObjectiveParser, PermissionKeyParser,
-                PermissionRuleExpressionParser, PermissionTargetParser, PlayerParser,
-                RotationParser, ScoreHolderParser, StructureParser, TimeParser, Vec3Parser,
-                WorldParser,
+                DoubleRangeParser, EnchantmentParser, EntityParser, EntitySummonParser,
+                GameModeParser, HeightmapParser, IntRangeParser, ItemParser, ItemPredicateParser,
+                ItemSlotsParser, ItemStackParser, NbtPathParser, ObjectiveParser,
+                PermissionKeyParser, PermissionRuleExpressionParser, PermissionTargetParser,
+                PlayerParser, RotationParser, ScoreHolderParser, StructureParser, TimeParser,
+                Vec3Parser, WorldParser,
             },
             reader::CommandReader,
             requirement::{
@@ -267,6 +267,62 @@ mod tests {
             .parse(&mut reader, &TestContext)
             .expect_err("swapped range rejects");
         assert_eq!(error.kind(), &CommandParseErrorKind::SwappedIntegerRange);
+    }
+
+    #[test]
+    fn double_range_parser_accepts_vanilla_range_forms() {
+        for (input, matching, missing) in [
+            ("5", 5.0, 4.0),
+            ("5.5..", 10.0, 4.0),
+            ("..5.5", 4.0, 6.0),
+            ("3.25..5.5", 4.0, 6.0),
+            ("-5.5..-3.25", -4.0, 0.0),
+        ] {
+            let mut reader = CommandReader::new(input);
+            let ParsedArgument::DoubleRange(range) = DoubleRangeParser
+                .parse(&mut reader, &TestContext)
+                .expect("range parses")
+            else {
+                panic!("expected double range argument");
+            };
+            assert!(range.matches(matching));
+            assert!(!range.matches(missing));
+        }
+    }
+
+    #[test]
+    fn double_range_parser_rejects_empty_swapped_and_non_finite_ranges() {
+        let mut reader = CommandReader::new("..");
+        let error = DoubleRangeParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("empty range rejects");
+        assert_eq!(
+            error.kind(),
+            &CommandParseErrorKind::InvalidDoubleRange("..".to_owned())
+        );
+
+        let mut reader = CommandReader::new("5.0..3.0");
+        let error = DoubleRangeParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("swapped range rejects");
+        assert_eq!(error.kind(), &CommandParseErrorKind::SwappedDoubleRange);
+
+        let mut reader = CommandReader::new("NaN");
+        let error = DoubleRangeParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("non-finite range rejects");
+        assert_eq!(
+            error.kind(),
+            &CommandParseErrorKind::InvalidDoubleRange("NaN".to_owned())
+        );
+    }
+
+    #[test]
+    fn double_range_parser_uses_float_range_client_parser() {
+        let (argument_type, suggestion_type) =
+            DoubleRangeParser.client_parser().into_protocol_argument();
+        assert!(matches!(argument_type, ArgumentType::FloatRange));
+        assert!(suggestion_type.is_none());
     }
 
     #[test]

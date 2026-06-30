@@ -101,6 +101,8 @@ pub enum ParsedArgument {
     ScoreHolders(ScoreHolderArgumentValue),
     /// Integer range argument.
     IntRange(IntRangeArgumentValue),
+    /// Double range argument.
+    DoubleRange(DoubleRangeArgumentValue),
 }
 
 /// Biome command argument value: either one biome or a biome tag.
@@ -310,6 +312,46 @@ impl IntRangeArgumentValue {
     /// Returns whether `value` matches this range.
     #[must_use]
     pub fn matches(self, value: i32) -> bool {
+        if let Some(min) = self.min
+            && value < min
+        {
+            return false;
+        }
+        if let Some(max) = self.max
+            && value > max
+        {
+            return false;
+        }
+        true
+    }
+}
+
+/// Inclusive double range command argument value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DoubleRangeArgumentValue {
+    min: Option<f64>,
+    max: Option<f64>,
+}
+
+impl DoubleRangeArgumentValue {
+    /// Creates a double range.
+    #[must_use]
+    pub const fn new(min: Option<f64>, max: Option<f64>) -> Self {
+        Self { min, max }
+    }
+
+    /// Creates an exact-value range.
+    #[must_use]
+    pub const fn exactly(value: f64) -> Self {
+        Self {
+            min: Some(value),
+            max: Some(value),
+        }
+    }
+
+    /// Returns whether `value` matches this range.
+    #[must_use]
+    pub fn matches(self, value: f64) -> bool {
         if let Some(min) = self.min
             && value < min
         {
@@ -1393,6 +1435,7 @@ impl fmt::Debug for ParsedArgument {
             }
             Self::ScoreHolders(value) => f.debug_tuple("ScoreHolders").field(value).finish(),
             Self::IntRange(value) => f.debug_tuple("IntRange").field(value).finish(),
+            Self::DoubleRange(value) => f.debug_tuple("DoubleRange").field(value).finish(),
         }
     }
 }
@@ -1479,6 +1522,7 @@ impl ParsedArgument {
             Self::ScoreboardObjective(_) => "scoreboard_objective",
             Self::ScoreHolders(_) => "score_holders",
             Self::IntRange(_) => "int_range",
+            Self::DoubleRange(_) => "double_range",
         }
     }
 }
@@ -1615,6 +1659,17 @@ impl FromParsedArgument for IntRangeArgumentValue {
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
         let ParsedArgument::IntRange(value) = value else {
+            return None;
+        };
+        Some(*value)
+    }
+}
+
+impl FromParsedArgument for DoubleRangeArgumentValue {
+    const TYPE_NAME: &'static str = "double_range";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::DoubleRange(value) = value else {
             return None;
         };
         Some(*value)

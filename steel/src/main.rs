@@ -399,6 +399,12 @@ async fn shutdown_worlds(server: &Arc<Server>) {
         Ok(count) => log::info!("Saved {count} players"),
         Err(e) => log::error!("Failed to save player data: {e}"),
     }
+
+    match server.save_stopwatches().await {
+        Ok(true) => log::info!("Saved stopwatches"),
+        Ok(false) => {}
+        Err(e) => log::error!("Failed to save stopwatches: {e}"),
+    }
 }
 
 #[cfg(test)]

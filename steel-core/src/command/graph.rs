@@ -19,11 +19,12 @@ mod primitive_parsers;
 mod traversal;
 
 pub use arguments::{
-    BiomeArgumentValue, BlockPredicateArgumentValue, CommandPermissionArgument, FromParsedArgument,
-    IntRangeArgumentValue, ItemPredicateArgumentValue, ItemPredicateCondition,
-    ItemPredicateMatchError, ItemPredicateTarget, ItemPredicateTerm, ItemSlotRangeArgumentValue,
-    ParsedArgument, ParsedArgumentError, ParsedArguments, PermissionTarget,
-    ScoreHolderArgumentValue, ScoreboardObjectiveName, StructureArgumentValue,
+    BiomeArgumentValue, BlockPredicateArgumentValue, CommandPermissionArgument,
+    DoubleRangeArgumentValue, FromParsedArgument, IntRangeArgumentValue,
+    ItemPredicateArgumentValue, ItemPredicateCondition, ItemPredicateMatchError,
+    ItemPredicateTarget, ItemPredicateTerm, ItemSlotRangeArgumentValue, ParsedArgument,
+    ParsedArgumentError, ParsedArguments, PermissionTarget, ScoreHolderArgumentValue,
+    ScoreboardObjectiveName, StructureArgumentValue,
 };
 pub use builder::{CommandNodeBuilder, argument, literal};
 use node::{CommandNode, CommandNodeKind, collect_ambiguities, merge_or_push_node};
@@ -208,6 +209,10 @@ pub enum CommandParseErrorKind {
     InvalidIntegerRange(String),
     /// An integer range had a minimum larger than its maximum.
     SwappedIntegerRange,
+    /// A double range argument was invalid.
+    InvalidDoubleRange(String),
+    /// A double range had a minimum larger than its maximum.
+    SwappedDoubleRange,
     /// A time argument was invalid.
     InvalidTime(String),
     /// A permission key argument was invalid.
@@ -276,6 +281,8 @@ impl CommandParseErrorKind {
             | Self::InvalidComponent(_)
             | Self::InvalidIntegerRange(_)
             | Self::SwappedIntegerRange
+            | Self::InvalidDoubleRange(_)
+            | Self::SwappedDoubleRange
             | Self::InvalidTime(_)
             | Self::InvalidPermissionKey(_)
             | Self::InvalidPermissionExpression(_)

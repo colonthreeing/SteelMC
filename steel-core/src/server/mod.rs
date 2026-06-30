@@ -4,6 +4,8 @@ pub mod jobs;
 mod pregen;
 /// The registry cache for the server.
 pub mod registry_cache;
+/// Server-level stopwatch state.
+pub mod stopwatch;
 /// The tick rate manager for the server.
 pub mod tick_rate_manager;
 /// Domain-aware loaded world map.
@@ -40,6 +42,7 @@ use crate::portal::{TeleportTransition, WorldChangeRequest};
 use crate::scoreboard::Scoreboard;
 use crate::server::jobs::{FnServerJob, JobPoll, ServerJob, ServerJobContext, ServerJobQueue};
 use crate::server::registry_cache::RegistryCache;
+use crate::server::stopwatch::Stopwatches;
 use crate::server::worlds::WorldMap;
 use crate::world::{World, WorldConfig, WorldGameTickTimings};
 use crate::worldgen::WorldGeneratorRegistry;
@@ -474,6 +477,8 @@ pub struct Server {
     pub scoreboard: Scoreboard,
     /// Server-level command storage used by `/data storage` and `/execute ... storage`.
     pub command_storage: CommandStorage,
+    /// Server-level stopwatches used by `/stopwatch` and `/execute ... stopwatch`.
+    pub stopwatches: SyncRwLock<Stopwatches>,
     /// Parses and dispatches commands.
     pub command_dispatcher: SyncRwLock<CommandDispatcher>,
     /// Serializes async command execution outside packet handling.
@@ -565,6 +570,9 @@ impl Server {
             .load_global_permission_states()
             .await
             .map_err(|e| format!("failed to load global permission index: {e}"))?;
+        let stopwatches = Stopwatches::load(&resolved_worlds.save_path)
+            .await
+            .map_err(|e| format!("failed to load stopwatches: {e}"))?;
         let mut worlds = WorldMap::new(
             resolved_worlds.default_domain.clone(),
             &resolved_worlds.domains,
@@ -639,6 +647,7 @@ impl Server {
             tick_rate_manager: SyncRwLock::new(TickRateManager::new()),
             scoreboard: Scoreboard::new(),
             command_storage: CommandStorage::new(),
+            stopwatches: SyncRwLock::new(stopwatches),
             command_dispatcher: SyncRwLock::new(
                 CommandDispatcher::new()
                     .map_err(|e| format!("failed to register commands: {e}"))?,
@@ -654,6 +663,20 @@ impl Server {
             pending_world_changes: SyncMutex::new(vec![]),
             pending_domain_switches: SyncMutex::new(vec![]),
         })
+    }
+
+    /// Saves server-level stopwatch state if needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the snapshot cannot be written.
+    pub async fn save_stopwatches(&self) -> io::Result<bool> {
+        let Some(save) = self.stopwatches.read().prepare_save() else {
+            return Ok(false);
+        };
+        save.write().await?;
+        self.stopwatches.write().mark_saved(save.generation());
+        Ok(true)
     }
 
     /// Queues a command for serialized async execution.

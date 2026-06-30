@@ -60,6 +60,7 @@ mod tests {
         );
         assert!(super::BUILT_IN_COMMAND_MODULES.contains(&"clear"));
         assert!(super::BUILT_IN_COMMAND_MODULES.contains(&"steelperms"));
+        assert!(super::BUILT_IN_COMMAND_MODULES.contains(&"stopwatch"));
         assert!(super::BUILT_IN_COMMAND_MODULES.contains(&"xp"));
         assert!(!super::BUILT_IN_COMMAND_MODULES.contains(&"permission_targets"));
     }

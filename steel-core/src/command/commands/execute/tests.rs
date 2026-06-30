@@ -103,6 +103,25 @@ fn loaded_condition_parses_direct_and_redirect_forms() {
 }
 
 #[test]
+fn stopwatch_condition_parses_direct_and_redirect_forms() {
+    let graph = graph();
+    let context = TestContext;
+
+    let direct = graph
+        .parse("execute if stopwatch minecraft:test 0.5..1.5", &context)
+        .expect("direct stopwatch conditional parses");
+    assert_eq!(direct.path(), ["execute", "if", "stopwatch", "id", "range"]);
+
+    let redirected = graph
+        .parse("execute unless stopwatch test ..5 run seed", &context)
+        .expect("redirected stopwatch conditional parses");
+    assert_eq!(
+        redirected.path(),
+        ["execute", "unless", "stopwatch", "id", "range"]
+    );
+}
+
+#[test]
 fn biome_condition_parses_direct_and_redirect_forms() {
     init_test_registry();
     let graph = graph();

@@ -2,23 +2,19 @@ use std::{borrow::Cow, sync::Arc};
 
 use simdnbt::owned::{NbtCompound, NbtTag};
 use steel_registry::blocks::block_state_ext::BlockStateExt;
-use steel_utils::{
-    BlockPos,
-    nbt::compare_nbt,
-    translations,
-};
+use steel_utils::{BlockPos, Identifier, nbt::compare_nbt, translations};
 use text_components::{TextComponent, translation::TranslatedMessage};
 
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandNodeBuilder, CommandRedirectTarget, CommandResult, IntRangeArgumentValue,
-    ParsedArguments, argument, literal,
+    CommandNodeBuilder, CommandRedirectTarget, CommandResult, DoubleRangeArgumentValue,
+    IntRangeArgumentValue, ParsedArguments, argument, literal,
 };
 use crate::command::parsers::{
-    BiomeParser, BlockPosParser, BlockPredicateParser, EntityParser, IntRangeParser,
-    ItemPredicateParser, ItemSlotsParser, NbtPathParser, ObjectiveParser, ScoreHolderParser,
-    WorldParser,
+    BiomeParser, BlockPosParser, BlockPredicateParser, DoubleRangeParser, EntityParser,
+    IntRangeParser, ItemPredicateParser, ItemSlotsParser, NbtPathParser, ObjectiveParser,
+    ScoreHolderParser, WorldParser,
 };
 use crate::entity::EntityCommandItemSlotResult;
 use crate::scoreboard::{ScoreHolder, Scoreboard, ScoreboardObjective};
@@ -27,10 +23,11 @@ use crate::world::World;
 use super::{
     StorageKeyParser, biome_value, block_data_invalid_error, block_entity_full_nbt,
     block_position, block_predicate, entities, int_range, loaded_named_block_position, nbt_path,
-    item_predicate, item_slots, position_error, same_world, scoreboard_objective,
+    double_range, item_predicate, item_slots, position_error, same_world, scoreboard_objective,
     single_score_holder, source_entity, storage_id, world,
 };
 use super::super::item_predicate_match_error;
+use super::super::stopwatch::{StopwatchIdParser, stopwatch_does_not_exist};
 
 pub(super) fn conditionals(name: &'static str, expected: bool) -> CommandNodeBuilder {
     literal(name)
@@ -89,6 +86,17 @@ pub(super) fn conditionals(name: &'static str, expected: bool) -> CommandNodeBui
                     ),
                 ))
         )
+        .then(literal("stopwatch").then(
+            argument("id", StopwatchIdParser::existing()).then(
+                argument("range", DoubleRangeParser)
+                    .executes(move |context, arguments| {
+                        execute_stopwatch_condition(context, arguments, expected)
+                    })
+                    .forks(CommandRedirectTarget::Current, move |context, arguments| {
+                        fork_stopwatch_condition(context, arguments, expected)
+                    }),
+            ),
+        ))
         .then(literal("dimension").then(
             argument("dimension", WorldParser)
                 .executes(move |context, arguments| {
@@ -520,6 +528,55 @@ fn score_matches_range(
     scoreboard
         .score(target, objective)
         .is_some_and(|score| range.matches(score))
+}
+
+fn execute_stopwatch_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+) -> Result<CommandResult, CommandError> {
+    let matches = stopwatch_matches(context, arguments)?;
+    execute_simple_condition(context, matches, expected)
+}
+
+fn fork_stopwatch_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+) -> Result<Vec<CommandContext>, CommandError> {
+    let matches = stopwatch_matches(context, arguments)?;
+    Ok(if matches == expected {
+        vec![context.clone()]
+    } else {
+        Vec::new()
+    })
+}
+
+fn stopwatch_matches(
+    context: &CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<bool, CommandError> {
+    let id = stopwatch_id(arguments)?;
+    let range = double_range(arguments)?;
+    let elapsed_seconds = context
+        .server
+        .stopwatches
+        .read()
+        .get(&id)
+        .ok_or_else(|| stopwatch_does_not_exist(&id))?
+        .elapsed_seconds();
+
+    Ok(stopwatch_elapsed_matches_range(elapsed_seconds, range))
+}
+
+fn stopwatch_id(arguments: &ParsedArguments) -> Result<Identifier, CommandError> {
+    arguments
+        .get::<Identifier>("id")
+        .map_err(super::super::invalid_parsed_argument)
+}
+
+fn stopwatch_elapsed_matches_range(elapsed_seconds: f64, range: DoubleRangeArgumentValue) -> bool {
+    range.matches(elapsed_seconds)
 }
 
 fn execute_dimension_condition(

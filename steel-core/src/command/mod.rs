@@ -687,6 +687,12 @@ impl CommandDispatcher {
             CommandParseErrorKind::SwappedIntegerRange => {
                 TextComponent::from(&translations::ARGUMENT_RANGE_SWAPPED)
             }
+            CommandParseErrorKind::InvalidDoubleRange(value) => {
+                TextComponent::plain(format!("Invalid double range '{value}'"))
+            }
+            CommandParseErrorKind::SwappedDoubleRange => {
+                TextComponent::from(&translations::ARGUMENT_RANGE_SWAPPED)
+            }
             CommandParseErrorKind::InvalidEntityType(value) => {
                 TextComponent::plain(format!("Invalid entity type '{value}'"))
             }

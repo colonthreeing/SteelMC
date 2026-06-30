@@ -1,9 +1,9 @@
 //! Handler for the "execute" command.
 //!
-//! Bossbar store targets, loot predicates, command functions, stopwatch
-//! predicates, and data component predicates without concrete Steel component
-//! storage are not registered here yet because their backing foundations are
-//! not implemented in Steel's command/runtime layer.
+//! Bossbar store targets, loot predicates, command functions, and data
+//! component predicates without concrete Steel component storage are not
+//! registered here yet because their backing foundations are not implemented in
+//! Steel's command/runtime layer.
 
 use std::{borrow::Cow, sync::Arc};
 
@@ -24,8 +24,9 @@ use crate::command::context::{CommandContext, EntityAnchor};
 use crate::command::error::CommandError;
 use crate::command::graph::{
     BiomeArgumentValue, BlockPredicateArgumentValue, CommandNodeBuilder, CommandRedirectTarget,
-    CommandResult, IntRangeArgumentValue, ItemPredicateArgumentValue, ItemSlotRangeArgumentValue,
-    ParsedArguments, ScoreHolderArgumentValue, ScoreboardObjectiveName, literal,
+    CommandResult, DoubleRangeArgumentValue, IntRangeArgumentValue, ItemPredicateArgumentValue,
+    ItemSlotRangeArgumentValue, ParsedArguments, ScoreHolderArgumentValue, ScoreboardObjectiveName,
+    literal,
 };
 use crate::entity::SharedEntity;
 use crate::scoreboard::{ScoreHolder, ScoreboardObjective};
@@ -255,6 +256,12 @@ fn no_score_holders() -> CommandError {
 fn int_range(arguments: &ParsedArguments) -> Result<IntRangeArgumentValue, CommandError> {
     arguments
         .get::<IntRangeArgumentValue>("range")
+        .map_err(super::invalid_parsed_argument)
+}
+
+fn double_range(arguments: &ParsedArguments) -> Result<DoubleRangeArgumentValue, CommandError> {
+    arguments
+        .get::<DoubleRangeArgumentValue>("range")
         .map_err(super::invalid_parsed_argument)
 }
 

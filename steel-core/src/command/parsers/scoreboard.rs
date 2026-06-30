@@ -9,8 +9,8 @@ use crate::{
     command::{
         graph::{
             CommandArgumentClientParser, CommandArgumentParser, CommandParseError,
-            CommandParseErrorKind, IntRangeArgumentValue, ParsedArgument, ParsedArguments,
-            ScoreHolderArgumentValue,
+            CommandParseErrorKind, DoubleRangeArgumentValue, IntRangeArgumentValue, ParsedArgument,
+            ParsedArguments, ScoreHolderArgumentValue,
         },
         parsers::EntityParser,
         reader::{CommandReader, StringMode},
@@ -185,6 +185,34 @@ impl CommandArgumentParser for IntRangeParser {
     }
 }
 
+/// Double range argument parser.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DoubleRangeParser;
+
+impl CommandArgumentParser for DoubleRangeParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let raw = reader.read_token()?;
+        parse_double_range(&raw, cursor).map(ParsedArgument::DoubleRange)
+    }
+
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(ArgumentType::FloatRange, None)
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "double_range"
+    }
+
+    fn examples(&self) -> &'static [&'static str] {
+        &["0..5", "0", "-5.0", "-100.0..", "..100.0"]
+    }
+}
+
 fn parse_entity_score_holders(
     raw: &str,
     cursor: usize,
@@ -277,4 +305,55 @@ fn parse_range_bound(value: &str, raw: &str, cursor: usize) -> Result<i32, Comma
             cursor,
         )
     })
+}
+
+fn parse_double_range(
+    raw: &str,
+    cursor: usize,
+) -> Result<DoubleRangeArgumentValue, CommandParseError> {
+    if let Some((left, right)) = raw.split_once("..") {
+        let min = parse_optional_double_range_bound(left, raw, cursor)?;
+        let max = parse_optional_double_range_bound(right, raw, cursor)?;
+        if min.is_none() && max.is_none() {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidDoubleRange(raw.to_owned()),
+                cursor,
+            ));
+        }
+        if min.zip(max).is_some_and(|(min, max)| min > max) {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::SwappedDoubleRange,
+                cursor,
+            ));
+        }
+        return Ok(DoubleRangeArgumentValue::new(min, max));
+    }
+
+    parse_double_range_bound(raw, raw, cursor).map(DoubleRangeArgumentValue::exactly)
+}
+
+fn parse_optional_double_range_bound(
+    value: &str,
+    raw: &str,
+    cursor: usize,
+) -> Result<Option<f64>, CommandParseError> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+
+    parse_double_range_bound(value, raw, cursor).map(Some)
+}
+
+fn parse_double_range_bound(
+    value: &str,
+    raw: &str,
+    cursor: usize,
+) -> Result<f64, CommandParseError> {
+    match value.parse::<f64>() {
+        Ok(value) if value.is_finite() => Ok(value),
+        _ => Err(CommandParseError::new(
+            CommandParseErrorKind::InvalidDoubleRange(raw.to_owned()),
+            cursor,
+        )),
+    }
 }
