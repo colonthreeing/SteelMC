@@ -64,13 +64,11 @@ use crate::behavior::{
 };
 use crate::entity::attribute::{AttributeMap, AttributeModifier, AttributeModifierOperation};
 use crate::fluid::{LavaFluid, get_fluid_state, get_height};
-use crate::inventory::container::Container;
 use crate::inventory::equipment::EquipmentSlot;
 use crate::physics::{
     COLLISION_EPSILON, CollisionWorld, EntityPhysicsState, MoveResult, MoverType,
     WorldCollisionProvider, move_entity as resolve_entity_movement,
 };
-use crate::player::player_inventory::PlayerInventory;
 use crate::world::game_event_context::GameEventContext;
 use crate::world::{ClipBlockShape, ClipFluid, LevelReader, World};
 use crate::{enchantment_helper, entity::damage::DamageSource, player::Player};
@@ -779,7 +777,7 @@ pub enum EntityCommandItemSlotResult {
     Unsupported,
 }
 
-fn command_item_slot_to_equipment_slot(slot: i32) -> Option<EquipmentSlot> {
+pub(crate) fn command_item_slot_to_equipment_slot(slot: i32) -> Option<EquipmentSlot> {
     match slot {
         98 => Some(EquipmentSlot::MainHand),
         99 => Some(EquipmentSlot::OffHand),
@@ -791,41 +789,6 @@ fn command_item_slot_to_equipment_slot(slot: i32) -> Option<EquipmentSlot> {
         106 => Some(EquipmentSlot::Saddle),
         _ => None,
     }
-}
-
-fn with_player_command_item_slot(
-    player: &Player,
-    slot: i32,
-    visitor: &mut dyn FnMut(&ItemStack),
-) -> EntityCommandItemSlotResult {
-    if player_command_item_slot_unsupported(slot) {
-        return EntityCommandItemSlotResult::Unsupported;
-    }
-
-    let inventory = player.inventory.lock();
-    let Ok(inventory_slot) = usize::try_from(slot) else {
-        return EntityCommandItemSlotResult::Missing;
-    };
-
-    if inventory_slot < PlayerInventory::INVENTORY_SIZE {
-        visitor(inventory.get_item(inventory_slot));
-        return EntityCommandItemSlotResult::Found;
-    }
-
-    let Some(equipment_slot) = command_item_slot_to_equipment_slot(slot) else {
-        return EntityCommandItemSlotResult::Missing;
-    };
-
-    if equipment_slot == EquipmentSlot::MainHand {
-        visitor(inventory.get_selected_item());
-    } else {
-        visitor(inventory.equipment().get_ref(equipment_slot));
-    }
-    EntityCommandItemSlotResult::Found
-}
-
-fn player_command_item_slot_unsupported(slot: i32) -> bool {
-    matches!(slot, 200..=226 | 499 | 500..=503)
 }
 
 fn nbt_bool(value: bool) -> NbtTag {
@@ -2461,7 +2424,7 @@ pub trait Entity: EntityEventSource + Send + Sync {
         visitor: &mut dyn FnMut(&ItemStack),
     ) -> EntityCommandItemSlotResult {
         if let Some(player) = self.as_player() {
-            return with_player_command_item_slot(player, slot, visitor);
+            return player.with_command_item_slot(slot, visitor);
         }
 
         if slot == 0 {
@@ -8490,13 +8453,17 @@ mod tests {
     }
 
     #[test]
-    fn command_item_slot_reports_player_only_missing_foundations() {
-        assert!(super::player_command_item_slot_unsupported(200));
-        assert!(super::player_command_item_slot_unsupported(226));
-        assert!(super::player_command_item_slot_unsupported(499));
-        assert!(super::player_command_item_slot_unsupported(500));
-        assert!(super::player_command_item_slot_unsupported(503));
-        assert!(!super::player_command_item_slot_unsupported(504));
+    fn command_item_slot_maps_vanilla_equipment_ids() {
+        assert_eq!(
+            super::command_item_slot_to_equipment_slot(98),
+            Some(EquipmentSlot::MainHand)
+        );
+        assert_eq!(
+            super::command_item_slot_to_equipment_slot(103),
+            Some(EquipmentSlot::Head)
+        );
+        assert_eq!(super::command_item_slot_to_equipment_slot(499), None);
+        assert_eq!(super::command_item_slot_to_equipment_slot(500), None);
     }
 
     #[test]
