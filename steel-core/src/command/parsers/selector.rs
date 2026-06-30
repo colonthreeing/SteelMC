@@ -1164,14 +1164,22 @@ fn push_entity_type_tag_suggestions(
 
     let tag_prefix = value_prefix.strip_prefix(&marker).unwrap_or_default();
     let tag_prefix = tag_prefix.strip_prefix("minecraft:").unwrap_or(tag_prefix);
+    let mut tag_keys = REGISTRY.entity_types.tag_keys().collect::<Vec<_>>();
+    tag_keys.sort_by(|left, right| {
+        left.namespace
+            .cmp(&right.namespace)
+            .then_with(|| left.path.cmp(&right.path))
+    });
     suggestions.extend(
-        REGISTRY
-            .entity_types
-            .tag_keys()
+        tag_keys
+            .into_iter()
             .filter(|key| {
-                let key = key.to_string();
-                let text = key.strip_prefix("minecraft:").unwrap_or(&key);
-                matches_suggestion_substr(tag_prefix, text)
+                if key.namespace == Identifier::VANILLA_NAMESPACE {
+                    return matches_suggestion_substr(tag_prefix, &key.path);
+                }
+
+                let text = key.to_string();
+                matches_suggestion_substr(tag_prefix, &text)
             })
             .map(|key| format!("{expression_prefix}{marker}{key}")),
     );
