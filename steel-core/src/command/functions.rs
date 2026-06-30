@@ -4,6 +4,8 @@ use std::{collections::HashMap, error::Error, fmt, sync::Arc};
 
 use steel_utils::Identifier;
 
+use crate::command::graph::CommandFunctionArgumentValue;
+
 const MAX_COMMAND_FUNCTION_LINE_LENGTH: usize = 2_000_000;
 
 /// One registered command function.
@@ -164,6 +166,18 @@ impl CommandFunctionRegistry {
         })
     }
 
+    /// Resolves a parsed command function argument into concrete functions.
+    #[must_use]
+    pub fn resolve_argument(
+        &self,
+        argument: &CommandFunctionArgumentValue,
+    ) -> Vec<CommandFunction> {
+        match argument {
+            CommandFunctionArgumentValue::Function(id) => self.function(id).into_iter().collect(),
+            CommandFunctionArgumentValue::Tag(id) => self.tag(id),
+        }
+    }
+
     /// Returns registered function IDs.
     pub fn function_ids(&self) -> Vec<&Identifier> {
         sorted_ids(self.functions.keys())
@@ -283,6 +297,8 @@ fn is_brigadier_unquoted_char(ch: char) -> bool {
 mod tests {
     use steel_utils::Identifier;
 
+    use crate::command::graph::CommandFunctionArgumentValue;
+
     use super::{
         CommandFunction, CommandFunctionParseErrorKind, CommandFunctionRegistry,
         MAX_COMMAND_FUNCTION_LINE_LENGTH,
@@ -307,7 +323,7 @@ mod tests {
 
         assert_eq!(
             registry.function(&first).map(|function| function.id),
-            Some(first)
+            Some(first.clone())
         );
         assert_eq!(
             registry
@@ -316,6 +332,25 @@ mod tests {
                 .map(|function| function.id)
                 .collect::<Vec<_>>(),
             vec![second, Identifier::new_static("test", "first")]
+        );
+        assert_eq!(
+            registry
+                .resolve_argument(&CommandFunctionArgumentValue::Function(first.clone()))
+                .into_iter()
+                .map(|function| function.id)
+                .collect::<Vec<_>>(),
+            vec![first]
+        );
+        assert_eq!(
+            registry
+                .resolve_argument(&CommandFunctionArgumentValue::Tag(tag.clone()))
+                .into_iter()
+                .map(|function| function.id)
+                .collect::<Vec<_>>(),
+            vec![
+                Identifier::new_static("test", "second"),
+                Identifier::new_static("test", "first")
+            ]
         );
         assert!(
             registry
