@@ -754,6 +754,41 @@ mod tests {
     }
 
     #[test]
+    fn entity_parser_suggests_selector_entity_type_tags() {
+        init_test_registry();
+
+        let tag_suggestions = EntityParser::multiple()
+            .suggest(
+                "@e[type=#s",
+                &ParsedArguments::default(),
+                &SelectorPermissionContext,
+            )
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+        let inverted_tag_suggestions = EntityParser::multiple()
+            .suggest(
+                "@e[type=!#r",
+                &ParsedArguments::default(),
+                &SelectorPermissionContext,
+            )
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+
+        assert!(
+            tag_suggestions
+                .iter()
+                .any(|text| text == "@e[type=#minecraft:skeletons")
+        );
+        assert!(
+            inverted_tag_suggestions
+                .iter()
+                .any(|text| text == "@e[type=!#minecraft:raiders")
+        );
+    }
+
+    #[test]
     fn entity_summon_parser_resolves_default_namespace() {
         init_test_entities();
 

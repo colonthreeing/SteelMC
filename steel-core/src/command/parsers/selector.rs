@@ -1125,9 +1125,8 @@ fn push_prefixed_value(
 
 fn entity_type_suggestions(expression_prefix: &str, value_prefix: &str) -> Vec<String> {
     let mut suggestions = Vec::new();
-    push_prefixed_value(&mut suggestions, expression_prefix, value_prefix, "#");
-    push_prefixed_value(&mut suggestions, expression_prefix, value_prefix, "!");
-    push_prefixed_value(&mut suggestions, expression_prefix, value_prefix, "!#");
+    push_entity_type_tag_suggestions(&mut suggestions, expression_prefix, value_prefix, "");
+    push_entity_type_tag_suggestions(&mut suggestions, expression_prefix, value_prefix, "!");
     if value_prefix.starts_with('#') || value_prefix.starts_with("!#") {
         return suggestions;
     }
@@ -1150,6 +1149,32 @@ fn entity_type_suggestions(expression_prefix: &str, value_prefix: &str) -> Vec<S
             .map(|key| format!("{expression_prefix}{inversion}{key}")),
     );
     suggestions
+}
+
+fn push_entity_type_tag_suggestions(
+    suggestions: &mut Vec<String>,
+    expression_prefix: &str,
+    value_prefix: &str,
+    inversion: &str,
+) {
+    let marker = format!("{inversion}#");
+    if !marker.starts_with(value_prefix) && !value_prefix.starts_with(&marker) {
+        return;
+    }
+
+    let tag_prefix = value_prefix.strip_prefix(&marker).unwrap_or_default();
+    let tag_prefix = tag_prefix.strip_prefix("minecraft:").unwrap_or(tag_prefix);
+    suggestions.extend(
+        REGISTRY
+            .entity_types
+            .tag_keys()
+            .filter(|key| {
+                let key = key.to_string();
+                let text = key.strip_prefix("minecraft:").unwrap_or(&key);
+                matches_suggestion_substr(tag_prefix, text)
+            })
+            .map(|key| format!("{expression_prefix}{marker}{key}")),
+    );
 }
 
 fn team_suggestions(
