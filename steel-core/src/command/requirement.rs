@@ -153,19 +153,35 @@ impl Requirement {
 
 impl RequirementContext for CommandContext {
     fn source_kind(&self) -> CommandSourceKind {
-        match self.sender {
-            CommandSender::Player(_) => CommandSourceKind::Player,
-            CommandSender::Console => CommandSourceKind::Console,
-            CommandSender::Rcon => CommandSourceKind::Rcon,
-        }
+        sender_source_kind(&self.sender)
     }
 
     fn has_permission(&self, permission: &PermissionExpr) -> bool {
-        match &self.sender {
-            CommandSender::Player(player) => {
-                player.has_permission_in(permission, &self.permission_check_context())
-            }
-            CommandSender::Console | CommandSender::Rcon => true,
+        sender_has_permission(&self.sender, permission, self)
+    }
+}
+
+fn sender_source_kind(sender: &CommandSender) -> CommandSourceKind {
+    match sender {
+        CommandSender::Player(_) => CommandSourceKind::Player,
+        CommandSender::Console => CommandSourceKind::Console,
+        CommandSender::Rcon => CommandSourceKind::Rcon,
+        CommandSender::SuppressedOutput(sender) => sender_source_kind(sender),
+    }
+}
+
+fn sender_has_permission(
+    sender: &CommandSender,
+    permission: &PermissionExpr,
+    context: &CommandContext,
+) -> bool {
+    match sender {
+        CommandSender::Player(player) => {
+            player.has_permission_in(permission, &context.permission_check_context())
+        }
+        CommandSender::Console | CommandSender::Rcon => true,
+        CommandSender::SuppressedOutput(sender) => {
+            sender_has_permission(sender, permission, context)
         }
     }
 }

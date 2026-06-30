@@ -33,11 +33,7 @@ fn send_tellraw(
         .get::<TextComponent>("message")
         .map_err(super::invalid_parsed_argument)?;
 
-    let sender = match &context.sender {
-        CommandSender::Player(player) => &player.gameprofile.name,
-        CommandSender::Console => "Console",
-        CommandSender::Rcon => "Rcon",
-    };
+    let sender = sender_log_name(&context.sender);
     log::info!("{}'s tellraw: {:p}", sender, &message);
     let target_count = targets.len();
     for player in targets {
@@ -45,4 +41,13 @@ fn send_tellraw(
     }
 
     Ok(CommandResult::from_usize_success_count(target_count))
+}
+
+fn sender_log_name(sender: &CommandSender) -> &str {
+    match sender {
+        CommandSender::Player(player) => &player.gameprofile.name,
+        CommandSender::Console => "Console",
+        CommandSender::Rcon => "Rcon",
+        CommandSender::SuppressedOutput(sender) => sender_log_name(sender),
+    }
 }

@@ -80,8 +80,7 @@ fn execute_command(server: &Arc<Server>, command: QueuedCommand) {
 }
 
 fn sender_is_closed_player(sender: &CommandSender) -> bool {
-    let CommandSender::Player(player) = sender else {
-        return false;
-    };
-    player.connection.closed()
+    sender
+        .get_player()
+        .is_some_and(|player| player.connection.closed())
 }

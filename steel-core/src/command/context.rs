@@ -210,6 +210,19 @@ impl CommandContext {
         self
     }
 
+    /// Returns this context with command output suppressed.
+    #[must_use]
+    pub fn with_suppressed_output(mut self) -> Self {
+        self.sender = self.sender.with_suppressed_output();
+        self
+    }
+
+    /// Returns whether command output is suppressed.
+    #[must_use]
+    pub fn is_output_suppressed(&self) -> bool {
+        self.sender.is_output_suppressed()
+    }
+
     pub(crate) fn on_command_result(&self, result: CommandCallbackResult) {
         self.result_callback.on_result(result);
     }
