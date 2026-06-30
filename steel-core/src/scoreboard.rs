@@ -28,6 +28,26 @@ impl ScoreHolder {
     }
 }
 
+/// Scoreboard team metadata.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScoreboardTeam {
+    name: String,
+}
+
+impl ScoreboardTeam {
+    /// Creates a scoreboard team.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
+    }
+
+    /// Returns the team name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 /// Scoreboard objective metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScoreboardObjective {
@@ -72,10 +92,16 @@ impl ScoreboardObjective {
 pub enum ScoreboardError {
     /// Objective names may not be empty.
     EmptyObjectiveName,
+    /// Team names may not be empty.
+    EmptyTeamName,
     /// An objective already exists.
     DuplicateObjective(String),
+    /// A team already exists.
+    DuplicateTeam(String),
     /// The requested objective does not exist.
     MissingObjective(String),
+    /// The requested team does not exist.
+    MissingTeam(String),
     /// The objective cannot be written by commands.
     ReadOnlyObjective(String),
 }
@@ -84,8 +110,11 @@ impl fmt::Display for ScoreboardError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyObjectiveName => write!(f, "objective name cannot be empty"),
+            Self::EmptyTeamName => write!(f, "team name cannot be empty"),
             Self::DuplicateObjective(name) => write!(f, "objective '{name}' already exists"),
+            Self::DuplicateTeam(name) => write!(f, "team '{name}' already exists"),
             Self::MissingObjective(name) => write!(f, "objective '{name}' does not exist"),
+            Self::MissingTeam(name) => write!(f, "team '{name}' does not exist"),
             Self::ReadOnlyObjective(name) => write!(f, "objective '{name}' is read-only"),
         }
     }
@@ -97,6 +126,8 @@ impl Error for ScoreboardError {}
 struct ScoreboardState {
     objectives: BTreeMap<String, ScoreboardObjective>,
     scores: BTreeMap<String, BTreeMap<String, i32>>,
+    teams: BTreeMap<String, ScoreboardTeam>,
+    holder_teams: BTreeMap<String, String>,
 }
 
 /// Server-level scoreboard.
@@ -162,6 +193,65 @@ impl Scoreboard {
     #[must_use]
     pub fn objective_names(&self) -> Vec<String> {
         self.state.read().objectives.keys().cloned().collect()
+    }
+
+    /// Adds a scoreboard team.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the team name is empty or already exists.
+    pub fn add_team(&self, name: impl Into<String>) -> Result<ScoreboardTeam, ScoreboardError> {
+        let team = ScoreboardTeam::new(name);
+        if team.name().is_empty() {
+            return Err(ScoreboardError::EmptyTeamName);
+        }
+
+        let mut state = self.state.write();
+        if state.teams.contains_key(team.name()) {
+            return Err(ScoreboardError::DuplicateTeam(team.name().to_owned()));
+        }
+
+        state.teams.insert(team.name().to_owned(), team.to_owned());
+        Ok(team)
+    }
+
+    /// Returns a team by name.
+    #[must_use]
+    pub fn team(&self, name: &str) -> Option<ScoreboardTeam> {
+        self.state.read().teams.get(name).cloned()
+    }
+
+    /// Returns team names in stable order.
+    #[must_use]
+    pub fn team_names(&self) -> Vec<String> {
+        self.state.read().teams.keys().cloned().collect()
+    }
+
+    /// Returns the team name for a score holder.
+    #[must_use]
+    pub fn holder_team_name(&self, holder: &ScoreHolder) -> Option<String> {
+        self.state.read().holder_teams.get(holder.name()).cloned()
+    }
+
+    /// Adds a holder to a team, replacing any previous holder team.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the team no longer exists.
+    pub fn add_holder_to_team(
+        &self,
+        holder: &ScoreHolder,
+        team: &ScoreboardTeam,
+    ) -> Result<(), ScoreboardError> {
+        let mut state = self.state.write();
+        if !state.teams.contains_key(team.name()) {
+            return Err(ScoreboardError::MissingTeam(team.name().to_owned()));
+        }
+
+        state
+            .holder_teams
+            .insert(holder.name().to_owned(), team.name().to_owned());
+        Ok(())
     }
 
     /// Returns tracked score holder names in stable order.
@@ -237,7 +327,7 @@ impl Scoreboard {
 
 #[cfg(test)]
 mod tests {
-    use super::{ScoreHolder, Scoreboard, ScoreboardError};
+    use super::{ScoreHolder, Scoreboard, ScoreboardError, ScoreboardTeam};
 
     #[test]
     fn score_is_missing_until_set() {
@@ -279,6 +369,56 @@ mod tests {
         assert_eq!(
             scoreboard.set_score(&holder, &objective, 20),
             Err(ScoreboardError::ReadOnlyObjective("health".to_owned()))
+        );
+    }
+
+    #[test]
+    fn duplicate_team_is_rejected() {
+        let scoreboard = Scoreboard::new();
+        scoreboard
+            .add_team("red")
+            .expect("first team should be added");
+
+        assert_eq!(
+            scoreboard.add_team("red"),
+            Err(ScoreboardError::DuplicateTeam("red".to_owned()))
+        );
+    }
+
+    #[test]
+    fn holder_team_assignment_replaces_previous_team() {
+        let scoreboard = Scoreboard::new();
+        let red = scoreboard
+            .add_team("red")
+            .expect("red team should be added");
+        let blue = scoreboard
+            .add_team("blue")
+            .expect("blue team should be added");
+        let holder = ScoreHolder::new("Steve");
+
+        scoreboard
+            .add_holder_to_team(&holder, &red)
+            .expect("holder should join red team");
+        assert_eq!(scoreboard.holder_team_name(&holder).as_deref(), Some("red"));
+
+        scoreboard
+            .add_holder_to_team(&holder, &blue)
+            .expect("holder should move to blue team");
+        assert_eq!(
+            scoreboard.holder_team_name(&holder).as_deref(),
+            Some("blue")
+        );
+    }
+
+    #[test]
+    fn missing_team_rejects_holder_assignment() {
+        let scoreboard = Scoreboard::new();
+        let holder = ScoreHolder::new("Steve");
+        let missing = ScoreboardTeam::new("red");
+
+        assert_eq!(
+            scoreboard.add_holder_to_team(&holder, &missing),
+            Err(ScoreboardError::MissingTeam("red".to_owned()))
         );
     }
 }

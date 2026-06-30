@@ -52,6 +52,7 @@ const SELECTOR_OPTION_KEYS: &[&str] = &[
     "gamemode",
     "type",
     "tag",
+    "team",
     "nbt",
     "scores",
 ];
@@ -173,6 +174,10 @@ enum SelectorFilter {
         inverted: bool,
     },
     Tag {
+        value: String,
+        inverted: bool,
+    },
+    Team {
         value: String,
         inverted: bool,
     },
@@ -307,6 +312,7 @@ impl EntityTypeOptionState {
 #[derive(Clone, Debug, Default)]
 struct SelectorOptionState {
     name: InvertableOptionState,
+    team: InvertableOptionState,
     gamemode: InvertableOptionState,
     entity_type: EntityTypeOptionState,
     distance: bool,
@@ -701,6 +707,10 @@ impl SelectorFilter {
                 };
                 matches != *inverted
             }
+            Self::Team { value, inverted } => {
+                let holder_name = entity.scoreboard_name();
+                team_filter_matches(value, *inverted, &holder_name, &server.scoreboard)
+            }
             Self::Nbt { value, inverted } => entity_nbt_filter_matches(value, *inverted, entity),
             Self::Scores(scores) => {
                 let holder_name = entity.scoreboard_name();
@@ -717,6 +727,17 @@ fn entity_nbt_filter_matches(expected: &NbtCompound, inverted: bool, entity: &dy
 
 fn entity_name_filter_matches(value: &str, inverted: bool, entity: &dyn Entity) -> bool {
     (entity.plain_text_name() == value) != inverted
+}
+
+fn team_filter_matches(
+    expected: &str,
+    inverted: bool,
+    holder_name: &str,
+    scoreboard: &Scoreboard,
+) -> bool {
+    let holder = ScoreHolder::new(holder_name.to_owned());
+    let current = scoreboard.holder_team_name(&holder).unwrap_or_default();
+    (current == expected) != inverted
 }
 
 fn player_name_matches(actual: &str, expected: &str) -> bool {
@@ -829,7 +850,7 @@ pub(super) fn selector_argument_suggestions(
     }
 
     if let Some(option_start) = prefix.find('[') {
-        return selector_option_suggestions(prefix, selector_type, option_start);
+        return selector_option_suggestions(prefix, selector_type, option_start, context);
     }
 
     let open_options = format!("@{selector_type}[");
@@ -861,6 +882,7 @@ fn selector_option_suggestions(
     prefix: &str,
     selector_type: char,
     option_start: usize,
+    context: &dyn CommandInputContext,
 ) -> Vec<String> {
     if prefix[option_start + 1..].contains(']') {
         return Vec::new();
@@ -880,6 +902,7 @@ fn selector_option_suggestions(
             &value_expression_prefix,
             key.trim(),
             value_prefix,
+            context,
         );
     }
 
@@ -910,6 +933,7 @@ fn selector_option_value_suggestions(
     expression_prefix: &str,
     key: &str,
     value_prefix: &str,
+    context: &dyn CommandInputContext,
 ) -> Vec<String> {
     match key {
         "sort" => prefixed_values(
@@ -921,6 +945,7 @@ fn selector_option_value_suggestions(
             invertible_prefixed_values(expression_prefix, value_prefix, GAME_MODE_SUGGESTIONS)
         }
         "type" => entity_type_suggestions(expression_prefix, value_prefix),
+        "team" => team_suggestions(expression_prefix, value_prefix, context),
         _ => Vec::new(),
     }
 }
@@ -992,6 +1017,33 @@ fn entity_type_suggestions(expression_prefix: &str, value_prefix: &str) -> Vec<S
             })
             .map(|key| format!("{expression_prefix}{inversion}{key}")),
     );
+    suggestions
+}
+
+fn team_suggestions(
+    expression_prefix: &str,
+    value_prefix: &str,
+    context: &dyn CommandInputContext,
+) -> Vec<String> {
+    let Some(server) = context.server() else {
+        return Vec::new();
+    };
+
+    let mut suggestions = Vec::new();
+    for team_name in server.scoreboard.team_names() {
+        push_prefixed_value(
+            &mut suggestions,
+            expression_prefix,
+            value_prefix,
+            &team_name,
+        );
+        push_prefixed_value(
+            &mut suggestions,
+            expression_prefix,
+            value_prefix,
+            &format!("!{team_name}"),
+        );
+    }
     suggestions
 }
 
@@ -1344,12 +1396,9 @@ fn parse_option(
         "gamemode" => parse_gamemode_option(reader, selector, state),
         "type" => parse_type_option(reader, selector, state),
         "tag" => parse_tag_option(reader, selector),
+        "team" => parse_team_option(reader, selector, state),
         "nbt" => parse_nbt_option(reader, selector),
         "scores" => parse_scores_option(reader, selector, state, key_cursor),
-        "team" => Err(SelectorParseError::unsupported(
-            "team needs scoreboard team foundation",
-            key_cursor,
-        )),
         "advancements" => Err(SelectorParseError::unsupported(
             "advancements needs player advancement foundation",
             key_cursor,
@@ -1565,6 +1614,20 @@ fn parse_tag_option(
     selector
         .filters
         .push(SelectorFilter::Tag { value, inverted });
+    Ok(())
+}
+
+fn parse_team_option(
+    reader: &mut SelectorReader<'_>,
+    selector: &mut EntitySelector,
+    state: &mut SelectorOptionState,
+) -> Result<(), SelectorParseError> {
+    let inverted = reader.read_inversion();
+    state.team.parse_element(inverted, "team")?;
+    let value = reader.read_unquoted_string();
+    selector
+        .filters
+        .push(SelectorFilter::Team { value, inverted });
     Ok(())
 }
 
@@ -1977,7 +2040,7 @@ mod tests {
     use super::{
         IntRange, SelectorFilter, SelectorParseErrorKind, SelectorType, entity_name_filter_matches,
         entity_nbt_filter_matches, parse_selector_plan, player_name_matches,
-        read_selector_argument, score_filter_matches,
+        read_selector_argument, score_filter_matches, team_filter_matches,
     };
 
     struct SelectorNbtTestEntity {
@@ -2145,6 +2208,31 @@ mod tests {
     }
 
     #[test]
+    fn selector_parses_team_filters() {
+        let selector =
+            parse_selector_plan("@e[team=]".to_owned(), true).expect("empty team filter parses");
+        assert!(selector.filters.iter().any(
+            |filter| matches!(filter, SelectorFilter::Team { value, inverted } if value.is_empty() && !inverted)
+        ));
+
+        let selector = parse_selector_plan("@e[team=!red,team=!blue]".to_owned(), true)
+            .expect("multiple inverted team filters parse");
+        let filters = selector
+            .filters
+            .iter()
+            .filter_map(|filter| match filter {
+                SelectorFilter::Team { value, inverted } => Some((value.as_str(), *inverted)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(filters, vec![("red", true), ("blue", true)]);
+
+        let error = parse_selector_plan("@e[team=red,team=!blue]".to_owned(), true)
+            .expect_err("positive team filter cannot be followed by another value");
+        assert!(matches!(error.kind, SelectorParseErrorKind::Invalid(_)));
+    }
+
+    #[test]
     fn selector_parses_repeated_nbt_filters() {
         let selector = parse_selector_plan(
             "@e[nbt={Tags:[\"foo\"]},nbt=!{NoGravity:1b}]".to_owned(),
@@ -2242,6 +2330,29 @@ mod tests {
 
         let filters = vec![("missing".to_owned(), IntRange::exactly(1))];
         assert!(!score_filter_matches(&filters, steve.name(), &scoreboard));
+    }
+
+    #[test]
+    fn selector_team_filter_matches_scoreboard_holder() {
+        let scoreboard = Scoreboard::new();
+        let red = scoreboard.add_team("red").expect("team should be added");
+        let steve = ScoreHolder::new("Steve");
+
+        assert!(team_filter_matches("", false, steve.name(), &scoreboard));
+        assert!(!team_filter_matches(
+            "red",
+            false,
+            steve.name(),
+            &scoreboard
+        ));
+
+        scoreboard
+            .add_holder_to_team(&steve, &red)
+            .expect("holder should join team");
+        assert!(team_filter_matches("red", false, steve.name(), &scoreboard));
+        assert!(!team_filter_matches("", false, steve.name(), &scoreboard));
+        assert!(team_filter_matches("", true, steve.name(), &scoreboard));
+        assert!(!team_filter_matches("red", true, steve.name(), &scoreboard));
     }
 
     #[test]
