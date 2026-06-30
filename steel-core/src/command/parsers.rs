@@ -4,6 +4,7 @@ mod block;
 mod game;
 mod item_predicate;
 mod item_stack;
+mod loot_predicate;
 mod nbt;
 mod permission;
 mod position;
@@ -19,6 +20,7 @@ pub use block::BlockPredicateParser;
 pub use game::GameModeParser;
 pub use item_predicate::ItemPredicateParser;
 pub use item_stack::ItemStackParser;
+pub use loot_predicate::LootPredicateParser;
 pub use nbt::NbtPathParser;
 pub use permission::{PermissionGroupParser, PermissionKeyParser, PermissionRuleExpressionParser};
 pub use position::{BlockPosParser, HeightmapParser, RotationParser, Vec3Parser};
@@ -35,6 +37,7 @@ pub use world::{DomainParser, WorldParser};
 #[cfg(test)]
 mod tests {
     use glam::DVec3;
+    use simdnbt::owned::NbtTag;
     use steel_protocol::packets::game::{ArgumentType, SuggestionType};
     use steel_registry::{
         REGISTRY, data_components::vanilla_components, item_stack::ItemStack,
@@ -47,16 +50,17 @@ mod tests {
         command::{
             graph::{
                 CommandArgumentParser, CommandParseErrorKind, ItemPredicateMatchError,
-                ItemPredicateTarget, ItemPredicateTerm, ParsedArgument, ParsedArguments,
+                ItemPredicateTarget, ItemPredicateTerm, LootPredicateArgumentValue, ParsedArgument,
+                ParsedArguments,
             },
             parsers::{
                 BiomeParser, BlockPosParser, BlockPredicateParser, ComponentParser, DomainParser,
                 DoubleRangeParser, EnchantmentParser, EntityParser, EntitySummonParser,
                 GameModeParser, HeightmapParser, IntRangeParser, ItemParser, ItemPredicateParser,
-                ItemSlotsParser, ItemStackParser, NbtPathParser, ObjectiveParser,
-                PermissionKeyParser, PermissionRuleExpressionParser, PermissionTargetParser,
-                PlayerParser, RotationParser, ScoreHolderParser, StructureParser, TimeParser,
-                Vec3Parser, WorldParser,
+                ItemSlotsParser, ItemStackParser, LootPredicateParser, NbtPathParser,
+                ObjectiveParser, PermissionKeyParser, PermissionRuleExpressionParser,
+                PermissionTargetParser, PlayerParser, RotationParser, ScoreHolderParser,
+                StructureParser, TimeParser, Vec3Parser, WorldParser,
             },
             reader::CommandReader,
             requirement::{
@@ -885,6 +889,104 @@ mod tests {
         assert!(texts.contains(&"weapon.mainhand".to_owned()));
         assert!(texts.contains(&"weapon.offhand".to_owned()));
         assert!(texts.contains(&"weapon.*".to_owned()));
+    }
+
+    #[test]
+    fn loot_predicate_parser_accepts_registry_references() {
+        let mut reader = CommandReader::new("custom:test run");
+        let ParsedArgument::LootPredicate(predicate) = LootPredicateParser
+            .parse(&mut reader, &TestContext)
+            .expect("loot predicate parses")
+        else {
+            panic!("expected loot predicate");
+        };
+
+        assert!(matches!(
+            predicate,
+            LootPredicateArgumentValue::Reference(ref id) if id == &Identifier::new("custom", "test")
+        ));
+        assert_eq!(reader.remaining(), " run");
+
+        let mut reader = CommandReader::new("test run");
+        let ParsedArgument::LootPredicate(predicate) = LootPredicateParser
+            .parse(&mut reader, &TestContext)
+            .expect("default namespace predicate parses")
+        else {
+            panic!("expected loot predicate");
+        };
+
+        assert!(matches!(
+            predicate,
+            LootPredicateArgumentValue::Reference(ref id) if id == &Identifier::vanilla_static("test")
+        ));
+        assert_eq!(reader.remaining(), " run");
+    }
+
+    #[test]
+    fn loot_predicate_parser_preserves_inline_snbt() {
+        let mut reader = CommandReader::new("{condition:\"minecraft:killed_by_player\"} run");
+        let ParsedArgument::LootPredicate(predicate) = LootPredicateParser
+            .parse(&mut reader, &TestContext)
+            .expect("inline compound predicate parses")
+        else {
+            panic!("expected loot predicate");
+        };
+
+        assert!(matches!(
+            predicate,
+            LootPredicateArgumentValue::Inline(NbtTag::Compound(_))
+        ));
+        assert_eq!(reader.remaining(), " run");
+
+        let mut reader = CommandReader::new("[{condition:\"minecraft:killed_by_player\"}] run");
+        let ParsedArgument::LootPredicate(predicate) = LootPredicateParser
+            .parse(&mut reader, &TestContext)
+            .expect("inline list predicate parses")
+        else {
+            panic!("expected loot predicate");
+        };
+
+        assert!(matches!(
+            predicate,
+            LootPredicateArgumentValue::Inline(NbtTag::List(_))
+        ));
+        assert_eq!(reader.remaining(), " run");
+
+        let mut reader = CommandReader::new("true run");
+        let ParsedArgument::LootPredicate(predicate) = LootPredicateParser
+            .parse(&mut reader, &TestContext)
+            .expect("inline boolean predicate parses")
+        else {
+            panic!("expected loot predicate");
+        };
+
+        assert!(matches!(
+            predicate,
+            LootPredicateArgumentValue::Inline(NbtTag::Byte(1))
+        ));
+        assert_eq!(reader.remaining(), " run");
+    }
+
+    #[test]
+    fn loot_predicate_parser_reports_invalid_references() {
+        let mut reader = CommandReader::new("custom:test:bad");
+        let error = LootPredicateParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("invalid reference is rejected");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidLootPredicate(value) if value == "custom:test:bad"
+        ));
+    }
+
+    #[test]
+    fn loot_predicate_parser_uses_native_client_type() {
+        let (argument_type, suggestion_type) =
+            LootPredicateParser.client_parser().into_protocol_argument();
+
+        assert!(matches!(argument_type, ArgumentType::LootPredicate));
+        assert!(matches!(suggestion_type, Some(SuggestionType::AskServer)));
     }
 
     #[test]

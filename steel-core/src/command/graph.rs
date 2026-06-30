@@ -22,9 +22,9 @@ pub use arguments::{
     BiomeArgumentValue, BlockPredicateArgumentValue, CommandPermissionArgument,
     DoubleRangeArgumentValue, FromParsedArgument, IntRangeArgumentValue,
     ItemPredicateArgumentValue, ItemPredicateCondition, ItemPredicateMatchError,
-    ItemPredicateTarget, ItemPredicateTerm, ItemSlotRangeArgumentValue, ParsedArgument,
-    ParsedArgumentError, ParsedArguments, PermissionTarget, ScoreHolderArgumentValue,
-    ScoreboardObjectiveName, StructureArgumentValue,
+    ItemPredicateTarget, ItemPredicateTerm, ItemSlotRangeArgumentValue, LootPredicateArgumentValue,
+    ParsedArgument, ParsedArgumentError, ParsedArguments, PermissionTarget,
+    ScoreHolderArgumentValue, ScoreboardObjectiveName, StructureArgumentValue,
 };
 pub use builder::{CommandNodeBuilder, argument, literal};
 use node::{CommandNode, CommandNodeKind, collect_ambiguities, merge_or_push_node};
@@ -177,6 +177,8 @@ pub enum CommandParseErrorKind {
     InvalidItemSlot(String),
     /// An item predicate argument was invalid.
     InvalidItemPredicate(String),
+    /// A loot predicate argument was invalid.
+    InvalidLootPredicate(String),
     /// An enchantment argument was invalid.
     InvalidEnchantment(String),
     /// A biome argument was invalid.
@@ -265,6 +267,7 @@ impl CommandParseErrorKind {
             | Self::InvalidItemStack(_)
             | Self::InvalidItemSlot(_)
             | Self::InvalidItemPredicate(_)
+            | Self::InvalidLootPredicate(_)
             | Self::InvalidEnchantment(_)
             | Self::InvalidBiome(_)
             | Self::InvalidBlockPredicate(_)

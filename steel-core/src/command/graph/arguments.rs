@@ -73,6 +73,8 @@ pub enum ParsedArgument {
     ItemSlots(ItemSlotRangeArgumentValue),
     /// Item predicate argument.
     ItemPredicate(ItemPredicateArgumentValue),
+    /// Loot predicate argument.
+    LootPredicate(LootPredicateArgumentValue),
     /// Enchantment argument.
     Enchantment(EnchantmentRef),
     /// Biome or biome tag argument.
@@ -172,6 +174,15 @@ pub struct ItemSlotRangeArgumentValue {
 pub struct ItemPredicateArgumentValue {
     target: ItemPredicateTarget,
     conditions: Vec<ItemPredicateCondition>,
+}
+
+/// Loot predicate command argument value.
+#[derive(Clone, Debug)]
+pub enum LootPredicateArgumentValue {
+    /// A named predicate in the predicate registry.
+    Reference(Identifier),
+    /// An inline predicate value, decoded by the runtime evaluator.
+    Inline(NbtTag),
 }
 
 /// Item predicate target selector.
@@ -1419,6 +1430,7 @@ impl fmt::Debug for ParsedArgument {
             Self::ItemStack(value) => f.debug_tuple("ItemStack").field(value).finish(),
             Self::ItemSlots(value) => f.debug_tuple("ItemSlots").field(value).finish(),
             Self::ItemPredicate(value) => f.debug_tuple("ItemPredicate").field(value).finish(),
+            Self::LootPredicate(value) => f.debug_tuple("LootPredicate").field(value).finish(),
             Self::Enchantment(value) => f.debug_tuple("Enchantment").field(&value.key).finish(),
             Self::Biome(value) => f.debug_tuple("Biome").field(value).finish(),
             Self::BlockPredicate(value) => f.debug_tuple("BlockPredicate").field(value).finish(),
@@ -1508,6 +1520,7 @@ impl ParsedArgument {
             Self::ItemStack(_) => "item_stack",
             Self::ItemSlots(_) => "item_slots",
             Self::ItemPredicate(_) => "item_predicate",
+            Self::LootPredicate(_) => "loot_predicate",
             Self::Enchantment(_) => "enchantment",
             Self::Biome(_) => "biome",
             Self::BlockPredicate(_) => "block_predicate",
@@ -1823,6 +1836,17 @@ impl FromParsedArgument for ItemPredicateArgumentValue {
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
         let ParsedArgument::ItemPredicate(value) = value else {
+            return None;
+        };
+        Some(value.clone())
+    }
+}
+
+impl FromParsedArgument for LootPredicateArgumentValue {
+    const TYPE_NAME: &'static str = "loot_predicate";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::LootPredicate(value) = value else {
             return None;
         };
         Some(value.clone())

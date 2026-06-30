@@ -106,6 +106,43 @@ pub enum ScoreboardTarget {
 }
 
 impl NumberProvider {
+    /// Get a value from this provider, reporting context-dependent providers
+    /// that Steel cannot evaluate without silently substituting a fallback.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for provider types whose backing runtime foundation is
+    /// not available to the checked evaluator.
+    pub fn try_get<R: rand::Rng>(
+        &self,
+        rng: &mut R,
+        ctx: Option<&LootContextRef<'_>>,
+    ) -> Result<f32, LootConditionEvaluationError> {
+        match self {
+            Self::Constant(v) => Ok(*v),
+            Self::Uniform { min, max } => Ok(rng.random_range(*min..=*max)),
+            Self::Binomial { n, p } => {
+                let mut count = 0;
+                for _ in 0..*n {
+                    if rng.random::<f32>() < *p {
+                        count += 1;
+                    }
+                }
+                Ok(count as f32)
+            }
+            Self::Score { .. } => Err(LootConditionEvaluationError::UnsupportedNumberProvider(
+                "score",
+            )),
+            Self::Storage { .. } => Err(LootConditionEvaluationError::UnsupportedNumberProvider(
+                "storage",
+            )),
+            Self::EnchantmentLevel { enchantment } => Ok(ctx
+                .and_then(|c| c.tool)
+                .map(|t| t.get_enchantment_level(enchantment) as f32)
+                .unwrap_or(0.0)),
+        }
+    }
+
     /// Get a value from this provider using the given RNG.
     pub fn get<R: rand::Rng>(&self, rng: &mut R, ctx: Option<&LootContextRef<'_>>) -> f32 {
         match self {
@@ -179,6 +216,32 @@ pub struct NumberProviderRange {
 }
 
 impl NumberProviderRange {
+    /// Check if a value is within this range without silently substituting
+    /// unsupported number providers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a range bound depends on a provider Steel cannot
+    /// evaluate in checked mode.
+    pub fn try_test<R: rand::Rng>(
+        &self,
+        value: f32,
+        rng: &mut R,
+        ctx: Option<&LootContextRef<'_>>,
+    ) -> Result<bool, LootConditionEvaluationError> {
+        if let Some(min) = &self.min
+            && value < min.try_get(rng, ctx)?
+        {
+            return Ok(false);
+        }
+        if let Some(max) = &self.max
+            && value > max.try_get(rng, ctx)?
+        {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
     /// Check if a value is within this range.
     pub fn test(&self, value: f32, rng: &mut impl rand::Rng) -> bool {
         if let Some(min) = &self.min
@@ -558,6 +621,19 @@ pub enum LootCondition {
     Reference(Identifier),
 }
 
+/// Error returned by checked loot condition evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LootConditionEvaluationError {
+    /// The condition needs context that the caller did not provide.
+    MissingContext(&'static str),
+    /// The condition type needs a runtime foundation Steel does not expose to
+    /// the checked evaluator yet.
+    UnsupportedCondition(&'static str),
+    /// The number provider type needs a runtime foundation Steel does not
+    /// expose to the checked evaluator yet.
+    UnsupportedNumberProvider(&'static str),
+}
+
 /// Enchanted chance calculation method.
 #[derive(Debug, Clone, Copy)]
 pub enum EnchantedChance {
@@ -649,6 +725,154 @@ pub struct DamageTagPredicate {
 }
 
 impl LootCondition {
+    /// Test if this condition passes without silently accepting unsupported
+    /// condition types.
+    ///
+    /// Use this for command-visible predicates where permissive fallbacks would
+    /// be observable. The existing [`Self::test`] method is retained for the
+    /// current generated loot-table path until those TODO-backed semantics are
+    /// replaced end to end.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the condition or one of its number providers needs
+    /// a runtime foundation Steel cannot evaluate correctly yet.
+    pub fn try_test<R: rand::Rng>(
+        &self,
+        ctx: &mut LootContext<'_, R>,
+    ) -> Result<bool, LootConditionEvaluationError> {
+        match self {
+            LootCondition::SurvivesExplosion => {
+                if let Some(radius) = ctx.explosion_radius {
+                    Ok(ctx.rng.random::<f32>() <= (1.0 / radius))
+                } else {
+                    Ok(true)
+                }
+            }
+            LootCondition::BlockStateProperty { block, properties } => {
+                let Some(state) = ctx.block_state else {
+                    return Ok(false);
+                };
+                let state_block = state.get_block();
+                if state_block.key != *block {
+                    return Ok(false);
+                }
+                for prop in *properties {
+                    let Some(value) = state.get_property_str(prop.name) else {
+                        return Ok(false);
+                    };
+                    if value != prop.value {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            LootCondition::RandomChance(chance) => Ok(ctx.rng.random::<f32>() < *chance),
+            LootCondition::RandomChanceWithEnchantedBonus {
+                enchantment,
+                unenchanted_chance,
+                enchanted_chance,
+            } => {
+                let level = ctx.get_enchantment_level_by_id(enchantment);
+                let effective_chance = if level > 0 {
+                    match enchanted_chance {
+                        EnchantedChance::Constant(c) => *c,
+                        EnchantedChance::Linear {
+                            base,
+                            per_level_above_first,
+                        } => base + per_level_above_first * (level - 1) as f32,
+                    }
+                } else {
+                    *unenchanted_chance
+                };
+                Ok(ctx.rng.random::<f32>() < effective_chance)
+            }
+            LootCondition::MatchTool(predicate) => Ok(if let Some(tool) = ctx.tool {
+                predicate.test(tool, ctx)
+            } else {
+                matches!(predicate, ToolPredicate::Any)
+            }),
+            LootCondition::TableBonus {
+                enchantment,
+                chances,
+            } => {
+                let level = ctx.get_enchantment_level_by_id(enchantment);
+                let index = (level as usize).min(chances.len().saturating_sub(1));
+                let chance = chances.get(index).copied().unwrap_or(0.0);
+                Ok(ctx.rng.random::<f32>() < chance)
+            }
+            LootCondition::Inverted(inner) => Ok(!inner.try_test(ctx)?),
+            LootCondition::AnyOf(conditions) => {
+                for condition in *conditions {
+                    if condition.try_test(ctx)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            LootCondition::AllOf(conditions) => {
+                for condition in *conditions {
+                    if !condition.try_test(ctx)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            LootCondition::KilledByPlayer => Ok(ctx.killed_by_player),
+            LootCondition::EntityProperties { entity, predicate } => {
+                let Some(entity) = ctx.get_entity(*entity) else {
+                    return Ok(false);
+                };
+                Ok(predicate.test(entity, ctx))
+            }
+            LootCondition::DamageSourceProperties { predicate } => Ok(predicate.test(ctx)),
+            LootCondition::LocationCheck { .. } => Err(
+                LootConditionEvaluationError::UnsupportedCondition("location_check"),
+            ),
+            LootCondition::WeatherCheck {
+                raining,
+                thundering,
+            } => {
+                let Some(weather) = ctx.weather else {
+                    return Err(LootConditionEvaluationError::MissingContext("weather"));
+                };
+                Ok(raining.is_none_or(|r| r == weather.raining)
+                    && thundering.is_none_or(|t| t == weather.thundering))
+            }
+            LootCondition::TimeCheck { value, period } => {
+                let Some(game_time) = ctx.game_time else {
+                    return Err(LootConditionEvaluationError::MissingContext("game_time"));
+                };
+                let time = if let Some(p) = period {
+                    game_time % p
+                } else {
+                    game_time
+                };
+                let ctx_ref = LootContextRef { tool: ctx.tool };
+                value.try_test(time as f32, ctx.rng, Some(&ctx_ref))
+            }
+            LootCondition::ValueCheck { value, range } => {
+                let ctx_ref = LootContextRef { tool: ctx.tool };
+                let value = value.try_get(ctx.rng, Some(&ctx_ref))?;
+                range.try_test(value, ctx.rng, Some(&ctx_ref))
+            }
+            LootCondition::EnchantmentActiveCheck {
+                enchantment,
+                active,
+            } => {
+                let level = ctx.get_enchantment_level_by_id(enchantment);
+                let is_active = level > 0;
+                Ok(is_active == *active)
+            }
+            LootCondition::EntityScores { .. } => Err(
+                LootConditionEvaluationError::UnsupportedCondition("entity_scores"),
+            ),
+            LootCondition::Reference(_) => Err(LootConditionEvaluationError::UnsupportedCondition(
+                "reference",
+            )),
+        }
+    }
+
     /// Test if this condition passes given the loot context.
     pub fn test<R: rand::Rng>(&self, ctx: &mut LootContext<'_, R>) -> bool {
         match self {
@@ -2031,6 +2255,106 @@ mod tests {
 
     fn init_test_registries() {
         init_test_registry();
+    }
+
+    #[test]
+    fn checked_condition_evaluation_reports_unsupported_conditions() {
+        init_test_registries();
+        let mut rng = test_rng();
+        let mut ctx = LootContext::new(&mut rng);
+
+        let condition = LootCondition::Reference(Identifier::vanilla_static("missing"));
+        assert_eq!(
+            condition.try_test(&mut ctx),
+            Err(LootConditionEvaluationError::UnsupportedCondition(
+                "reference"
+            ))
+        );
+
+        let condition = LootCondition::EntityScores {
+            entity: LootContextEntity::This,
+            scores: &[],
+        };
+        assert_eq!(
+            condition.try_test(&mut ctx),
+            Err(LootConditionEvaluationError::UnsupportedCondition(
+                "entity_scores"
+            ))
+        );
+
+        let condition = LootCondition::LocationCheck {
+            offset_x: 0,
+            offset_y: 0,
+            offset_z: 0,
+            predicate: LocationPredicate { block: None },
+        };
+        assert_eq!(
+            condition.try_test(&mut ctx),
+            Err(LootConditionEvaluationError::UnsupportedCondition(
+                "location_check"
+            ))
+        );
+    }
+
+    #[test]
+    fn checked_condition_evaluation_reports_unsupported_number_providers() {
+        init_test_registries();
+        let mut rng = test_rng();
+        let mut ctx = LootContext::new(&mut rng);
+
+        let condition = LootCondition::ValueCheck {
+            value: NumberProvider::Score {
+                target: ScoreboardTarget::Fixed("Steve"),
+                score: "kills",
+                scale: 1.0,
+            },
+            range: NumberProviderRange::at_least(1.0),
+        };
+
+        assert_eq!(
+            condition.try_test(&mut ctx),
+            Err(LootConditionEvaluationError::UnsupportedNumberProvider(
+                "score"
+            ))
+        );
+    }
+
+    #[test]
+    fn checked_condition_evaluation_preserves_supported_condition_results() {
+        init_test_registries();
+        let mut rng = test_rng();
+        let mut ctx = LootContext::new(&mut rng).with_killed_by_player(true);
+        assert_eq!(LootCondition::KilledByPlayer.try_test(&mut ctx), Ok(true));
+
+        let mut rng = test_rng();
+        let mut ctx = LootContext::new(&mut rng);
+        assert_eq!(LootCondition::KilledByPlayer.try_test(&mut ctx), Ok(false));
+
+        let condition = LootCondition::WeatherCheck {
+            raining: Some(false),
+            thundering: Some(false),
+        };
+        assert_eq!(
+            condition.try_test(&mut ctx),
+            Err(LootConditionEvaluationError::MissingContext("weather"))
+        );
+
+        let mut rng = test_rng();
+        let mut ctx = LootContext::new(&mut rng).with_weather(WeatherState::default());
+        assert_eq!(condition.try_test(&mut ctx), Ok(true));
+
+        let condition = LootCondition::TimeCheck {
+            value: NumberProviderRange::between(10.0, 20.0),
+            period: None,
+        };
+        assert_eq!(
+            condition.try_test(&mut ctx),
+            Err(LootConditionEvaluationError::MissingContext("game_time"))
+        );
+
+        let mut rng = test_rng();
+        let mut ctx = LootContext::new(&mut rng).with_game_time(15);
+        assert_eq!(condition.try_test(&mut ctx), Ok(true));
     }
 
     #[test]
