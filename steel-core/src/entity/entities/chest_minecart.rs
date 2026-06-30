@@ -10,10 +10,12 @@ use simdnbt::owned::{NbtCompound, NbtList, NbtTag};
 use steel_macros::entity_behavior;
 use steel_registry::entity_type::EntityTypeRef;
 use steel_registry::item_stack::ItemStack;
+use steel_registry::{REGISTRY, RegistryExt};
 use steel_utils::Identifier;
 use steel_utils::locks::SyncMutex;
 
 use crate::entity::{Entity, EntityBase, EntityBaseLoad, EntityCommandItemSlotResult};
+use crate::inventory::loot::fill_slots_from_loot_table;
 use crate::world::World;
 
 const CHEST_MINECART_CONTAINER_SIZE: usize = 36;
@@ -113,6 +115,26 @@ impl ChestMinecartEntity {
             }
         }
     }
+
+    fn unpack_loot_table(state: &mut ChestMinecartState, origin: DVec3) -> bool {
+        let Some(loot_table_key) = state.loot_table.take() else {
+            return true;
+        };
+        let Some(loot_table) = REGISTRY.loot_tables.by_key(&loot_table_key) else {
+            state.loot_table = Some(loot_table_key);
+            return false;
+        };
+
+        fill_slots_from_loot_table(
+            &mut state.items,
+            loot_table,
+            state.loot_table_seed,
+            Some(origin),
+            0.0,
+        );
+        state.loot_table_seed = 0;
+        true
+    }
 }
 
 impl Entity for ChestMinecartEntity {
@@ -180,8 +202,9 @@ impl Entity for ChestMinecartEntity {
             return EntityCommandItemSlotResult::Missing;
         }
 
-        let state = self.state.lock();
-        if state.loot_table.is_some() {
+        let origin = self.position();
+        let mut state = self.state.lock();
+        if !Self::unpack_loot_table(&mut state, origin) {
             return EntityCommandItemSlotResult::Unsupported;
         }
 
@@ -315,7 +338,8 @@ mod tests {
     }
 
     #[test]
-    fn chest_minecart_defers_pending_loot_table_slots() {
+    fn chest_minecart_unpacks_pending_loot_table_before_command_slots() {
+        init_test_registry();
         let minecart = ChestMinecartEntity::new(
             &vanilla_entities::CHEST_MINECART,
             1,
@@ -327,10 +351,35 @@ mod tests {
             42,
         );
 
-        let result = minecart.with_command_item_slot(0, &mut |_| {
-            panic!("pending loot table should not expose an item before loot unpacking exists");
-        });
+        let result = minecart.with_command_item_slot(0, &mut |_| {});
+        assert_eq!(result, EntityCommandItemSlotResult::Found);
+
+        let mut nbt = NbtCompound::new();
+        minecart.save_additional(&mut nbt);
+        assert!(nbt.get("LootTable").is_none());
+        assert!(matches!(nbt.get("Items"), Some(NbtTag::List(_))));
+    }
+
+    #[test]
+    fn chest_minecart_missing_loot_table_remains_unsupported() {
+        init_test_registry();
+        let minecart = ChestMinecartEntity::new(
+            &vanilla_entities::CHEST_MINECART,
+            1,
+            DVec3::new(1.5, 2.5, 3.5),
+            Weak::new(),
+        );
+        minecart.set_loot_table(Identifier::new_static("steel", "missing"), 42);
+
+        let result = minecart.with_command_item_slot(0, &mut |_| {});
         assert_eq!(result, EntityCommandItemSlotResult::Unsupported);
+
+        let mut nbt = NbtCompound::new();
+        minecart.save_additional(&mut nbt);
+        assert_eq!(
+            nbt.string("LootTable").map(ToString::to_string),
+            Some("steel:missing".to_owned())
+        );
     }
 
     #[test]

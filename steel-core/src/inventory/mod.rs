@@ -10,6 +10,7 @@ pub mod crafting_menu;
 pub mod equipment;
 pub mod inventory_menu;
 pub mod lock;
+pub(crate) mod loot;
 pub mod menu;
 pub mod menu_provider;
 pub mod recipe_manager;
