@@ -12,7 +12,7 @@ use crate::{
             CommandParseErrorKind, DoubleRangeArgumentValue, IntRangeArgumentValue, ParsedArgument,
             ParsedArguments, ScoreHolderArgumentValue,
         },
-        parsers::EntityParser,
+        parsers::{EntityParser, selector::selector_argument_suggestions},
         reader::{CommandReader, StringMode},
         requirement::CommandInputContext,
     },
@@ -88,13 +88,14 @@ impl CommandArgumentParser for ScoreHolderParser {
     ) -> Vec<SuggestionEntry> {
         let mut suggestions = BTreeSet::new();
         if self.multiple {
-            suggestions.insert("@a".to_owned());
-            suggestions.insert("@e".to_owned());
-            suggestions.insert("*".to_owned());
+            suggestions.extend(("*".starts_with(prefix)).then_some("*".to_owned()));
         }
-        suggestions.insert("@p".to_owned());
-        suggestions.insert("@r".to_owned());
-        suggestions.insert("@s".to_owned());
+        suggestions.extend(selector_argument_suggestions(
+            prefix,
+            false,
+            !self.multiple,
+            context,
+        ));
 
         if let Some(server) = context.server() {
             for player in server.get_players() {

@@ -252,6 +252,34 @@ mod tests {
     }
 
     #[test]
+    fn score_holder_suggestions_respect_selector_permission() {
+        let denied = ScoreHolderParser::multiple()
+            .suggest("@", &ParsedArguments::default(), &TestContext)
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+        assert!(denied.is_empty());
+
+        let allowed = ScoreHolderParser::multiple()
+            .suggest("@", &ParsedArguments::default(), &SelectorPermissionContext)
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+        assert!(allowed.iter().any(|text| text == "@a"));
+        assert!(allowed.iter().any(|text| text == "@e"));
+        assert!(allowed.iter().any(|text| text == "@n"));
+
+        let single = ScoreHolderParser::one()
+            .suggest("@", &ParsedArguments::default(), &SelectorPermissionContext)
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+        assert!(!single.iter().any(|text| text == "@a"));
+        assert!(!single.iter().any(|text| text == "@e"));
+        assert!(single.iter().any(|text| text == "@n"));
+    }
+
+    #[test]
     fn int_range_parser_accepts_vanilla_range_forms() {
         for (input, matching, missing) in [
             ("5", 5, 4),
