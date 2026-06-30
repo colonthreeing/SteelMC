@@ -11,11 +11,11 @@ use crate::{
     inventory::container::Container,
 };
 
-use super::{Player, abilities::Abilities};
+use super::{Player, abilities::Abilities, player_inventory::EnderChestInventory};
 
 /// Current data version for player saves.
 /// Increment when making breaking changes to the format.
-pub const PLAYER_DATA_VERSION: i32 = 4;
+pub const PLAYER_DATA_VERSION: i32 = 5;
 
 /// Persistent player data saved by Steel's storage backend.
 ///
@@ -67,6 +67,9 @@ pub struct PersistentPlayerData {
 
     /// Inventory items with slot indices.
     pub inventory: Vec<PersistentSlot>,
+
+    /// Ender chest items with slot indices.
+    pub ender_chest: Vec<PersistentSlot>,
 
     /// Currently selected hotbar slot (0-8).
     pub selected_slot: i32,
@@ -156,15 +159,25 @@ impl PersistentPlayerData {
         let fire_freeze = player.fire_freeze_state();
         let abilities = player.abilities.lock();
         let inventory = player.inventory.lock();
+        let ender_chest = player.ender_chest.lock();
         let food_data = player.food_data.lock();
 
-        // Collect non-empty inventory slots
         let mut slots = Vec::new();
-        // Main inventory (0-35) and equipment (36-42)
         for slot in 0..43 {
             let item = inventory.get_item(slot);
             if !item.is_empty() {
                 slots.push(PersistentSlot {
+                    slot: slot as i8,
+                    item: item.clone(),
+                });
+            }
+        }
+
+        let mut ender_chest_slots = Vec::new();
+        for slot in 0..EnderChestInventory::SIZE {
+            let item = ender_chest.get_item(slot);
+            if !item.is_empty() {
+                ender_chest_slots.push(PersistentSlot {
                     slot: slot as i8,
                     item: item.clone(),
                 });
@@ -209,6 +222,7 @@ impl PersistentPlayerData {
                 walking_speed: abilities.walking_speed,
             },
             inventory: slots,
+            ender_chest: ender_chest_slots,
             selected_slot: i32::from(inventory.get_selected_slot()),
             world: player.get_world().key.to_string(),
             food_level: food_data.food_level,
@@ -343,20 +357,32 @@ impl PersistentPlayerData {
         // Inventory
         {
             let mut inventory = player.inventory.lock();
-            // Clear existing inventory first
             for slot in 0..43 {
                 inventory.set_item(slot, ItemStack::empty());
             }
-            // Restore saved items
             for slot_data in &self.inventory {
-                let slot_index = slot_data.slot as usize;
-                if slot_index < 43 {
+                if let Ok(slot_index) = usize::try_from(slot_data.slot)
+                    && slot_index < 43
+                {
                     inventory.set_item(slot_index, slot_data.item.clone());
                 }
             }
-            // Restore selected slot
             let selected = self.selected_slot.clamp(0, 8) as u8;
             inventory.set_selected_slot(selected);
+        }
+
+        {
+            let mut ender_chest = player.ender_chest.lock();
+            for slot in 0..EnderChestInventory::SIZE {
+                ender_chest.set_item(slot, ItemStack::empty());
+            }
+            for slot_data in &self.ender_chest {
+                if let Ok(slot_index) = usize::try_from(slot_data.slot)
+                    && slot_index < EnderChestInventory::SIZE
+                {
+                    ender_chest.set_item(slot_index, slot_data.item.clone());
+                }
+            }
         }
 
         // Food data

@@ -33,7 +33,7 @@ use steel_utils::locks::{AsyncMutex, SyncMutex};
 const PLAYER_MAGIC: [u8; 4] = *b"STLP";
 const GLOBAL_MAGIC: [u8; 4] = *b"STLG";
 const KNOWN_PLAYERS_MAGIC: [u8; 4] = *b"STLK";
-const PLAYER_STORAGE_VERSION: u16 = 6;
+const PLAYER_STORAGE_VERSION: u16 = 7;
 const GLOBAL_STORAGE_VERSION: u16 = 6;
 const KNOWN_PLAYERS_STORAGE_VERSION: u16 = 1;
 const GLOBAL_PLAYER_DATA_VERSION: i32 = 6;
@@ -84,6 +84,7 @@ struct PlayerDataFile {
     prev_game_mode: Option<i32>,
     abilities: AbilitiesFile,
     inventory: Vec<SlotFile>,
+    ender_chest: Vec<SlotFile>,
     selected_slot: i32,
     world: String,
     food_level: i32,
@@ -886,16 +887,30 @@ impl KnownPlayersFile {
     }
 }
 
+fn slots_to_file(slots: &[PersistentSlot]) -> io::Result<Vec<SlotFile>> {
+    let mut file_slots = Vec::with_capacity(slots.len());
+    for slot in slots {
+        file_slots.push(SlotFile {
+            slot: slot.slot,
+            item_nbt: item_to_nbt_bytes(&slot.item)?,
+        });
+    }
+    Ok(file_slots)
+}
+
+fn slots_from_file(slots: Vec<SlotFile>) -> io::Result<Vec<PersistentSlot>> {
+    let mut persistent_slots = Vec::with_capacity(slots.len());
+    for slot in slots {
+        persistent_slots.push(PersistentSlot {
+            slot: slot.slot,
+            item: item_from_nbt_bytes(&slot.item_nbt)?,
+        });
+    }
+    Ok(persistent_slots)
+}
+
 impl PlayerDataFile {
     fn from_persistent(data: &PersistentPlayerData) -> io::Result<Self> {
-        let mut inventory = Vec::with_capacity(data.inventory.len());
-        for slot in &data.inventory {
-            inventory.push(SlotFile {
-                slot: slot.slot,
-                item_nbt: item_to_nbt_bytes(&slot.item)?,
-            });
-        }
-
         Ok(Self {
             data_version: data.data_version,
             pos: data.pos,
@@ -920,7 +935,8 @@ impl PlayerDataFile {
                 flying_speed: data.abilities.flying_speed,
                 walking_speed: data.abilities.walking_speed,
             },
-            inventory,
+            inventory: slots_to_file(&data.inventory)?,
+            ender_chest: slots_to_file(&data.ender_chest)?,
             selected_slot: data.selected_slot,
             world: data.world.clone(),
             food_level: data.food_level,
@@ -952,13 +968,8 @@ impl PlayerDataFile {
             ));
         }
 
-        let mut inventory = Vec::with_capacity(self.inventory.len());
-        for slot in self.inventory {
-            inventory.push(PersistentSlot {
-                slot: slot.slot,
-                item: item_from_nbt_bytes(&slot.item_nbt)?,
-            });
-        }
+        let inventory = slots_from_file(self.inventory)?;
+        let ender_chest = slots_from_file(self.ender_chest)?;
 
         Ok(PersistentPlayerData {
             pos: self.pos,
@@ -984,6 +995,7 @@ impl PlayerDataFile {
                 walking_speed: self.abilities.walking_speed,
             },
             inventory,
+            ender_chest,
             selected_slot: self.selected_slot,
             world: self.world,
             food_level: self.food_level,
@@ -1117,6 +1129,8 @@ mod tests {
 
     use super::*;
     use crate::entity::DEFAULT_MAX_AIR_SUPPLY;
+    use steel_registry::test_support::init_test_registry;
+    use steel_registry::vanilla_items::ITEMS;
 
     fn temp_storage_root(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -1151,6 +1165,7 @@ mod tests {
                 walking_speed: 0.1,
             },
             inventory: Vec::new(),
+            ender_chest: Vec::new(),
             selected_slot: 4,
             world: "lobby:void".to_owned(),
             food_level: 20,
@@ -1209,6 +1224,31 @@ mod tests {
         assert_eq!(decoded.game_mode, 2);
         assert_eq!(decoded.selected_slot, 4);
         assert_eq!(decoded.experience_level, 7);
+    }
+
+    #[test]
+    fn player_file_roundtrip_preserves_ender_chest() {
+        init_test_registry();
+
+        let mut file = sample_player_file(PLAYER_DATA_VERSION);
+        file.ender_chest = vec![SlotFile {
+            slot: 5,
+            item_nbt: item_to_nbt_bytes(&ItemStack::with_count(&ITEMS.stone, 2))
+                .expect("item stack should encode"),
+        }];
+
+        let encoded = encode_player_file(&file).expect("player file should encode");
+        let decoded = decode_player_file(&encoded).expect("player file should decode");
+        let persistent = decoded
+            .into_persistent()
+            .expect("player file should convert");
+
+        assert_eq!(persistent.ender_chest.len(), 1);
+        assert_eq!(persistent.ender_chest[0].slot, 5);
+        assert_eq!(
+            persistent.ender_chest[0].item,
+            ItemStack::with_count(&ITEMS.stone, 2)
+        );
     }
 
     #[test]

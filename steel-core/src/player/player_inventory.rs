@@ -85,6 +85,30 @@ pub struct PlayerInventory {
     times_changed: u32,
 }
 
+/// Player ender-chest contents.
+pub struct EnderChestInventory {
+    items: [ItemStack; Self::SIZE],
+}
+
+impl EnderChestInventory {
+    /// Vanilla player ender chest slot count.
+    pub const SIZE: usize = 27;
+
+    /// Creates an empty ender chest inventory.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            items: array::from_fn(|_| ItemStack::empty()),
+        }
+    }
+}
+
+impl Default for EnderChestInventory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PlayerInventory {
     /// Number of main inventory slots.
     pub const INVENTORY_SIZE: usize = 36;
@@ -733,7 +757,8 @@ impl Player {
         }
 
         if matches!(slot, 200..=226) {
-            return EntityCommandItemSlotResult::Unsupported;
+            let ender_chest = self.ender_chest.lock();
+            return visit_player_ender_chest_command_item_slot(&ender_chest, slot, visitor);
         }
 
         let inventory = self.inventory.lock();
@@ -1221,6 +1246,26 @@ fn visit_player_inventory_command_item_slot(
     EntityCommandItemSlotResult::Found
 }
 
+fn visit_player_ender_chest_command_item_slot(
+    ender_chest: &EnderChestInventory,
+    slot: i32,
+    visitor: &mut dyn FnMut(&ItemStack),
+) -> EntityCommandItemSlotResult {
+    let Some(ender_slot) = slot
+        .checked_sub(200)
+        .and_then(|slot| usize::try_from(slot).ok())
+    else {
+        return EntityCommandItemSlotResult::Missing;
+    };
+
+    if ender_slot >= EnderChestInventory::SIZE {
+        return EntityCommandItemSlotResult::Missing;
+    }
+
+    visitor(ender_chest.get_item(ender_slot));
+    EntityCommandItemSlotResult::Found
+}
+
 fn visit_player_menu_command_item_slot(
     menu: &InventoryMenu,
     slot: i32,
@@ -1446,6 +1491,32 @@ impl Container for PlayerInventory {
     }
 }
 
+impl Container for EnderChestInventory {
+    fn get_container_size(&self) -> usize {
+        Self::SIZE
+    }
+
+    fn get_item(&self, slot: usize) -> &ItemStack {
+        self.items.get(slot).unwrap_or(&EMPTY_ITEM)
+    }
+
+    fn get_item_mut(&mut self, slot: usize) -> &mut ItemStack {
+        &mut self.items[slot]
+    }
+
+    fn set_item(&mut self, slot: usize, stack: ItemStack) {
+        if let Some(item) = self.items.get_mut(slot) {
+            *item = stack;
+            self.set_changed();
+        }
+    }
+
+    fn set_changed(&mut self) {
+        // Ender-chest persistence is currently captured from live player state
+        // when the player is saved.
+    }
+}
+
 impl PlayerInventory {
     const fn mark_main_hand_dirty(&mut self) {
         self.dirty_main_hand = true;
@@ -1574,6 +1645,32 @@ mod tests {
         });
         assert_eq!(result, EntityCommandItemSlotResult::Found);
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn command_item_slot_reads_player_ender_chest() {
+        init_test_registry();
+
+        let mut ender_chest = EnderChestInventory::new();
+        ender_chest.set_item(0, ItemStack::with_count(&ITEMS.stone, 4));
+        ender_chest.set_item(26, ItemStack::with_count(&ITEMS.oak_log, 2));
+
+        let mut count = 0;
+        let result = visit_player_ender_chest_command_item_slot(&ender_chest, 200, &mut |item| {
+            count = item.count();
+        });
+        assert_eq!(result, EntityCommandItemSlotResult::Found);
+        assert_eq!(count, 4);
+
+        let mut count = 0;
+        let result = visit_player_ender_chest_command_item_slot(&ender_chest, 226, &mut |item| {
+            count = item.count();
+        });
+        assert_eq!(result, EntityCommandItemSlotResult::Found);
+        assert_eq!(count, 2);
+
+        let result = visit_player_ender_chest_command_item_slot(&ender_chest, 227, &mut |_| {});
+        assert_eq!(result, EntityCommandItemSlotResult::Missing);
     }
 
     #[test]
