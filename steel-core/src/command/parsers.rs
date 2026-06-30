@@ -37,12 +37,11 @@ pub use world::{DomainParser, WorldParser};
 #[cfg(test)]
 mod tests {
     use glam::DVec3;
-    use simdnbt::owned::NbtTag;
     use steel_protocol::packets::game::{ArgumentType, SuggestionType};
     use steel_registry::{
         REGISTRY, data_components::vanilla_components, item_stack::ItemStack,
-        test_support::init_test_registry, vanilla_attributes, vanilla_biomes, vanilla_blocks,
-        vanilla_enchantments, vanilla_entities, vanilla_items,
+        loot_table::RuntimeLootCondition, test_support::init_test_registry, vanilla_attributes,
+        vanilla_biomes, vanilla_blocks, vanilla_enchantments, vanilla_entities, vanilla_items,
     };
 
     use crate::{
@@ -102,6 +101,24 @@ mod tests {
     }
 
     impl CommandInputContext for SelectorPermissionContext {}
+
+    struct SelectorOnlyPermissionContext;
+
+    impl RequirementContext for SelectorOnlyPermissionContext {
+        fn source_kind(&self) -> CommandSourceKind {
+            CommandSourceKind::Player
+        }
+
+        fn has_permission(&self, permission: &PermissionExpr) -> bool {
+            matches!(
+                permission,
+                PermissionExpr::Key(key)
+                    if key.as_str() == crate::command::ENTITY_SELECTOR_PERMISSION_KEY
+            )
+        }
+    }
+
+    impl CommandInputContext for SelectorOnlyPermissionContext {}
 
     struct CatalogContext {
         catalog: PermissionCatalog,
@@ -632,7 +649,32 @@ mod tests {
 
         assert!(texts.iter().any(|text| text == "@e[type="));
         assert!(texts.iter().any(|text| text == "@e[sort="));
-        assert!(!texts.iter().any(|text| text == "@e[predicate="));
+        assert!(texts.iter().any(|text| text == "@e[predicate="));
+    }
+
+    #[test]
+    fn entity_parser_hides_selector_options_without_advanced_permission() {
+        let root_suggestions = EntityParser::multiple()
+            .suggest(
+                "@",
+                &ParsedArguments::default(),
+                &SelectorOnlyPermissionContext,
+            )
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+        let option_suggestions = EntityParser::multiple()
+            .suggest(
+                "@e[",
+                &ParsedArguments::default(),
+                &SelectorOnlyPermissionContext,
+            )
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+
+        assert!(root_suggestions.iter().any(|text| text == "@e"));
+        assert!(option_suggestions.is_empty());
     }
 
     #[test]
@@ -923,7 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn loot_predicate_parser_preserves_inline_snbt() {
+    fn loot_predicate_parser_decodes_inline_conditions() {
         let mut reader = CommandReader::new("{condition:\"minecraft:killed_by_player\"} run");
         let ParsedArgument::LootPredicate(predicate) = LootPredicateParser
             .parse(&mut reader, &TestContext)
@@ -934,7 +976,7 @@ mod tests {
 
         assert!(matches!(
             predicate,
-            LootPredicateArgumentValue::Inline(NbtTag::Compound(_))
+            LootPredicateArgumentValue::Inline(RuntimeLootCondition::KilledByPlayer)
         ));
         assert_eq!(reader.remaining(), " run");
 
@@ -948,23 +990,22 @@ mod tests {
 
         assert!(matches!(
             predicate,
-            LootPredicateArgumentValue::Inline(NbtTag::List(_))
+            LootPredicateArgumentValue::Inline(RuntimeLootCondition::AllOf(_))
         ));
         assert_eq!(reader.remaining(), " run");
+    }
 
-        let mut reader = CommandReader::new("true run");
-        let ParsedArgument::LootPredicate(predicate) = LootPredicateParser
+    #[test]
+    fn loot_predicate_parser_rejects_non_condition_snbt() {
+        let mut reader = CommandReader::new("{foo:1} run");
+        let error = LootPredicateParser
             .parse(&mut reader, &TestContext)
-            .expect("inline boolean predicate parses")
-        else {
-            panic!("expected loot predicate");
-        };
+            .expect_err("compound without condition is not a loot condition");
 
         assert!(matches!(
-            predicate,
-            LootPredicateArgumentValue::Inline(NbtTag::Byte(1))
+            error.kind(),
+            CommandParseErrorKind::InvalidLootPredicate(value) if value == "missing field 'condition'"
         ));
-        assert_eq!(reader.remaining(), " run");
     }
 
     #[test]

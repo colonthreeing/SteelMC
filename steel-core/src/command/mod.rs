@@ -349,13 +349,27 @@ pub(crate) fn minecraft_command_permission_key(
 }
 
 pub(crate) const ENTITY_SELECTOR_PERMISSION_KEY: &str = "minecraft.command.selector";
+pub(crate) const ENTITY_SELECTOR_ADVANCED_PERMISSION_KEY: &str =
+    "minecraft.command.selector.advanced";
 
 pub(crate) fn entity_selector_permission_key() -> Result<PermissionKey, PermissionKeyError> {
     PermissionKey::parse(ENTITY_SELECTOR_PERMISSION_KEY)
 }
 
+pub(crate) fn entity_selector_advanced_permission_key() -> Result<PermissionKey, PermissionKeyError>
+{
+    PermissionKey::parse(ENTITY_SELECTOR_ADVANCED_PERMISSION_KEY)
+}
+
 pub(crate) fn entity_selector_permission_expr() -> Result<PermissionExpr, PermissionKeyError> {
     Ok(PermissionExpr::key(entity_selector_permission_key()?))
+}
+
+pub(crate) fn entity_selector_advanced_permission_expr()
+-> Result<PermissionExpr, PermissionKeyError> {
+    Ok(PermissionExpr::key(
+        entity_selector_advanced_permission_key()?,
+    ))
 }
 
 impl CommandDispatcher {
@@ -368,6 +382,10 @@ impl CommandDispatcher {
         let mut dispatcher = CommandDispatcher::new_empty();
         dispatcher.permission_catalog.insert(
             entity_selector_permission_key()?,
+            PermissionCatalogSource::Command,
+        );
+        dispatcher.permission_catalog.insert(
+            entity_selector_advanced_permission_key()?,
             PermissionCatalogSource::Command,
         );
         for registration in commands::registrations()? {
@@ -652,6 +670,9 @@ impl CommandDispatcher {
             CommandParseErrorKind::EntitySelectorsNotAllowed => {
                 TextComponent::plain("Selector syntax is not allowed for this command source")
             }
+            CommandParseErrorKind::AdvancedEntitySelectorsNotAllowed => TextComponent::plain(
+                "Advanced selector options are not allowed for this command source",
+            ),
             CommandParseErrorKind::InvalidEntitySelector(value) => {
                 TextComponent::plain(format!("Invalid entity selector: {value}"))
             }

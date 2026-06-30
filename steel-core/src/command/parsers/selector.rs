@@ -6,19 +6,23 @@ use glam::DVec3;
 use rand::seq::SliceRandom;
 use simdnbt::owned::NbtCompound;
 use steel_registry::{
-    REGISTRY, RegistryExt, TaggedRegistryExt, entity_type::EntityTypeRef, vanilla_entities,
+    REGISTRY, RegistryExt, TaggedRegistryExt,
+    entity_type::EntityTypeRef,
+    loot_table::{EntityRef, EntityRefFlags, LootContext, WeatherState as LootWeatherState},
+    vanilla_entities,
 };
 use steel_utils::{
     Identifier,
     geometry::WorldAabb,
     nbt::{compare_nbt_compounds, parse_snbt_compound_argument},
+    random::{Random, legacy_random::LegacyRandom},
     types::GameType,
 };
 use uuid::Uuid;
 
 use crate::{
     command::{
-        entity_selector_permission_expr,
+        entity_selector_advanced_permission_expr, entity_selector_permission_expr,
         graph::{CommandParseError, CommandParseErrorKind},
         parsers::parse_resource_identifier,
         reader::{CommandReader, StringMode},
@@ -55,6 +59,7 @@ const SELECTOR_OPTION_KEYS: &[&str] = &[
     "team",
     "nbt",
     "scores",
+    "predicate",
 ];
 const SET_ONCE_SELECTOR_OPTIONS: &[&str] = &[
     "distance",
@@ -186,6 +191,10 @@ enum SelectorFilter {
         inverted: bool,
     },
     Scores(Vec<(String, IntRange)>),
+    Predicate {
+        value: Identifier,
+        inverted: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -339,6 +348,7 @@ struct SelectorParseError {
 #[derive(Clone, Debug)]
 enum SelectorParseErrorKind {
     NotAllowed,
+    AdvancedNotAllowed,
     Invalid(String),
     Unsupported(String),
 }
@@ -347,6 +357,13 @@ impl SelectorParseError {
     const fn not_allowed(cursor: usize) -> Self {
         Self {
             kind: SelectorParseErrorKind::NotAllowed,
+            cursor,
+        }
+    }
+
+    const fn advanced_not_allowed(cursor: usize) -> Self {
+        Self {
+            kind: SelectorParseErrorKind::AdvancedNotAllowed,
             cursor,
         }
     }
@@ -376,6 +393,9 @@ impl SelectorParseError {
         let cursor = base_cursor + self.cursor;
         let kind = match self.kind {
             SelectorParseErrorKind::NotAllowed => CommandParseErrorKind::EntitySelectorsNotAllowed,
+            SelectorParseErrorKind::AdvancedNotAllowed => {
+                CommandParseErrorKind::AdvancedEntitySelectorsNotAllowed
+            }
             SelectorParseErrorKind::Invalid(message) => {
                 CommandParseErrorKind::InvalidEntitySelector(message)
             }
@@ -392,8 +412,9 @@ impl EntitySelector {
         raw: String,
         base_cursor: usize,
         allow_selectors: bool,
+        allow_advanced_selectors: bool,
     ) -> Result<Self, CommandParseError> {
-        parse_selector_plan(raw, allow_selectors)
+        parse_selector_plan_with_permissions(raw, allow_selectors, allow_advanced_selectors)
             .map_err(|error| error.into_command_error(base_cursor))
     }
 
@@ -446,19 +467,26 @@ impl EntitySelector {
                 .filter(|player| player.uuid() == *uuid)
                 .collect::<Vec<_>>(),
             SelectorKind::Selector(SelectorType::SelfEntity) => {
-                context.player().map_or_else(Vec::new, |player| {
-                    if self.matches_entity(player.as_ref(), position, aabb, server) {
-                        vec![Arc::clone(player)]
-                    } else {
-                        Vec::new()
-                    }
-                })
+                let Some(player) = context.player() else {
+                    return Ok(Vec::new());
+                };
+                if self.matches_entity(player.as_ref(), position, aabb, server, cursor)? {
+                    vec![Arc::clone(player)]
+                } else {
+                    Vec::new()
+                }
             }
             SelectorKind::Selector(_) => self.candidate_players(server, context, cursor)?,
         };
 
         if !matches!(self.kind, SelectorKind::Selector(SelectorType::SelfEntity)) {
-            players.retain(|player| self.matches_entity(player.as_ref(), position, aabb, server));
+            let mut filtered = Vec::new();
+            for player in players {
+                if self.matches_entity(player.as_ref(), position, aabb, server, cursor)? {
+                    filtered.push(player);
+                }
+            }
+            players = filtered;
         }
         self.sort_and_limit_players(position, &mut players);
         Ok(players)
@@ -489,13 +517,14 @@ impl EntitySelector {
                 .into_iter()
                 .collect::<Vec<_>>(),
             SelectorKind::Selector(SelectorType::SelfEntity) => {
-                context.entity().map_or_else(Vec::new, |entity| {
-                    if self.matches_entity(entity.as_ref(), position, aabb, server) {
-                        vec![Arc::clone(entity)]
-                    } else {
-                        Vec::new()
-                    }
-                })
+                let Some(entity) = context.entity() else {
+                    return Ok(Vec::new());
+                };
+                if self.matches_entity(entity.as_ref(), position, aabb, server, cursor)? {
+                    vec![Arc::clone(entity)]
+                } else {
+                    Vec::new()
+                }
             }
             SelectorKind::Selector(_) if !self.includes_entities => self
                 .candidate_players(server, context, cursor)?
@@ -506,7 +535,13 @@ impl EntitySelector {
         };
 
         if !matches!(self.kind, SelectorKind::Selector(SelectorType::SelfEntity)) {
-            entities.retain(|entity| self.matches_entity(entity.as_ref(), position, aabb, server));
+            let mut filtered = Vec::new();
+            for entity in entities {
+                if self.matches_entity(entity.as_ref(), position, aabb, server, cursor)? {
+                    filtered.push(entity);
+                }
+            }
+            entities = filtered;
         }
         self.sort_and_limit_entities(position, &mut entities);
         Ok(entities)
@@ -606,38 +641,42 @@ impl EntitySelector {
         position: DVec3,
         aabb: Option<WorldAabb>,
         server: &Server,
-    ) -> bool {
+        cursor: usize,
+    ) -> Result<bool, CommandParseError> {
         if let Some(aabb) = aabb
             && !aabb.intersects(entity.bounding_box())
         {
-            return false;
+            return Ok(false);
         }
         if let Some(distance) = self.distance
             && !distance.matches_squared(entity.position().distance_squared(position))
         {
-            return false;
+            return Ok(false);
         }
         if let Some(level) = self.level {
             let Some(player) = entity.as_player() else {
-                return false;
+                return Ok(false);
             };
             if !level.matches(player.experience.lock().level()) {
-                return false;
+                return Ok(false);
             }
         }
         if let Some(range) = self.x_rotation
             && !range.matches_rotation(entity.rotation().1)
         {
-            return false;
+            return Ok(false);
         }
         if let Some(range) = self.y_rotation
             && !range.matches_rotation(entity.rotation().0)
         {
-            return false;
+            return Ok(false);
         }
-        self.filters
-            .iter()
-            .all(|filter| filter.matches(entity, server))
+        for filter in &self.filters {
+            if !filter.matches(entity, server, cursor)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn sort_and_limit_players(&self, position: DVec3, players: &mut Vec<Arc<Player>>) {
@@ -680,23 +719,30 @@ impl EntitySelector {
 }
 
 impl SelectorFilter {
-    fn matches(&self, entity: &dyn Entity, server: &Server) -> bool {
+    fn matches(
+        &self,
+        entity: &dyn Entity,
+        server: &Server,
+        cursor: usize,
+    ) -> Result<bool, CommandParseError> {
         match self {
-            Self::Alive => entity.is_alive(),
-            Self::Name { value, inverted } => entity_name_filter_matches(value, *inverted, entity),
+            Self::Alive => Ok(entity.is_alive()),
+            Self::Name { value, inverted } => {
+                Ok(entity_name_filter_matches(value, *inverted, entity))
+            }
             Self::GameMode { value, inverted } => {
                 let matches = entity
                     .as_player()
                     .is_some_and(|player| player.game_mode() == *value);
-                matches != *inverted
+                Ok(matches != *inverted)
             }
             Self::EntityType { value, inverted } => {
                 let matches = entity.entity_type() == *value;
-                matches != *inverted
+                Ok(matches != *inverted)
             }
             Self::EntityTypeTag { value, inverted } => {
                 let matches = REGISTRY.entity_types.is_in_tag(entity.entity_type(), value);
-                matches != *inverted
+                Ok(matches != *inverted)
             }
             Self::Tag { value, inverted } => {
                 let tags = entity.tags();
@@ -705,18 +751,117 @@ impl SelectorFilter {
                 } else {
                     tags.iter().any(|tag| tag == value)
                 };
-                matches != *inverted
+                Ok(matches != *inverted)
             }
             Self::Team { value, inverted } => {
                 let holder_name = entity.scoreboard_name();
-                team_filter_matches(value, *inverted, &holder_name, &server.scoreboard)
+                Ok(team_filter_matches(
+                    value,
+                    *inverted,
+                    &holder_name,
+                    &server.scoreboard,
+                ))
             }
-            Self::Nbt { value, inverted } => entity_nbt_filter_matches(value, *inverted, entity),
+            Self::Nbt { value, inverted } => {
+                Ok(entity_nbt_filter_matches(value, *inverted, entity))
+            }
             Self::Scores(scores) => {
                 let holder_name = entity.scoreboard_name();
-                score_filter_matches(scores, &holder_name, &server.scoreboard)
+                Ok(score_filter_matches(
+                    scores,
+                    &holder_name,
+                    &server.scoreboard,
+                ))
+            }
+            Self::Predicate { value, inverted } => {
+                selector_predicate_filter_matches(value, *inverted, entity, cursor)
             }
         }
+    }
+}
+
+struct SelectorLootRandom<'a>(&'a mut LegacyRandom);
+
+impl rand::TryRng for SelectorLootRandom<'_> {
+    type Error = std::convert::Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        Ok(self.0.next_i32() as u32)
+    }
+
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        Ok(self.0.next_i64() as u64)
+    }
+
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+        let mut chunks = dst.chunks_exact_mut(8);
+        for chunk in &mut chunks {
+            chunk.copy_from_slice(&self.0.next_i64().to_le_bytes());
+        }
+
+        let remainder = chunks.into_remainder();
+        if !remainder.is_empty() {
+            let bytes = self.0.next_i64().to_le_bytes();
+            remainder.copy_from_slice(&bytes[..remainder.len()]);
+        }
+        Ok(())
+    }
+}
+
+fn selector_predicate_filter_matches(
+    value: &Identifier,
+    inverted: bool,
+    entity: &dyn Entity,
+    cursor: usize,
+) -> Result<bool, CommandParseError> {
+    let Some(predicate) = REGISTRY.loot_predicates.by_key(value) else {
+        return Ok(false);
+    };
+    let Some(world) = entity.level() else {
+        return Ok(false);
+    };
+
+    let position = entity.position();
+    let entity_ref = selector_entity_loot_ref(entity);
+    let weather = LootWeatherState {
+        raining: world.is_raining(),
+        thundering: world.is_thundering(),
+    };
+    let mut random = world.random().lock();
+    let mut rng = SelectorLootRandom(&mut random);
+    let mut context = LootContext::new(&mut rng)
+        .with_origin(position.x, position.y, position.z)
+        .with_game_time(world.game_time())
+        .with_weather(weather)
+        .with_this_entity(entity_ref);
+
+    predicate
+        .condition
+        .try_test(&mut context)
+        .map(|matches| matches != inverted)
+        .map_err(|error| {
+            CommandParseError::new(
+                CommandParseErrorKind::UnsupportedEntitySelectorOption(format!(
+                    "predicate {value}: {error}"
+                )),
+                cursor,
+            )
+        })
+}
+
+fn selector_entity_loot_ref(entity: &dyn Entity) -> EntityRef<'_> {
+    let living_entity = entity.as_living_entity();
+    EntityRef {
+        entity_type: Some(&entity.entity_type().key),
+        flags: EntityRefFlags {
+            is_on_fire: entity.is_on_fire(),
+            is_sneaking: entity.is_crouching(),
+            is_sprinting: living_entity.is_some_and(|entity| entity.is_sprinting()),
+            is_swimming: entity.is_swimming(),
+            is_baby: living_entity.is_some_and(|entity| entity.is_baby()),
+        },
+        equipment: None,
+        custom_name: None,
     }
 }
 
@@ -767,7 +912,12 @@ pub(super) fn parse_player_selector(
 ) -> Result<Vec<Arc<Player>>, CommandParseError> {
     let cursor = reader.absolute_cursor();
     let raw = read_selector_argument(reader)?;
-    let selector = EntitySelector::parse(raw, cursor, allow_selectors(context))?;
+    let selector = EntitySelector::parse(
+        raw,
+        cursor,
+        allow_selectors(context),
+        allow_advanced_selectors(context),
+    )?;
     selector.validate_for_argument(single, true, cursor)?;
     let players = selector.find_players(context, cursor)?;
     if single && players.len() != 1 {
@@ -786,7 +936,12 @@ pub(super) fn parse_entity_selector(
 ) -> Result<Vec<SharedEntity>, CommandParseError> {
     let cursor = reader.absolute_cursor();
     let raw = read_selector_argument(reader)?;
-    let selector = EntitySelector::parse(raw, cursor, allow_selectors(context))?;
+    let selector = EntitySelector::parse(
+        raw,
+        cursor,
+        allow_selectors(context),
+        allow_advanced_selectors(context),
+    )?;
     selector.validate_for_argument(single, false, cursor)?;
     let entities = selector.find_entities(context, cursor)?;
     if single && entities.len() != 1 {
@@ -801,6 +956,14 @@ pub(super) fn parse_entity_selector(
 pub(super) fn allow_selectors(context: &dyn CommandInputContext) -> bool {
     let Ok(permission) = entity_selector_permission_expr() else {
         log::error!("built-in entity selector permission key is invalid");
+        return false;
+    };
+    context.has_permission(&permission)
+}
+
+pub(super) fn allow_advanced_selectors(context: &dyn CommandInputContext) -> bool {
+    let Ok(permission) = entity_selector_advanced_permission_expr() else {
+        log::error!("built-in advanced entity selector permission key is invalid");
         return false;
     };
     context.has_permission(&permission)
@@ -831,6 +994,7 @@ pub(super) fn selector_argument_suggestions(
     if !allow_selectors(context) {
         return Vec::new();
     }
+    let allow_advanced = allow_advanced_selectors(context);
     if !prefix.starts_with('@') {
         return selector_root_suggestions(prefix, players_only, single, context);
     }
@@ -850,9 +1014,15 @@ pub(super) fn selector_argument_suggestions(
     }
 
     if let Some(option_start) = prefix.find('[') {
+        if !allow_advanced {
+            return Vec::new();
+        }
         return selector_option_suggestions(prefix, selector_type, option_start, context);
     }
 
+    if !allow_advanced {
+        return selector_root_suggestions(prefix, players_only, single, context);
+    }
     let open_options = format!("@{selector_type}[");
     if open_options.starts_with(prefix) {
         vec![open_options]
@@ -946,6 +1116,7 @@ fn selector_option_value_suggestions(
         }
         "type" => entity_type_suggestions(expression_prefix, value_prefix),
         "team" => team_suggestions(expression_prefix, value_prefix, context),
+        "predicate" => predicate_suggestions(expression_prefix, value_prefix),
         _ => Vec::new(),
     }
 }
@@ -1047,6 +1218,22 @@ fn team_suggestions(
     suggestions
 }
 
+fn predicate_suggestions(expression_prefix: &str, value_prefix: &str) -> Vec<String> {
+    let stripped_prefix = value_prefix
+        .strip_prefix("minecraft:")
+        .unwrap_or(value_prefix);
+    REGISTRY
+        .loot_predicates
+        .iter()
+        .map(|(_, predicate)| predicate.key.to_string())
+        .filter(|key| {
+            let text = key.strip_prefix("minecraft:").unwrap_or(key);
+            matches_suggestion_substr(stripped_prefix, text)
+        })
+        .map(|key| format!("{expression_prefix}{key}"))
+        .collect()
+}
+
 fn read_selector_argument(reader: &mut CommandReader<'_>) -> Result<String, CommandParseError> {
     if reader.peek() != Some('@') {
         return reader.read_string(StringMode::QuotablePhrase);
@@ -1100,9 +1287,18 @@ fn is_valid_selector_name(name: &str) -> bool {
     !name.is_empty() && name.encode_utf16().count() <= 16
 }
 
+#[cfg(test)]
 fn parse_selector_plan(
     raw: String,
     allow_selectors: bool,
+) -> Result<EntitySelector, SelectorParseError> {
+    parse_selector_plan_with_permissions(raw, allow_selectors, allow_selectors)
+}
+
+fn parse_selector_plan_with_permissions(
+    raw: String,
+    allow_selectors: bool,
+    allow_advanced_selectors: bool,
 ) -> Result<EntitySelector, SelectorParseError> {
     let mut selector = {
         let mut reader = SelectorReader::new(&raw);
@@ -1111,7 +1307,7 @@ fn parse_selector_plan(
                 return Err(SelectorParseError::not_allowed(reader.cursor()));
             }
             reader.read();
-            parse_selector_type(&mut reader)?
+            parse_selector_type(&mut reader, allow_advanced_selectors)?
         } else {
             parse_name_or_uuid(&mut reader)?
         }
@@ -1168,6 +1364,7 @@ fn parse_name_or_uuid(
 
 fn parse_selector_type(
     reader: &mut SelectorReader<'_>,
+    allow_advanced_selectors: bool,
 ) -> Result<EntitySelector, SelectorParseError> {
     let selector_start = reader.cursor();
     let Some(selector_type) = reader.read() else {
@@ -1284,7 +1481,7 @@ fn parse_selector_type(
 
     if reader.peek() == Some('[') {
         reader.read();
-        parse_options(reader, &mut selector)?;
+        parse_options(reader, &mut selector, allow_advanced_selectors)?;
     }
     if reader.can_read() {
         return Err(SelectorParseError::invalid_at(
@@ -1298,10 +1495,14 @@ fn parse_selector_type(
 fn parse_options(
     reader: &mut SelectorReader<'_>,
     selector: &mut EntitySelector,
+    allow_advanced_selectors: bool,
 ) -> Result<(), SelectorParseError> {
     let mut state = SelectorOptionState::default();
     reader.skip_whitespace();
     while reader.peek().is_some_and(|ch| ch != ']') {
+        if !allow_advanced_selectors {
+            return Err(SelectorParseError::advanced_not_allowed(reader.cursor()));
+        }
         reader.skip_whitespace();
         let key_cursor = reader.cursor();
         let key = reader.read_key()?;
@@ -1399,12 +1600,9 @@ fn parse_option(
         "team" => parse_team_option(reader, selector, state),
         "nbt" => parse_nbt_option(reader, selector),
         "scores" => parse_scores_option(reader, selector, state, key_cursor),
+        "predicate" => parse_predicate_option(reader, selector),
         "advancements" => Err(SelectorParseError::unsupported(
             "advancements needs player advancement foundation",
-            key_cursor,
-        )),
-        "predicate" => Err(SelectorParseError::unsupported(
-            "predicate needs loot predicate registry foundation",
             key_cursor,
         )),
         _ => Err(SelectorParseError::invalid_at(
@@ -1428,9 +1626,9 @@ fn parse_name_option(
             SelectorParseError::invalid_at(
                 match error.kind {
                     SelectorParseErrorKind::Invalid(message) => message,
-                    SelectorParseErrorKind::NotAllowed | SelectorParseErrorKind::Unsupported(_) => {
-                        "invalid name option".to_owned()
-                    }
+                    SelectorParseErrorKind::NotAllowed
+                    | SelectorParseErrorKind::AdvancedNotAllowed
+                    | SelectorParseErrorKind::Unsupported(_) => "invalid name option".to_owned(),
                 },
                 value_cursor,
             )
@@ -1640,6 +1838,19 @@ fn parse_nbt_option(
     selector
         .filters
         .push(SelectorFilter::Nbt { value, inverted });
+    Ok(())
+}
+
+fn parse_predicate_option(
+    reader: &mut SelectorReader<'_>,
+    selector: &mut EntitySelector,
+) -> Result<(), SelectorParseError> {
+    let value_cursor = reader.cursor();
+    let inverted = reader.read_inversion();
+    let value = read_identifier(reader, value_cursor)?;
+    selector
+        .filters
+        .push(SelectorFilter::Predicate { value, inverted });
     Ok(())
 }
 
@@ -2039,8 +2250,8 @@ mod tests {
 
     use super::{
         IntRange, SelectorFilter, SelectorParseErrorKind, SelectorType, entity_name_filter_matches,
-        entity_nbt_filter_matches, parse_selector_plan, player_name_matches,
-        read_selector_argument, score_filter_matches, team_filter_matches,
+        entity_nbt_filter_matches, parse_selector_plan, parse_selector_plan_with_permissions,
+        player_name_matches, read_selector_argument, score_filter_matches, team_filter_matches,
     };
 
     struct SelectorNbtTestEntity {
@@ -2074,6 +2285,20 @@ mod tests {
     fn selector_permission_gate_rejects_selector_syntax() {
         let error = parse_selector_plan("@a".to_owned(), false).expect_err("selector rejected");
         assert!(matches!(error.kind, SelectorParseErrorKind::NotAllowed));
+    }
+
+    #[test]
+    fn selector_advanced_permission_gate_rejects_options() {
+        let error =
+            parse_selector_plan_with_permissions("@a[distance=..10]".to_owned(), true, false)
+                .expect_err("advanced selector options are rejected");
+        assert!(matches!(
+            error.kind,
+            SelectorParseErrorKind::AdvancedNotAllowed
+        ));
+
+        parse_selector_plan_with_permissions("@a".to_owned(), true, false)
+            .expect("basic selector syntax is allowed");
     }
 
     #[test]
@@ -2356,11 +2581,11 @@ mod tests {
     }
 
     #[test]
-    fn selector_rejects_missing_runtime_foundations_by_option_name() {
-        let error = parse_selector_plan("@e[predicate=minecraft:test]".to_owned(), true)
-            .expect_err("predicate needs predicate foundation");
-        assert!(
-            matches!(error.kind, SelectorParseErrorKind::Unsupported(message) if message == "predicate needs loot predicate registry foundation")
-        );
+    fn selector_parses_predicate_filter() {
+        let selector = parse_selector_plan("@e[predicate=!test]".to_owned(), true)
+            .expect("predicate filter parses");
+        assert!(selector.filters.iter().any(
+            |filter| matches!(filter, SelectorFilter::Predicate { value, inverted } if value.to_string() == "minecraft:test" && *inverted)
+        ));
     }
 }

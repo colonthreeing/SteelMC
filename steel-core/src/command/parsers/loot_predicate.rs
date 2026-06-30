@@ -1,6 +1,7 @@
 //! Loot predicate command argument parser.
 
 use steel_protocol::packets::game::{ArgumentType, SuggestionType};
+use steel_registry::loot_table::RuntimeLootCondition;
 use steel_utils::nbt::parse_snbt_argument;
 
 use crate::command::{
@@ -31,8 +32,14 @@ impl CommandArgumentParser for LootPredicateParser {
                     start + error.cursor(),
                 )
             })?;
+            let condition = RuntimeLootCondition::decode(&tag).map_err(|error| {
+                CommandParseError::new(
+                    CommandParseErrorKind::InvalidLootPredicate(error.to_string()),
+                    start,
+                )
+            })?;
             advance_reader(reader, consumed);
-            LootPredicateArgumentValue::Inline(tag)
+            LootPredicateArgumentValue::Inline(condition)
         } else {
             let raw = reader.read_token()?;
             let Some(identifier) = parse_resource_identifier(&raw) else {
@@ -72,16 +79,7 @@ fn starts_inline_snbt(input: &str) -> bool {
     let Some(ch) = input.chars().next() else {
         return false;
     };
-    matches!(ch, '{' | '[' | '"' | '\'' | '+' | '-' | '0'..='9')
-        || starts_boolean_snbt(input, "true")
-        || starts_boolean_snbt(input, "false")
-}
-
-fn starts_boolean_snbt(input: &str, value: &str) -> bool {
-    let Some(remaining) = input.strip_prefix(value) else {
-        return false;
-    };
-    remaining.chars().next().is_none_or(char::is_whitespace)
+    matches!(ch, '{' | '[')
 }
 
 fn advance_reader(reader: &mut CommandReader<'_>, bytes: usize) {
@@ -108,8 +106,8 @@ mod tests {
         assert!(starts_inline_snbt(
             "[{condition:\"minecraft:killed_by_player\"}]"
         ));
-        assert!(starts_inline_snbt("true"));
         assert!(!starts_inline_snbt("truefoo"));
-        assert!(starts_inline_snbt("1"));
+        assert!(!starts_inline_snbt("true"));
+        assert!(!starts_inline_snbt("1"));
     }
 }

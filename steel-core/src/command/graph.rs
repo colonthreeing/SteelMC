@@ -163,6 +163,8 @@ pub enum CommandParseErrorKind {
     InvalidEntity(String),
     /// Entity selector syntax is not allowed for this source.
     EntitySelectorsNotAllowed,
+    /// Advanced entity selector options are not allowed for this source.
+    AdvancedEntitySelectorsNotAllowed,
     /// Entity selector syntax was malformed.
     InvalidEntitySelector(String),
     /// Entity selector option is recognized but needs a missing runtime foundation.
@@ -260,6 +262,7 @@ impl CommandParseErrorKind {
             | Self::InvalidPlayer(_)
             | Self::InvalidEntity(_)
             | Self::EntitySelectorsNotAllowed
+            | Self::AdvancedEntitySelectorsNotAllowed
             | Self::InvalidEntitySelector(_)
             | Self::UnsupportedEntitySelectorOption(_)
             | Self::InvalidEntityType(_)

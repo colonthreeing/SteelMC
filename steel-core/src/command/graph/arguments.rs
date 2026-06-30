@@ -13,6 +13,7 @@ use steel_registry::{
     equipment::EquipmentSlotGroup,
     item_stack::ItemStack,
     items::ItemRef,
+    loot_table::RuntimeLootCondition,
     structure::StructureRef,
 };
 use steel_utils::{BlockPos, BlockStateId, Identifier, nbt::NbtPath, types::GameType};
@@ -182,7 +183,7 @@ pub enum LootPredicateArgumentValue {
     /// A named predicate in the predicate registry.
     Reference(Identifier),
     /// An inline predicate value, decoded by the runtime evaluator.
-    Inline(NbtTag),
+    Inline(RuntimeLootCondition),
 }
 
 /// Item predicate target selector.

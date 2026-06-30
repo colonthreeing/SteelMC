@@ -1,3 +1,5 @@
+use std::{error::Error, fmt};
+
 pub use crate::equipment::EquipmentSlotGroup;
 use crate::{
     REGISTRY, RegistryExt, TaggedRegistryExt, blocks::block_state_ext::BlockStateExt,
@@ -5,6 +7,7 @@ use crate::{
 };
 use rand::RngExt;
 use rustc_hash::FxHashMap;
+use simdnbt::owned::{NbtCompound, NbtTag};
 use steel_utils::{BlockStateId, Identifier};
 
 /// Entity target for loot context lookups.
@@ -632,6 +635,496 @@ pub enum LootConditionEvaluationError {
     /// The number provider type needs a runtime foundation Steel does not
     /// expose to the checked evaluator yet.
     UnsupportedNumberProvider(&'static str),
+}
+
+impl fmt::Display for LootConditionEvaluationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingContext(context) => write!(f, "missing loot context '{context}'"),
+            Self::UnsupportedCondition(condition) => {
+                write!(f, "unsupported loot condition '{condition}'")
+            }
+            Self::UnsupportedNumberProvider(provider) => {
+                write!(f, "unsupported loot number provider '{provider}'")
+            }
+        }
+    }
+}
+
+impl Error for LootConditionEvaluationError {}
+
+/// Runtime-owned loot predicate condition decoded from command/data SNBT.
+#[derive(Debug, Clone)]
+pub enum RuntimeLootCondition {
+    /// The loot survives explosion damage.
+    SurvivesExplosion,
+    /// Simple random chance condition.
+    RandomChance(RuntimeNumberProvider),
+    /// Inverted condition.
+    Inverted(Box<RuntimeLootCondition>),
+    /// Any child condition passes.
+    AnyOf(Vec<RuntimeLootCondition>),
+    /// All child conditions pass.
+    AllOf(Vec<RuntimeLootCondition>),
+    /// Killed by player condition.
+    KilledByPlayer,
+    /// Weather condition.
+    WeatherCheck {
+        /// Optional raining state.
+        raining: Option<bool>,
+        /// Optional thundering state.
+        thundering: Option<bool>,
+    },
+    /// Value check condition.
+    ValueCheck {
+        /// Number provider to evaluate.
+        value: RuntimeNumberProvider,
+        /// Accepted value range.
+        range: RuntimeNumberRange,
+    },
+    /// Reference to another predicate.
+    Reference(Identifier),
+    /// Known vanilla condition whose runtime foundation is not available yet.
+    Unsupported(&'static str),
+}
+
+/// Runtime-owned number provider decoded for command-visible loot predicates.
+#[derive(Debug, Clone)]
+pub enum RuntimeNumberProvider {
+    /// Constant number.
+    Constant(f32),
+    /// Uniform random number between two provider values.
+    Uniform {
+        /// Minimum value provider.
+        min: Box<RuntimeNumberProvider>,
+        /// Maximum value provider.
+        max: Box<RuntimeNumberProvider>,
+    },
+    /// Binomial distribution.
+    Binomial {
+        /// Trial count provider.
+        n: Box<RuntimeNumberProvider>,
+        /// Success probability provider.
+        p: Box<RuntimeNumberProvider>,
+    },
+    /// Sum of child providers.
+    Sum(Vec<RuntimeNumberProvider>),
+    /// Known vanilla provider whose runtime foundation is not available yet.
+    Unsupported(&'static str),
+}
+
+/// Runtime-owned numeric range.
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeNumberRange {
+    /// Optional minimum bound.
+    pub min: Option<RuntimeNumberProvider>,
+    /// Optional maximum bound.
+    pub max: Option<RuntimeNumberProvider>,
+}
+
+/// Error while decoding a runtime loot predicate condition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LootPredicateDecodeError {
+    /// The top-level value was not a condition compound or inline all-of list.
+    ExpectedCondition,
+    /// A required field was missing.
+    MissingField(&'static str),
+    /// A field had the wrong shape.
+    InvalidField(&'static str),
+    /// A resource identifier was malformed.
+    InvalidIdentifier(String),
+    /// The condition type is not registered by vanilla.
+    UnknownCondition(String),
+    /// The number provider type is not registered by vanilla.
+    UnknownNumberProvider(String),
+}
+
+impl fmt::Display for LootPredicateDecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ExpectedCondition => write!(f, "expected a loot condition compound or list"),
+            Self::MissingField(field) => write!(f, "missing field '{field}'"),
+            Self::InvalidField(field) => write!(f, "invalid field '{field}'"),
+            Self::InvalidIdentifier(value) => write!(f, "invalid identifier '{value}'"),
+            Self::UnknownCondition(value) => write!(f, "unknown loot condition '{value}'"),
+            Self::UnknownNumberProvider(value) => {
+                write!(f, "unknown loot number provider '{value}'")
+            }
+        }
+    }
+}
+
+impl Error for LootPredicateDecodeError {}
+
+impl RuntimeLootCondition {
+    /// Decodes vanilla `LootItemCondition.DIRECT_CODEC` command/data shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the value is malformed or names an unknown vanilla
+    /// condition type.
+    pub fn decode(tag: &NbtTag) -> Result<Self, LootPredicateDecodeError> {
+        match tag {
+            NbtTag::Compound(compound) => Self::decode_compound(compound),
+            NbtTag::List(list) => {
+                let mut terms = Vec::new();
+                for term in list.as_nbt_tags() {
+                    terms.push(Self::decode(&term)?);
+                }
+                Ok(Self::AllOf(terms))
+            }
+            _ => Err(LootPredicateDecodeError::ExpectedCondition),
+        }
+    }
+
+    fn decode_compound(compound: &NbtCompound) -> Result<Self, LootPredicateDecodeError> {
+        let condition = required_identifier(compound, "condition")?;
+        let Some(condition_name) = vanilla_path(&condition) else {
+            return Err(LootPredicateDecodeError::UnknownCondition(
+                condition.to_string(),
+            ));
+        };
+
+        match condition_name {
+            "survives_explosion" => Ok(Self::SurvivesExplosion),
+            "random_chance" => Ok(Self::RandomChance(RuntimeNumberProvider::decode(
+                required_field(compound, "chance")?,
+            )?)),
+            "inverted" => Ok(Self::Inverted(Box::new(Self::decode(required_field(
+                compound, "term",
+            )?)?))),
+            "any_of" => Ok(Self::AnyOf(decode_condition_terms(compound, "terms")?)),
+            "all_of" => Ok(Self::AllOf(decode_condition_terms(compound, "terms")?)),
+            "killed_by_player" => Ok(Self::KilledByPlayer),
+            "weather_check" => Ok(Self::WeatherCheck {
+                raining: optional_bool(compound, "raining")?,
+                thundering: optional_bool(compound, "thundering")?,
+            }),
+            "value_check" => Ok(Self::ValueCheck {
+                value: RuntimeNumberProvider::decode(required_field(compound, "value")?)?,
+                range: RuntimeNumberRange::decode(required_field(compound, "range")?)?,
+            }),
+            "reference" => Ok(Self::Reference(required_identifier(compound, "name")?)),
+            "random_chance_with_enchanted_bonus" => {
+                Ok(Self::Unsupported("random_chance_with_enchanted_bonus"))
+            }
+            "entity_properties" => Ok(Self::Unsupported("entity_properties")),
+            "entity_scores" => Ok(Self::Unsupported("entity_scores")),
+            "block_state_property" => Ok(Self::Unsupported("block_state_property")),
+            "match_tool" => Ok(Self::Unsupported("match_tool")),
+            "table_bonus" => Ok(Self::Unsupported("table_bonus")),
+            "damage_source_properties" => Ok(Self::Unsupported("damage_source_properties")),
+            "location_check" => Ok(Self::Unsupported("location_check")),
+            "time_check" => Ok(Self::Unsupported("time_check")),
+            "enchantment_active_check" => Ok(Self::Unsupported("enchantment_active_check")),
+            "environment_attribute_check" => Ok(Self::Unsupported("environment_attribute_check")),
+            _ => Err(LootPredicateDecodeError::UnknownCondition(
+                condition.to_string(),
+            )),
+        }
+    }
+
+    /// Evaluates this predicate against a checked loot context.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the predicate needs a runtime foundation Steel
+    /// cannot evaluate correctly yet.
+    pub fn try_test<R: rand::Rng>(
+        &self,
+        ctx: &mut LootContext<'_, R>,
+    ) -> Result<bool, LootConditionEvaluationError> {
+        self.try_test_with_depth(ctx, 0)
+    }
+
+    fn try_test_with_depth<R: rand::Rng>(
+        &self,
+        ctx: &mut LootContext<'_, R>,
+        reference_depth: usize,
+    ) -> Result<bool, LootConditionEvaluationError> {
+        const MAX_REFERENCE_DEPTH: usize = 64;
+
+        match self {
+            Self::SurvivesExplosion => {
+                if let Some(radius) = ctx.explosion_radius {
+                    Ok(ctx.rng.random::<f32>() <= (1.0 / radius))
+                } else {
+                    Ok(true)
+                }
+            }
+            Self::RandomChance(chance) => Ok(ctx.rng.random::<f32>() < chance.try_get(ctx)?),
+            Self::Inverted(inner) => Ok(!inner.try_test_with_depth(ctx, reference_depth)?),
+            Self::AnyOf(conditions) => {
+                for condition in conditions {
+                    if condition.try_test_with_depth(ctx, reference_depth)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            Self::AllOf(conditions) => {
+                for condition in conditions {
+                    if !condition.try_test_with_depth(ctx, reference_depth)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            Self::KilledByPlayer => Ok(ctx.killed_by_player),
+            Self::WeatherCheck {
+                raining,
+                thundering,
+            } => {
+                let Some(weather) = ctx.weather else {
+                    return Err(LootConditionEvaluationError::MissingContext("weather"));
+                };
+                Ok(raining.is_none_or(|r| r == weather.raining)
+                    && thundering.is_none_or(|t| t == weather.thundering))
+            }
+            Self::ValueCheck { value, range } => {
+                let value = value.try_get(ctx)?;
+                range.try_test(value, ctx)
+            }
+            Self::Reference(name) => {
+                if reference_depth >= MAX_REFERENCE_DEPTH {
+                    return Err(LootConditionEvaluationError::UnsupportedCondition(
+                        "reference_cycle",
+                    ));
+                }
+                let Some(predicate) = REGISTRY.loot_predicates.by_key(name) else {
+                    return Ok(false);
+                };
+                predicate
+                    .condition
+                    .try_test_with_depth(ctx, reference_depth + 1)
+            }
+            Self::Unsupported(condition) => Err(
+                LootConditionEvaluationError::UnsupportedCondition(condition),
+            ),
+        }
+    }
+}
+
+impl RuntimeNumberProvider {
+    fn decode(tag: &NbtTag) -> Result<Self, LootPredicateDecodeError> {
+        if let Some(value) = numeric_tag_as_f32(tag) {
+            return Ok(Self::Constant(value));
+        }
+
+        let Some(compound) = tag.compound() else {
+            return Err(LootPredicateDecodeError::InvalidField("number_provider"));
+        };
+
+        let provider_type = if let Some(value) = compound.string("type") {
+            required_identifier_value(value.to_str().as_ref())?
+        } else if compound.contains("min") && compound.contains("max") {
+            Identifier::vanilla_static("uniform")
+        } else {
+            return Err(LootPredicateDecodeError::MissingField("type"));
+        };
+        let Some(provider_name) = vanilla_path(&provider_type) else {
+            return Err(LootPredicateDecodeError::UnknownNumberProvider(
+                provider_type.to_string(),
+            ));
+        };
+
+        match provider_name {
+            "constant" => Ok(Self::Constant(required_number(compound, "value")?)),
+            "uniform" => Ok(Self::Uniform {
+                min: Box::new(Self::decode(required_field(compound, "min")?)?),
+                max: Box::new(Self::decode(required_field(compound, "max")?)?),
+            }),
+            "binomial" => Ok(Self::Binomial {
+                n: Box::new(Self::decode(required_field(compound, "n")?)?),
+                p: Box::new(Self::decode(required_field(compound, "p")?)?),
+            }),
+            "sum" => Ok(Self::Sum(decode_number_terms(compound, "summands")?)),
+            "score" => Ok(Self::Unsupported("score")),
+            "storage" => Ok(Self::Unsupported("storage")),
+            "enchantment_level" => Ok(Self::Unsupported("enchantment_level")),
+            "environment_attribute" => Ok(Self::Unsupported("environment_attribute")),
+            _ => Err(LootPredicateDecodeError::UnknownNumberProvider(
+                provider_type.to_string(),
+            )),
+        }
+    }
+
+    fn try_get<R: rand::Rng>(
+        &self,
+        ctx: &mut LootContext<'_, R>,
+    ) -> Result<f32, LootConditionEvaluationError> {
+        match self {
+            Self::Constant(value) => Ok(*value),
+            Self::Uniform { min, max } => {
+                let min = min.try_get(ctx)?;
+                let max = max.try_get(ctx)?;
+                if min >= max {
+                    return Ok(min);
+                }
+                Ok(ctx.rng.random_range(min..=max))
+            }
+            Self::Binomial { n, p } => {
+                let n = n.try_get(ctx)?.floor() as i32;
+                let p = p.try_get(ctx)?;
+                let mut count = 0;
+                for _ in 0..n.max(0) {
+                    if ctx.rng.random::<f32>() < p {
+                        count += 1;
+                    }
+                }
+                Ok(count as f32)
+            }
+            Self::Sum(providers) => {
+                let mut sum = 0.0;
+                for provider in providers {
+                    sum += provider.try_get(ctx)?;
+                }
+                Ok(sum)
+            }
+            Self::Unsupported(provider) => Err(
+                LootConditionEvaluationError::UnsupportedNumberProvider(provider),
+            ),
+        }
+    }
+}
+
+impl RuntimeNumberRange {
+    fn decode(tag: &NbtTag) -> Result<Self, LootPredicateDecodeError> {
+        if let Some(value) = numeric_tag_as_f32(tag) {
+            return Ok(Self {
+                min: Some(RuntimeNumberProvider::Constant(value)),
+                max: Some(RuntimeNumberProvider::Constant(value)),
+            });
+        }
+
+        let Some(compound) = tag.compound() else {
+            return Err(LootPredicateDecodeError::InvalidField("range"));
+        };
+        Ok(Self {
+            min: compound
+                .get("min")
+                .map(RuntimeNumberProvider::decode)
+                .transpose()?,
+            max: compound
+                .get("max")
+                .map(RuntimeNumberProvider::decode)
+                .transpose()?,
+        })
+    }
+
+    fn try_test<R: rand::Rng>(
+        &self,
+        value: f32,
+        ctx: &mut LootContext<'_, R>,
+    ) -> Result<bool, LootConditionEvaluationError> {
+        if let Some(min) = &self.min
+            && value < min.try_get(ctx)?
+        {
+            return Ok(false);
+        }
+        if let Some(max) = &self.max
+            && value > max.try_get(ctx)?
+        {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+}
+
+fn decode_condition_terms(
+    compound: &NbtCompound,
+    field: &'static str,
+) -> Result<Vec<RuntimeLootCondition>, LootPredicateDecodeError> {
+    let Some(terms) = required_field(compound, field)?.list() else {
+        return Err(LootPredicateDecodeError::InvalidField(field));
+    };
+    let mut decoded = Vec::new();
+    for term in terms.as_nbt_tags() {
+        decoded.push(RuntimeLootCondition::decode(&term)?);
+    }
+    Ok(decoded)
+}
+
+fn decode_number_terms(
+    compound: &NbtCompound,
+    field: &'static str,
+) -> Result<Vec<RuntimeNumberProvider>, LootPredicateDecodeError> {
+    let Some(terms) = required_field(compound, field)?.list() else {
+        return Err(LootPredicateDecodeError::InvalidField(field));
+    };
+    let mut decoded = Vec::new();
+    for term in terms.as_nbt_tags() {
+        decoded.push(RuntimeNumberProvider::decode(&term)?);
+    }
+    Ok(decoded)
+}
+
+fn required_field<'a>(
+    compound: &'a NbtCompound,
+    field: &'static str,
+) -> Result<&'a NbtTag, LootPredicateDecodeError> {
+    compound
+        .get(field)
+        .ok_or(LootPredicateDecodeError::MissingField(field))
+}
+
+fn required_identifier(
+    compound: &NbtCompound,
+    field: &'static str,
+) -> Result<Identifier, LootPredicateDecodeError> {
+    let Some(value) = compound.string(field) else {
+        return Err(LootPredicateDecodeError::MissingField(field));
+    };
+    required_identifier_value(value.to_str().as_ref())
+}
+
+fn required_identifier_value(value: &str) -> Result<Identifier, LootPredicateDecodeError> {
+    let normalized = if value.contains(':') {
+        value.to_owned()
+    } else {
+        format!("minecraft:{value}")
+    };
+    normalized
+        .parse()
+        .map_err(|_| LootPredicateDecodeError::InvalidIdentifier(value.to_owned()))
+}
+
+fn vanilla_path(identifier: &Identifier) -> Option<&str> {
+    (identifier.namespace == Identifier::VANILLA_NAMESPACE).then_some(identifier.path.as_ref())
+}
+
+fn required_number(
+    compound: &NbtCompound,
+    field: &'static str,
+) -> Result<f32, LootPredicateDecodeError> {
+    let tag = required_field(compound, field)?;
+    numeric_tag_as_f32(tag).ok_or(LootPredicateDecodeError::InvalidField(field))
+}
+
+fn numeric_tag_as_f32(tag: &NbtTag) -> Option<f32> {
+    match tag {
+        NbtTag::Byte(value) => Some(f32::from(*value)),
+        NbtTag::Short(value) => Some(f32::from(*value)),
+        NbtTag::Int(value) => Some(*value as f32),
+        NbtTag::Long(value) => Some(*value as f32),
+        NbtTag::Float(value) => Some(*value),
+        NbtTag::Double(value) => Some(*value as f32),
+        _ => None,
+    }
+}
+
+fn optional_bool(
+    compound: &NbtCompound,
+    field: &'static str,
+) -> Result<Option<bool>, LootPredicateDecodeError> {
+    let Some(tag) = compound.get(field) else {
+        return Ok(None);
+    };
+    match tag {
+        NbtTag::Byte(0) => Ok(Some(false)),
+        NbtTag::Byte(1) => Ok(Some(true)),
+        _ => Err(LootPredicateDecodeError::InvalidField(field)),
+    }
 }
 
 /// Enchanted chance calculation method.
@@ -2191,6 +2684,66 @@ impl BonusFormula {
 
 pub type LootTableRef = &'static LootTable;
 
+/// A named loot predicate in the predicate registry.
+#[derive(Debug)]
+pub struct LootPredicate {
+    pub key: Identifier,
+    pub condition: RuntimeLootCondition,
+}
+
+pub type LootPredicateRef = &'static LootPredicate;
+
+/// Registry for loot predicates.
+pub struct LootPredicateRegistry {
+    predicates_by_id: Vec<LootPredicateRef>,
+    predicates_by_key: FxHashMap<Identifier, usize>,
+    allows_registering: bool,
+}
+
+impl LootPredicateRegistry {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            predicates_by_id: Vec::new(),
+            predicates_by_key: FxHashMap::default(),
+            allows_registering: true,
+        }
+    }
+
+    pub fn register(&mut self, predicate: LootPredicateRef) -> usize {
+        assert!(
+            self.allows_registering,
+            "Cannot register loot predicates after the registry has been frozen"
+        );
+
+        let id = self.predicates_by_id.len();
+        self.predicates_by_key.insert(predicate.key.clone(), id);
+        self.predicates_by_id.push(predicate);
+        id
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (usize, LootPredicateRef)> + '_ {
+        self.predicates_by_id
+            .iter()
+            .enumerate()
+            .map(|(id, &predicate)| (id, predicate))
+    }
+}
+
+impl Default for LootPredicateRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+crate::impl_registry!(
+    LootPredicateRegistry,
+    LootPredicate,
+    predicates_by_id,
+    predicates_by_key,
+    loot_predicates
+);
+
 /// Registry for loot tables.
 pub struct LootTableRegistry {
     tables_by_id: Vec<LootTableRef>,
@@ -2248,6 +2801,7 @@ mod tests {
 
     use super::*;
     use rand::SeedableRng;
+    use simdnbt::owned::NbtList;
 
     fn test_rng() -> rand::rngs::StdRng {
         rand::rngs::StdRng::seed_from_u64(12345)
@@ -2255,6 +2809,92 @@ mod tests {
 
     fn init_test_registries() {
         init_test_registry();
+    }
+
+    fn condition_compound(condition: &str) -> NbtCompound {
+        let mut compound = NbtCompound::new();
+        compound.insert("condition", NbtTag::String(condition.to_owned().into()));
+        compound
+    }
+
+    fn condition_tag(condition: &str) -> NbtTag {
+        NbtTag::Compound(condition_compound(condition))
+    }
+
+    #[test]
+    fn runtime_loot_condition_decodes_and_evaluates_supported_conditions() {
+        init_test_registries();
+        let condition = RuntimeLootCondition::decode(&condition_tag("minecraft:killed_by_player"))
+            .expect("killed_by_player decodes");
+        assert!(matches!(condition, RuntimeLootCondition::KilledByPlayer));
+
+        let mut rng = test_rng();
+        let mut ctx = LootContext::new(&mut rng).with_killed_by_player(true);
+        assert_eq!(condition.try_test(&mut ctx), Ok(true));
+
+        let mut rng = test_rng();
+        let mut ctx = LootContext::new(&mut rng);
+        assert_eq!(condition.try_test(&mut ctx), Ok(false));
+    }
+
+    #[test]
+    fn runtime_loot_condition_decodes_inline_list_as_all_of() {
+        init_test_registries();
+        let tag = NbtTag::List(NbtList::Compound(vec![
+            condition_compound("minecraft:killed_by_player"),
+            condition_compound("minecraft:survives_explosion"),
+        ]));
+
+        let condition = RuntimeLootCondition::decode(&tag).expect("inline list decodes");
+        let RuntimeLootCondition::AllOf(terms) = condition else {
+            panic!("expected inline list to decode as all_of");
+        };
+        assert_eq!(terms.len(), 2);
+        assert!(matches!(terms[0], RuntimeLootCondition::KilledByPlayer));
+        assert!(matches!(terms[1], RuntimeLootCondition::SurvivesExplosion));
+    }
+
+    #[test]
+    fn runtime_loot_condition_rejects_unknown_conditions() {
+        init_test_registries();
+        assert!(matches!(
+            RuntimeLootCondition::decode(&condition_tag("minecraft:not_real")),
+            Err(LootPredicateDecodeError::UnknownCondition(value))
+                if value == "minecraft:not_real"
+        ));
+    }
+
+    #[test]
+    fn runtime_loot_condition_decodes_known_unsupported_conditions() {
+        init_test_registries();
+        let condition = RuntimeLootCondition::decode(&condition_tag("minecraft:entity_scores"))
+            .expect("known unsupported condition decodes");
+        assert!(matches!(
+            condition,
+            RuntimeLootCondition::Unsupported("entity_scores")
+        ));
+
+        let mut rng = test_rng();
+        let mut ctx = LootContext::new(&mut rng);
+        assert_eq!(
+            condition.try_test(&mut ctx),
+            Err(LootConditionEvaluationError::UnsupportedCondition(
+                "entity_scores"
+            ))
+        );
+    }
+
+    #[test]
+    fn runtime_uniform_number_provider_matches_vanilla_degenerate_range() {
+        init_test_registries();
+        let provider = RuntimeNumberProvider::Uniform {
+            min: Box::new(RuntimeNumberProvider::Constant(5.0)),
+            max: Box::new(RuntimeNumberProvider::Constant(2.0)),
+        };
+        let mut rng = test_rng();
+        let mut ctx = LootContext::new(&mut rng);
+
+        assert_eq!(provider.try_get(&mut ctx), Ok(5.0));
     }
 
     #[test]

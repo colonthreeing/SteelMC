@@ -33,7 +33,7 @@ use crate::{
     instrument::InstrumentRegistry,
     items::ItemRegistry,
     jukebox_song::JukeboxSongRegistry,
-    loot_table::LootTableRegistry,
+    loot_table::{LootPredicateRegistry, LootTableRegistry},
     menu_type::MenuTypeRegistry,
     mob_effect::MobEffectRegistry,
     painting_variant::PaintingVariantRegistry,
@@ -561,6 +561,7 @@ pub const MOB_EFFECT_REGISTRY: Identifier = Identifier::vanilla_static("mob_effe
 pub const ZOMBIE_NAUTILUS_VARIANT_REGISTRY: Identifier =
     Identifier::vanilla_static("zombie_nautilus_variant");
 pub const TIMELINE_REGISTRY: Identifier = Identifier::vanilla_static("timeline");
+pub const PREDICATE_REGISTRY: Identifier = Identifier::vanilla_static("predicate");
 pub const LOOT_TABLE_REGISTRY: Identifier = Identifier::vanilla_static("loot_table");
 pub const BLOCK_ENTITY_TYPE_REGISTRY: Identifier = Identifier::vanilla_static("block_entity_type");
 pub const FLUID_REGISTRY: Identifier = Identifier::vanilla_static("fluid");
@@ -615,6 +616,7 @@ pub struct Registry {
     pub timelines: TimelineRegistry,
     pub recipes: RecipeRegistry,
     pub entity_types: EntityTypeRegistry,
+    pub loot_predicates: LootPredicateRegistry,
     pub loot_tables: LootTableRegistry,
     pub block_entity_types: BlockEntityTypeRegistry,
     pub game_rules: GameRuleRegistry,
@@ -784,6 +786,7 @@ impl Registry {
         self.timelines.freeze();
         self.recipes.freeze();
         self.entity_types.freeze();
+        self.loot_predicates.freeze();
         self.loot_tables.freeze();
         self.block_entity_types.freeze();
         self.game_rules.freeze();
@@ -982,6 +985,7 @@ impl Registry {
             timelines: TimelineRegistry::new(),
             recipes: RecipeRegistry::new(),
             entity_types: EntityTypeRegistry::new(),
+            loot_predicates: LootPredicateRegistry::new(),
             loot_tables: LootTableRegistry::new(),
             block_entity_types: BlockEntityTypeRegistry::new(),
             game_rules: GameRuleRegistry::new(),
