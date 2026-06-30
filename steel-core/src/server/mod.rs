@@ -20,8 +20,8 @@ use crate::chunk::{
     chunk_request::{ChunkRequestHandle, ChunkRequestState, ChunkTicketKind},
 };
 use crate::command::{
-    CommandDispatcher, CommandQueue, commands::gamemode, sender::CommandSender,
-    storage::CommandStorage,
+    CommandDispatcher, CommandQueue, commands::gamemode, functions::CommandFunctionRegistry,
+    sender::CommandSender, storage::CommandStorage,
 };
 use crate::config::{ResolvedWorldConfig, RuntimeConfig, WorldsConfig};
 use crate::entity::{Entity, EntityBase, RemovalReason, SharedEntity, init_entities};
@@ -480,6 +480,8 @@ pub struct Server {
     pub scoreboard: Scoreboard,
     /// Server-level command storage used by `/data storage` and `/execute ... storage`.
     pub command_storage: CommandStorage,
+    /// Server-level command functions loaded by future datapack/plugin providers.
+    pub command_functions: SyncRwLock<CommandFunctionRegistry>,
     /// Server-level stopwatches used by `/stopwatch` and `/execute ... stopwatch`.
     pub stopwatches: SyncRwLock<Stopwatches>,
     /// Server-level custom boss bars used by `/bossbar` and `/execute store ... bossbar`.
@@ -655,6 +657,7 @@ impl Server {
             tick_rate_manager: SyncRwLock::new(TickRateManager::new()),
             scoreboard: Scoreboard::new(),
             command_storage: CommandStorage::new(),
+            command_functions: SyncRwLock::new(CommandFunctionRegistry::default()),
             stopwatches: SyncRwLock::new(stopwatches),
             boss_bars: SyncRwLock::new(boss_bars),
             command_dispatcher: SyncRwLock::new(

@@ -5,6 +5,7 @@ use std::{error::Error, fmt, sync::Arc};
 use steel_protocol::packets::game::{CommandNode as ProtocolCommandNode, SuggestionEntry};
 
 use crate::command::{
+    CommandExecutionBudget,
     context::CommandContext,
     error::CommandError,
     reader::CommandReader,
@@ -19,8 +20,8 @@ mod primitive_parsers;
 mod traversal;
 
 pub use arguments::{
-    BiomeArgumentValue, BlockPredicateArgumentValue, CommandPermissionArgument,
-    DoubleRangeArgumentValue, FromParsedArgument, IntRangeArgumentValue,
+    BiomeArgumentValue, BlockPredicateArgumentValue, CommandFunctionArgumentValue,
+    CommandPermissionArgument, DoubleRangeArgumentValue, FromParsedArgument, IntRangeArgumentValue,
     ItemPredicateArgumentValue, ItemPredicateCondition, ItemPredicateMatchError,
     ItemPredicateTarget, ItemPredicateTerm, ItemSlotRangeArgumentValue, LootPredicateArgumentValue,
     ParsedArgument, ParsedArgumentError, ParsedArguments, PermissionTarget,
@@ -181,6 +182,8 @@ pub enum CommandParseErrorKind {
     InvalidItemPredicate(String),
     /// A loot predicate argument was invalid.
     InvalidLootPredicate(String),
+    /// A command function argument was invalid.
+    InvalidCommandFunction(String),
     /// An enchantment argument was invalid.
     InvalidEnchantment(String),
     /// A biome argument was invalid.
@@ -271,6 +274,7 @@ impl CommandParseErrorKind {
             | Self::InvalidItemSlot(_)
             | Self::InvalidItemPredicate(_)
             | Self::InvalidLootPredicate(_)
+            | Self::InvalidCommandFunction(_)
             | Self::InvalidEnchantment(_)
             | Self::InvalidBiome(_)
             | Self::InvalidBlockPredicate(_)
@@ -601,12 +605,20 @@ impl CommandGraphValidation {
 }
 
 type CommandExecutor = Arc<
-    dyn Fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>
+    dyn Fn(
+            &mut CommandContext,
+            &ParsedArguments,
+            &mut CommandExecutionBudget,
+        ) -> Result<CommandResult, CommandError>
         + Send
         + Sync,
 >;
 type CommandForkExecutor = Arc<
-    dyn Fn(&mut CommandContext, &ParsedArguments) -> Result<Vec<CommandContext>, CommandError>
+    dyn Fn(
+            &mut CommandContext,
+            &ParsedArguments,
+            &mut CommandExecutionBudget,
+        ) -> Result<Vec<CommandContext>, CommandError>
         + Send
         + Sync,
 >;
@@ -773,7 +785,8 @@ impl ParseResults {
     ///
     /// Returns a command execution error from the matched executor.
     pub fn execute(&self, context: &mut CommandContext) -> Result<CommandResult, CommandError> {
-        match self.execute_step(context)? {
+        let mut budget = CommandExecutionBudget::for_context(context);
+        match self.execute_step(context, &mut budget)? {
             CommandExecutionStep::Complete(result) => Ok(result),
             CommandExecutionStep::Redirect { command, .. } => Err(CommandError::failure(format!(
                 "Command redirect target '{command}' is unavailable"
@@ -789,22 +802,23 @@ impl ParseResults {
     pub(crate) fn execute_step(
         &self,
         context: &mut CommandContext,
+        budget: &mut CommandExecutionBudget,
     ) -> Result<CommandExecutionStep, CommandError> {
         self.check_dynamic_permissions(context)?;
         match &self.action {
             ParsedCommandAction::Execute(executor) => {
-                executor(context, &self.arguments).map(CommandExecutionStep::Complete)
+                executor(context, &self.arguments, budget).map(CommandExecutionStep::Complete)
             }
             ParsedCommandAction::Redirect(redirect) => {
                 let contexts = match &redirect.modifier {
                     ParsedRedirectModifier::Single(executor) => {
                         let mut redirect_context = context.clone();
-                        executor(&mut redirect_context, &self.arguments)?;
+                        executor(&mut redirect_context, &self.arguments, budget)?;
                         vec![redirect_context]
                     }
                     ParsedRedirectModifier::Fork(executor) => {
                         let mut redirect_context = context.clone();
-                        executor(&mut redirect_context, &self.arguments)?
+                        executor(&mut redirect_context, &self.arguments, budget)?
                     }
                 };
                 let command = match redirect.target {

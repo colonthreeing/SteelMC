@@ -3,6 +3,7 @@ pub mod commands;
 pub mod context;
 pub mod error;
 mod executor;
+pub mod functions;
 pub mod graph;
 mod loot;
 pub mod parsers;
@@ -481,15 +482,17 @@ impl CommandDispatcher {
             let step = {
                 let (command, active_context) = active.parts();
                 match self.graph.parse(command, active_context) {
-                    Ok(parsed) => parsed.execute_step(active_context).map_err(|error| {
-                        if parsed.invokes_result_callback_on_error() {
-                            active_context.on_command_result(CommandCallbackResult {
-                                success: false,
-                                result: 0,
-                            });
-                        }
-                        error
-                    }),
+                    Ok(parsed) => parsed
+                        .execute_step(active_context, budget)
+                        .map_err(|error| {
+                            if parsed.invokes_result_callback_on_error() {
+                                active_context.on_command_result(CommandCallbackResult {
+                                    success: false,
+                                    result: 0,
+                                });
+                            }
+                            error
+                        }),
                     Err(error) => {
                         active_context.on_command_result(CommandCallbackResult {
                             success: false,
@@ -694,6 +697,9 @@ impl CommandDispatcher {
             }
             CommandParseErrorKind::InvalidLootPredicate(value) => {
                 TextComponent::plain(format!("Invalid loot predicate: {value}"))
+            }
+            CommandParseErrorKind::InvalidCommandFunction(value) => {
+                TextComponent::plain(format!("Invalid command function '{value}'"))
             }
             CommandParseErrorKind::InvalidWorld(value) => translations::ARGUMENT_DIMENSION_INVALID
                 .message([TextComponent::from(value.clone())])

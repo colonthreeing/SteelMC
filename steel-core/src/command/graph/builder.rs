@@ -6,7 +6,9 @@ use super::{
     CommandRedirectTarget, CommandResult, DynamicPermission, ParsedArguments,
     UnresolvedDynamicPermission,
 };
-use crate::command::{context::CommandContext, error::CommandError, requirement::Requirement};
+use crate::command::{
+    CommandExecutionBudget, context::CommandContext, error::CommandError, requirement::Requirement,
+};
 use crate::permission::{
     PermissionCatalog, PermissionCatalogSource, PermissionExpr, PermissionKey, PermissionSegment,
 };
@@ -150,8 +152,24 @@ impl CommandNodeBuilder {
     /// Marks this node executable.
     #[must_use]
     pub fn executes(
-        mut self,
+        self,
         executor: impl Fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.executes_with_budget(move |context, arguments, _budget| executor(context, arguments))
+    }
+
+    /// Marks this node executable with access to the active command execution budget.
+    #[must_use]
+    pub(crate) fn executes_with_budget(
+        mut self,
+        executor: impl Fn(
+            &mut CommandContext,
+            &ParsedArguments,
+            &mut CommandExecutionBudget,
+        ) -> Result<CommandResult, CommandError>
         + Send
         + Sync
         + 'static,
@@ -163,9 +181,28 @@ impl CommandNodeBuilder {
     /// Redirects from this node after running `executor`.
     #[must_use]
     pub fn redirects(
-        mut self,
+        self,
         target: CommandRedirectTarget,
         executor: impl Fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.redirects_with_budget(target, move |context, arguments, _budget| {
+            executor(context, arguments)
+        })
+    }
+
+    /// Redirects from this node after running a budget-aware `executor`.
+    #[must_use]
+    pub(crate) fn redirects_with_budget(
+        mut self,
+        target: CommandRedirectTarget,
+        executor: impl Fn(
+            &mut CommandContext,
+            &ParsedArguments,
+            &mut CommandExecutionBudget,
+        ) -> Result<CommandResult, CommandError>
         + Send
         + Sync
         + 'static,
@@ -180,11 +217,30 @@ impl CommandNodeBuilder {
     /// Forks from this node to zero or more command sources.
     #[must_use]
     pub fn forks(
+        self,
+        target: CommandRedirectTarget,
+        executor: impl Fn(
+            &mut CommandContext,
+            &ParsedArguments,
+        ) -> Result<Vec<CommandContext>, CommandError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.forks_with_budget(target, move |context, arguments, _budget| {
+            executor(context, arguments)
+        })
+    }
+
+    /// Forks from this node using a budget-aware `executor`.
+    #[must_use]
+    pub(crate) fn forks_with_budget(
         mut self,
         target: CommandRedirectTarget,
         executor: impl Fn(
             &mut CommandContext,
             &ParsedArguments,
+            &mut CommandExecutionBudget,
         ) -> Result<Vec<CommandContext>, CommandError>
         + Send
         + Sync

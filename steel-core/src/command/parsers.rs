@@ -1,6 +1,7 @@
 //! Graph-native command argument parsers.
 
 mod block;
+mod function;
 mod game;
 mod item_predicate;
 mod item_stack;
@@ -17,6 +18,7 @@ mod text;
 mod world;
 
 pub use block::BlockPredicateParser;
+pub use function::CommandFunctionParser;
 pub use game::GameModeParser;
 pub use item_predicate::ItemPredicateParser;
 pub use item_stack::ItemStackParser;
@@ -48,18 +50,19 @@ mod tests {
         chunk::heightmap::HeightmapType,
         command::{
             graph::{
-                CommandArgumentParser, CommandParseErrorKind, ItemPredicateMatchError,
-                ItemPredicateTarget, ItemPredicateTerm, LootPredicateArgumentValue, ParsedArgument,
-                ParsedArguments,
+                CommandArgumentParser, CommandFunctionArgumentValue, CommandParseErrorKind,
+                ItemPredicateMatchError, ItemPredicateTarget, ItemPredicateTerm,
+                LootPredicateArgumentValue, ParsedArgument, ParsedArguments,
             },
             parsers::{
-                BiomeParser, BlockPosParser, BlockPredicateParser, ComponentParser, DomainParser,
-                DoubleRangeParser, EnchantmentParser, EntityParser, EntitySummonParser,
-                GameModeParser, HeightmapParser, IntRangeParser, ItemParser, ItemPredicateParser,
-                ItemSlotsParser, ItemStackParser, LootPredicateParser, NbtPathParser,
-                ObjectiveParser, PermissionKeyParser, PermissionRuleExpressionParser,
-                PermissionTargetParser, PlayerParser, RotationParser, ScoreHolderParser,
-                StructureParser, TimeParser, Vec3Parser, WorldParser,
+                BiomeParser, BlockPosParser, BlockPredicateParser, CommandFunctionParser,
+                ComponentParser, DomainParser, DoubleRangeParser, EnchantmentParser, EntityParser,
+                EntitySummonParser, GameModeParser, HeightmapParser, IntRangeParser, ItemParser,
+                ItemPredicateParser, ItemSlotsParser, ItemStackParser, LootPredicateParser,
+                NbtPathParser, ObjectiveParser, PermissionKeyParser,
+                PermissionRuleExpressionParser, PermissionTargetParser, PlayerParser,
+                RotationParser, ScoreHolderParser, StructureParser, TimeParser, Vec3Parser,
+                WorldParser,
             },
             reader::CommandReader,
             requirement::{
@@ -1055,6 +1058,61 @@ mod tests {
             LootPredicateParser.client_parser().into_protocol_argument();
 
         assert!(matches!(argument_type, ArgumentType::LootPredicate));
+        assert!(matches!(suggestion_type, Some(SuggestionType::AskServer)));
+    }
+
+    #[test]
+    fn command_function_parser_accepts_functions_and_tags() {
+        let mut reader = CommandReader::new("foo run");
+        let ParsedArgument::CommandFunction(target) = CommandFunctionParser
+            .parse(&mut reader, &TestContext)
+            .expect("function parses")
+        else {
+            panic!("expected command function");
+        };
+        assert!(matches!(
+            target,
+            CommandFunctionArgumentValue::Function(id)
+                if id == Identifier::vanilla_static("foo")
+        ));
+        assert_eq!(reader.remaining(), " run");
+
+        let mut reader = CommandReader::new("#steel:load next");
+        let ParsedArgument::CommandFunction(target) = CommandFunctionParser
+            .parse(&mut reader, &TestContext)
+            .expect("function tag parses")
+        else {
+            panic!("expected command function tag");
+        };
+        assert!(matches!(
+            target,
+            CommandFunctionArgumentValue::Tag(id)
+                if id == Identifier::new_static("steel", "load")
+        ));
+        assert_eq!(reader.remaining(), " next");
+    }
+
+    #[test]
+    fn command_function_parser_rejects_invalid_identifiers() {
+        let mut reader = CommandReader::new("custom:test:bad");
+        let error = CommandFunctionParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("invalid function rejects");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidCommandFunction(value)
+                if value == "custom:test:bad"
+        ));
+    }
+
+    #[test]
+    fn command_function_parser_uses_native_client_type() {
+        let (argument_type, suggestion_type) = CommandFunctionParser
+            .client_parser()
+            .into_protocol_argument();
+
+        assert!(matches!(argument_type, ArgumentType::Function));
         assert!(matches!(suggestion_type, Some(SuggestionType::AskServer)));
     }
 
