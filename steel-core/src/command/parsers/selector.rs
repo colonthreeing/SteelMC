@@ -94,6 +94,7 @@ pub(super) struct EntitySelector {
     x_rotation: Option<FloatRange>,
     y_rotation: Option<FloatRange>,
     filters: Vec<SelectorFilter>,
+    uses_advanced_options: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -552,13 +553,22 @@ impl EntitySelector {
         context: &dyn CommandInputContext,
         cursor: usize,
     ) -> Result<(), CommandParseError> {
-        if !matches!(self.kind, SelectorKind::Selector(_)) || allow_selectors(context) {
+        if !matches!(self.kind, SelectorKind::Selector(_)) {
             return Ok(());
         }
-        Err(CommandParseError::new(
-            CommandParseErrorKind::EntitySelectorsNotAllowed,
-            cursor,
-        ))
+        if !allow_selectors(context) {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::EntitySelectorsNotAllowed,
+                cursor,
+            ));
+        }
+        if self.uses_advanced_options && !allow_advanced_selectors(context) {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::AdvancedEntitySelectorsNotAllowed,
+                cursor,
+            ));
+        }
+        Ok(())
     }
 
     fn candidate_players(
@@ -1336,6 +1346,7 @@ fn parse_name_or_uuid(
             x_rotation: None,
             y_rotation: None,
             filters: Vec::new(),
+            uses_advanced_options: false,
         });
     }
     if !is_valid_selector_name(&name) {
@@ -1359,6 +1370,7 @@ fn parse_name_or_uuid(
         x_rotation: None,
         y_rotation: None,
         filters: Vec::new(),
+        uses_advanced_options: false,
     })
 }
 
@@ -1390,6 +1402,7 @@ fn parse_selector_type(
             x_rotation: None,
             y_rotation: None,
             filters: Vec::new(),
+            uses_advanced_options: false,
         },
         'e' => EntitySelector {
             raw: String::new(),
@@ -1406,6 +1419,7 @@ fn parse_selector_type(
             x_rotation: None,
             y_rotation: None,
             filters: vec![SelectorFilter::Alive],
+            uses_advanced_options: false,
         },
         'n' => EntitySelector {
             raw: String::new(),
@@ -1422,6 +1436,7 @@ fn parse_selector_type(
             x_rotation: None,
             y_rotation: None,
             filters: vec![SelectorFilter::Alive],
+            uses_advanced_options: false,
         },
         'p' => EntitySelector {
             raw: String::new(),
@@ -1438,6 +1453,7 @@ fn parse_selector_type(
             x_rotation: None,
             y_rotation: None,
             filters: Vec::new(),
+            uses_advanced_options: false,
         },
         'r' => EntitySelector {
             raw: String::new(),
@@ -1454,6 +1470,7 @@ fn parse_selector_type(
             x_rotation: None,
             y_rotation: None,
             filters: Vec::new(),
+            uses_advanced_options: false,
         },
         's' => EntitySelector {
             raw: String::new(),
@@ -1470,6 +1487,7 @@ fn parse_selector_type(
             x_rotation: None,
             y_rotation: None,
             filters: Vec::new(),
+            uses_advanced_options: false,
         },
         other => {
             return Err(SelectorParseError::invalid_at(
@@ -1506,6 +1524,7 @@ fn parse_options(
         reader.skip_whitespace();
         let key_cursor = reader.cursor();
         let key = reader.read_key()?;
+        selector.uses_advanced_options = true;
         reader.skip_whitespace();
         reader.expect('=')?;
         reader.skip_whitespace();
@@ -2243,7 +2262,13 @@ mod tests {
     use text_components::TextComponent;
 
     use crate::{
-        command::reader::CommandReader,
+        command::{
+            graph::CommandParseErrorKind,
+            reader::CommandReader,
+            requirement::{
+                CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext,
+            },
+        },
         entity::{Entity, EntityBase},
         scoreboard::{ScoreHolder, Scoreboard},
     };
@@ -2256,6 +2281,10 @@ mod tests {
 
     struct SelectorNbtTestEntity {
         base: EntityBase,
+    }
+
+    struct SelectorResolutionPermissionContext {
+        allow_advanced: bool,
     }
 
     impl SelectorNbtTestEntity {
@@ -2281,6 +2310,27 @@ mod tests {
         }
     }
 
+    impl RequirementContext for SelectorResolutionPermissionContext {
+        fn source_kind(&self) -> CommandSourceKind {
+            CommandSourceKind::Player
+        }
+
+        fn has_permission(&self, permission: &PermissionExpr) -> bool {
+            matches!(
+                permission,
+                PermissionExpr::Key(key)
+                    if key.as_str() == crate::command::ENTITY_SELECTOR_PERMISSION_KEY
+            ) || matches!(
+                permission,
+                PermissionExpr::Key(key)
+                    if self.allow_advanced
+                        && key.as_str() == crate::command::ENTITY_SELECTOR_ADVANCED_PERMISSION_KEY
+            )
+        }
+    }
+
+    impl CommandInputContext for SelectorResolutionPermissionContext {}
+
     #[test]
     fn selector_permission_gate_rejects_selector_syntax() {
         let error = parse_selector_plan("@a".to_owned(), false).expect_err("selector rejected");
@@ -2299,6 +2349,35 @@ mod tests {
 
         parse_selector_plan_with_permissions("@a".to_owned(), true, false)
             .expect("basic selector syntax is allowed");
+    }
+
+    #[test]
+    fn selector_resolution_rechecks_advanced_permission() {
+        let selector =
+            parse_selector_plan_with_permissions("@e[distance=..10]".to_owned(), true, true)
+                .expect("advanced selector parses with permission");
+        let context = SelectorResolutionPermissionContext {
+            allow_advanced: false,
+        };
+
+        let Err(error) = selector.find_entities(&context, 0) else {
+            panic!("advanced selector resolution is rejected");
+        };
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::AdvancedEntitySelectorsNotAllowed
+        ));
+
+        let empty_selector = parse_selector_plan_with_permissions("@e[]".to_owned(), true, false)
+            .expect("empty option list is not advanced");
+        assert!(!empty_selector.uses_advanced_options);
+        let Err(error) = empty_selector.find_entities(&context, 0) else {
+            panic!("empty selector reaches live-server resolution");
+        };
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::MissingCommandContext("server")
+        ));
     }
 
     #[test]
