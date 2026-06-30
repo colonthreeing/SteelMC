@@ -405,6 +405,11 @@ async fn shutdown_worlds(server: &Arc<Server>) {
         Ok(false) => {}
         Err(e) => log::error!("Failed to save stopwatches: {e}"),
     }
+    match server.save_boss_bars().await {
+        Ok(true) => log::info!("Saved boss bars"),
+        Ok(false) => {}
+        Err(e) => log::error!("Failed to save boss bars: {e}"),
+    }
 }
 
 #[cfg(test)]

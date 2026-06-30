@@ -1,4 +1,6 @@
 //! This module contains the `Server` struct, which is the main entry point for the server.
+/// Server-level custom boss bar state.
+pub mod bossbar;
 /// Tick-polled server jobs.
 pub mod jobs;
 mod pregen;
@@ -40,6 +42,7 @@ use crate::player::profile_lookup::{ProfileLookupError, lookup_online_profile};
 use crate::player::{GameProfile, Player, ResetReason, is_valid_player_name, offline_uuid};
 use crate::portal::{TeleportTransition, WorldChangeRequest};
 use crate::scoreboard::Scoreboard;
+use crate::server::bossbar::{BossBarBroadcast, BossBars};
 use crate::server::jobs::{FnServerJob, JobPoll, ServerJob, ServerJobContext, ServerJobQueue};
 use crate::server::registry_cache::RegistryCache;
 use crate::server::stopwatch::Stopwatches;
@@ -479,6 +482,8 @@ pub struct Server {
     pub command_storage: CommandStorage,
     /// Server-level stopwatches used by `/stopwatch` and `/execute ... stopwatch`.
     pub stopwatches: SyncRwLock<Stopwatches>,
+    /// Server-level custom boss bars used by `/bossbar` and `/execute store ... bossbar`.
+    pub boss_bars: SyncRwLock<BossBars>,
     /// Parses and dispatches commands.
     pub command_dispatcher: SyncRwLock<CommandDispatcher>,
     /// Serializes async command execution outside packet handling.
@@ -573,6 +578,9 @@ impl Server {
         let stopwatches = Stopwatches::load(&resolved_worlds.save_path)
             .await
             .map_err(|e| format!("failed to load stopwatches: {e}"))?;
+        let boss_bars = BossBars::load(&resolved_worlds.save_path)
+            .await
+            .map_err(|e| format!("failed to load boss bars: {e}"))?;
         let mut worlds = WorldMap::new(
             resolved_worlds.default_domain.clone(),
             &resolved_worlds.domains,
@@ -648,6 +656,7 @@ impl Server {
             scoreboard: Scoreboard::new(),
             command_storage: CommandStorage::new(),
             stopwatches: SyncRwLock::new(stopwatches),
+            boss_bars: SyncRwLock::new(boss_bars),
             command_dispatcher: SyncRwLock::new(
                 CommandDispatcher::new()
                     .map_err(|e| format!("failed to register commands: {e}"))?,
@@ -677,6 +686,41 @@ impl Server {
         save.write().await?;
         self.stopwatches.write().mark_saved(save.generation());
         Ok(true)
+    }
+
+    /// Saves server-level custom boss bar state if needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the snapshot cannot be written.
+    pub async fn save_boss_bars(&self) -> io::Result<bool> {
+        let Some(save) = self.boss_bars.read().prepare_save() else {
+            return Ok(false);
+        };
+        save.write().await?;
+        self.boss_bars.write().mark_saved(save.generation());
+        Ok(true)
+    }
+
+    /// Sends boss bar mutation packets to online recipients.
+    pub fn send_bossbar_broadcasts(&self, broadcasts: impl IntoIterator<Item = BossBarBroadcast>) {
+        for broadcast in broadcasts {
+            for uuid in broadcast.recipients {
+                if let Some(player) = self.get_player_by_uuid(&uuid) {
+                    player.send_packet(broadcast.packet.clone());
+                }
+            }
+        }
+    }
+
+    fn send_join_bossbars(&self, player: &Player) {
+        let packets = self
+            .boss_bars
+            .read()
+            .player_connected_packets(player.uuid());
+        for packet in packets {
+            player.send_packet(packet);
+        }
     }
 
     /// Queues a command for serialized async execution.
@@ -748,6 +792,7 @@ impl Server {
         if player.mark_joined_world() {
             player.send_inventory_to_remote();
         }
+        self.send_join_bossbars(&player);
         self.schedule_root_vehicle_restore(&player, &state);
         if player.connection.closed() {
             tokio::spawn(async move {

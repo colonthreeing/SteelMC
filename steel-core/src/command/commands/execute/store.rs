@@ -28,6 +28,7 @@ use super::{
     loaded_named_block_position, nbt_path, score_holders_or_tracked, scoreboard_objective,
     single_entity, storage_id,
 };
+use super::super::bossbar::{BossBarIdParser, bossbar_does_not_exist};
 
 pub(super) fn target(name: &'static str, store_result: bool) -> CommandNodeBuilder {
     literal(name)
@@ -38,6 +39,21 @@ pub(super) fn target(name: &'static str, store_result: bool) -> CommandNodeBuild
                     move |context, arguments| store_score(context, arguments, store_result),
                 ),
             ),
+        ))
+        .then(literal("bossbar").then(
+            argument("id", BossBarIdParser::existing())
+                .then(literal("value").redirects(
+                    CommandRedirectTarget::Current,
+                    move |context, arguments| {
+                        store_bossbar(context, arguments, true, store_result)
+                    },
+                ))
+                .then(literal("max").redirects(
+                    CommandRedirectTarget::Current,
+                    move |context, arguments| {
+                        store_bossbar(context, arguments, false, store_result)
+                    },
+                )),
         ))
         .then(literal("block").then(
             argument("targetPos", BlockPosParser).then(
@@ -214,6 +230,45 @@ fn store_block_data(
         let tag = data_type.tag(value, scale);
         if let Err(error) = store_block_data_value(&world, pos, &path, tag) {
             log::warn!("Failed to store execute command result in block data: {error}");
+        }
+    });
+    context.chain_result_callback(callback);
+    Ok(CommandResult::success())
+}
+
+fn store_bossbar(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    store_into_value: bool,
+    store_result: bool,
+) -> Result<CommandResult, CommandError> {
+    let id = arguments
+        .get::<Identifier>("id")
+        .map_err(super::super::invalid_parsed_argument)?;
+    if context.server.boss_bars.read().get(&id).is_none() {
+        return Err(bossbar_does_not_exist(&id));
+    }
+
+    let server = Arc::clone(&context.server);
+    let callback = CommandResultCallback::new(move |result| {
+        let value = if store_result {
+            result.result
+        } else {
+            i32::from(result.success)
+        };
+        let mutation = {
+            let mut boss_bars = server.boss_bars.write();
+            if store_into_value {
+                boss_bars.set_value(&id, value)
+            } else {
+                boss_bars.set_max(&id, value)
+            }
+        };
+        match mutation {
+            Ok(mutation) => server.send_bossbar_broadcasts(mutation.broadcasts),
+            Err(error) => {
+                log::warn!("Failed to store execute command result in boss bar: {error:?}");
+            }
         }
     });
     context.chain_result_callback(callback);

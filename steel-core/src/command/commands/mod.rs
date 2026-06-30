@@ -59,6 +59,7 @@ mod tests {
                 .all(|names| names[0] < names[1])
         );
         assert!(super::BUILT_IN_COMMAND_MODULES.contains(&"clear"));
+        assert!(super::BUILT_IN_COMMAND_MODULES.contains(&"bossbar"));
         assert!(super::BUILT_IN_COMMAND_MODULES.contains(&"steelperms"));
         assert!(super::BUILT_IN_COMMAND_MODULES.contains(&"stopwatch"));
         assert!(super::BUILT_IN_COMMAND_MODULES.contains(&"xp"));

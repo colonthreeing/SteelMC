@@ -122,6 +122,31 @@ fn stopwatch_condition_parses_direct_and_redirect_forms() {
 }
 
 #[test]
+fn bossbar_store_parses_value_and_max_targets() {
+    let graph = graph();
+    let context = TestContext;
+
+    let value = graph
+        .parse(
+            "execute store result bossbar minecraft:test value run seed",
+            &context,
+        )
+        .expect("bossbar value store parses");
+    assert_eq!(
+        value.path(),
+        ["execute", "store", "result", "bossbar", "id", "value"]
+    );
+
+    let max = graph
+        .parse("execute store success bossbar test max run seed", &context)
+        .expect("bossbar max store parses");
+    assert_eq!(
+        max.path(),
+        ["execute", "store", "success", "bossbar", "id", "max"]
+    );
+}
+
+#[test]
 fn biome_condition_parses_direct_and_redirect_forms() {
     init_test_registry();
     let graph = graph();

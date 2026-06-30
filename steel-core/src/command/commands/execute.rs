@@ -1,9 +1,8 @@
 //! Handler for the "execute" command.
 //!
-//! Bossbar store targets, loot predicates, command functions, and data
-//! component predicates without concrete Steel component storage are not
-//! registered here yet because their backing foundations are not implemented in
-//! Steel's command/runtime layer.
+//! Loot predicates, command functions, and data component predicates without
+//! concrete Steel component storage are not registered here yet because their
+//! backing foundations are not implemented in Steel's command/runtime layer.
 
 use std::{borrow::Cow, sync::Arc};
 
