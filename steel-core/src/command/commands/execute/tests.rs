@@ -122,6 +122,28 @@ fn stopwatch_condition_parses_direct_and_redirect_forms() {
 }
 
 #[test]
+fn predicate_condition_parses_direct_and_redirect_forms() {
+    let graph = graph();
+    let context = TestContext;
+
+    let direct = graph
+        .parse(
+            "execute if predicate {condition:\"minecraft:killed_by_player\"}",
+            &context,
+        )
+        .expect("direct predicate conditional parses");
+    assert_eq!(direct.path(), ["execute", "if", "predicate", "predicate"]);
+
+    let redirected = graph
+        .parse("execute unless predicate test run seed", &context)
+        .expect("redirected predicate conditional parses");
+    assert_eq!(
+        redirected.path(),
+        ["execute", "unless", "predicate", "predicate"]
+    );
+}
+
+#[test]
 fn bossbar_store_parses_value_and_max_targets() {
     let graph = graph();
     let context = TestContext;

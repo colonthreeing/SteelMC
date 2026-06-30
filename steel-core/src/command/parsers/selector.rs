@@ -6,16 +6,13 @@ use glam::DVec3;
 use rand::seq::SliceRandom;
 use simdnbt::owned::NbtCompound;
 use steel_registry::{
-    REGISTRY, RegistryExt, TaggedRegistryExt,
-    entity_type::EntityTypeRef,
-    loot_table::{EntityRef, EntityRefFlags, LootContext, WeatherState as LootWeatherState},
+    REGISTRY, RegistryExt, TaggedRegistryExt, entity_type::EntityTypeRef, loot_table::LootContext,
     vanilla_entities,
 };
 use steel_utils::{
     Identifier,
     geometry::WorldAabb,
     nbt::{compare_nbt_compounds, parse_snbt_compound_argument},
-    random::{Random, legacy_random::LegacyRandom},
     types::GameType,
 };
 use uuid::Uuid;
@@ -24,6 +21,7 @@ use crate::{
     command::{
         entity_selector_advanced_permission_expr, entity_selector_permission_expr,
         graph::{CommandParseError, CommandParseErrorKind},
+        loot::{CommandLootRandom, command_loot_entity_ref, command_loot_weather},
         parsers::parse_resource_identifier,
         reader::{CommandReader, StringMode},
         requirement::CommandInputContext,
@@ -790,34 +788,6 @@ impl SelectorFilter {
     }
 }
 
-struct SelectorLootRandom<'a>(&'a mut LegacyRandom);
-
-impl rand::TryRng for SelectorLootRandom<'_> {
-    type Error = std::convert::Infallible;
-
-    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
-        Ok(self.0.next_i32() as u32)
-    }
-
-    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
-        Ok(self.0.next_i64() as u64)
-    }
-
-    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
-        let mut chunks = dst.chunks_exact_mut(8);
-        for chunk in &mut chunks {
-            chunk.copy_from_slice(&self.0.next_i64().to_le_bytes());
-        }
-
-        let remainder = chunks.into_remainder();
-        if !remainder.is_empty() {
-            let bytes = self.0.next_i64().to_le_bytes();
-            remainder.copy_from_slice(&bytes[..remainder.len()]);
-        }
-        Ok(())
-    }
-}
-
 fn selector_predicate_filter_matches(
     value: &Identifier,
     inverted: bool,
@@ -832,13 +802,10 @@ fn selector_predicate_filter_matches(
     };
 
     let position = entity.position();
-    let entity_ref = selector_entity_loot_ref(entity);
-    let weather = LootWeatherState {
-        raining: world.is_raining(),
-        thundering: world.is_thundering(),
-    };
+    let entity_ref = command_loot_entity_ref(entity);
+    let weather = command_loot_weather(&world);
     let mut random = world.random().lock();
-    let mut rng = SelectorLootRandom(&mut random);
+    let mut rng = CommandLootRandom::new(&mut random);
     let mut context = LootContext::new(&mut rng)
         .with_origin(position.x, position.y, position.z)
         .with_game_time(world.game_time())
@@ -857,22 +824,6 @@ fn selector_predicate_filter_matches(
                 cursor,
             )
         })
-}
-
-fn selector_entity_loot_ref(entity: &dyn Entity) -> EntityRef<'_> {
-    let living_entity = entity.as_living_entity();
-    EntityRef {
-        entity_type: Some(&entity.entity_type().key),
-        flags: EntityRefFlags {
-            is_on_fire: entity.is_on_fire(),
-            is_sneaking: entity.is_crouching(),
-            is_sprinting: living_entity.is_some_and(|entity| entity.is_sprinting()),
-            is_swimming: entity.is_swimming(),
-            is_baby: living_entity.is_some_and(|entity| entity.is_baby()),
-        },
-        equipment: None,
-        custom_name: None,
-    }
 }
 
 fn entity_nbt_filter_matches(expected: &NbtCompound, inverted: bool, entity: &dyn Entity) -> bool {

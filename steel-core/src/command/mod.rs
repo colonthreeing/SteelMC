@@ -4,6 +4,7 @@ pub mod context;
 pub mod error;
 mod executor;
 pub mod graph;
+mod loot;
 pub mod parsers;
 pub mod reader;
 pub mod requirement;

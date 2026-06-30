@@ -1,8 +1,8 @@
 //! Handler for the "execute" command.
 //!
-//! Loot predicates, command functions, and data component predicates without
-//! concrete Steel component storage are not registered here yet because their
-//! backing foundations are not implemented in Steel's command/runtime layer.
+//! Command functions and data component predicates without concrete Steel
+//! component storage are not registered here yet because their backing
+//! foundations are not implemented in Steel's command/runtime layer.
 
 use std::{borrow::Cow, sync::Arc};
 
@@ -24,8 +24,8 @@ use crate::command::error::CommandError;
 use crate::command::graph::{
     BiomeArgumentValue, BlockPredicateArgumentValue, CommandNodeBuilder, CommandRedirectTarget,
     CommandResult, DoubleRangeArgumentValue, IntRangeArgumentValue, ItemPredicateArgumentValue,
-    ItemSlotRangeArgumentValue, ParsedArguments, ScoreHolderArgumentValue, ScoreboardObjectiveName,
-    literal,
+    ItemSlotRangeArgumentValue, LootPredicateArgumentValue, ParsedArguments,
+    ScoreHolderArgumentValue, ScoreboardObjectiveName, literal,
 };
 use crate::entity::SharedEntity;
 use crate::scoreboard::{ScoreHolder, ScoreboardObjective};
@@ -167,6 +167,12 @@ fn item_predicate(
 ) -> Result<ItemPredicateArgumentValue, CommandError> {
     arguments
         .get::<ItemPredicateArgumentValue>("item_predicate")
+        .map_err(super::invalid_parsed_argument)
+}
+
+fn loot_predicate(arguments: &ParsedArguments) -> Result<LootPredicateArgumentValue, CommandError> {
+    arguments
+        .get::<LootPredicateArgumentValue>("predicate")
         .map_err(super::invalid_parsed_argument)
 }
 

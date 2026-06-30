@@ -1,7 +1,9 @@
 use std::{borrow::Cow, sync::Arc};
 
 use simdnbt::owned::{NbtCompound, NbtTag};
-use steel_registry::blocks::block_state_ext::BlockStateExt;
+use steel_registry::{
+    REGISTRY, RegistryExt, blocks::block_state_ext::BlockStateExt, loot_table::LootContext,
+};
 use steel_utils::{BlockPos, Identifier, nbt::compare_nbt, translations};
 use text_components::{TextComponent, translation::TranslatedMessage};
 
@@ -9,12 +11,13 @@ use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
     CommandNodeBuilder, CommandRedirectTarget, CommandResult, DoubleRangeArgumentValue,
-    IntRangeArgumentValue, ParsedArguments, argument, literal,
+    IntRangeArgumentValue, LootPredicateArgumentValue, ParsedArguments, argument, literal,
 };
+use crate::command::loot::{CommandLootRandom, command_loot_entity_ref, command_loot_weather};
 use crate::command::parsers::{
     BiomeParser, BlockPosParser, BlockPredicateParser, DoubleRangeParser, EntityParser,
-    IntRangeParser, ItemPredicateParser, ItemSlotsParser, NbtPathParser, ObjectiveParser,
-    ScoreHolderParser, WorldParser,
+    IntRangeParser, ItemPredicateParser, ItemSlotsParser, LootPredicateParser, NbtPathParser,
+    ObjectiveParser, ScoreHolderParser, WorldParser,
 };
 use crate::entity::EntityCommandItemSlotResult;
 use crate::scoreboard::{ScoreHolder, Scoreboard, ScoreboardObjective};
@@ -23,8 +26,8 @@ use crate::world::World;
 use super::{
     StorageKeyParser, biome_value, block_data_invalid_error, block_entity_full_nbt,
     block_position, block_predicate, entities, int_range, loaded_named_block_position, nbt_path,
-    double_range, item_predicate, item_slots, position_error, same_world, scoreboard_objective,
-    single_score_holder, source_entity, storage_id, world,
+    double_range, item_predicate, item_slots, loot_predicate, position_error, same_world,
+    scoreboard_objective, single_score_holder, source_entity, storage_id, world,
 };
 use super::super::item_predicate_match_error;
 use super::super::stopwatch::{StopwatchIdParser, stopwatch_does_not_exist};
@@ -49,6 +52,15 @@ pub(super) fn conditionals(name: &'static str, expected: bool) -> CommandNodeBui
                 })
                 .forks(CommandRedirectTarget::Current, move |context, arguments| {
                     fork_entity_condition(context, arguments, expected)
+                }),
+        ))
+        .then(literal("predicate").then(
+            argument("predicate", LootPredicateParser)
+                .executes(move |context, arguments| {
+                    execute_predicate_condition(context, arguments, expected)
+                })
+                .forks(CommandRedirectTarget::Current, move |context, arguments| {
+                    fork_predicate_condition(context, arguments, expected)
                 }),
         ))
         .then(
@@ -253,6 +265,64 @@ fn fork_entity_condition(
     } else {
         Vec::new()
     })
+}
+
+fn execute_predicate_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+) -> Result<CommandResult, CommandError> {
+    let matches = predicate_condition_matches(context, arguments)?;
+    execute_simple_condition(context, matches, expected)
+}
+
+fn fork_predicate_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+) -> Result<Vec<CommandContext>, CommandError> {
+    let matches = predicate_condition_matches(context, arguments)?;
+    Ok(if matches == expected {
+        vec![context.clone()]
+    } else {
+        Vec::new()
+    })
+}
+
+fn predicate_condition_matches(
+    context: &CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<bool, CommandError> {
+    let predicate = loot_predicate(arguments)?;
+    let condition = match &predicate {
+        LootPredicateArgumentValue::Reference(id) => {
+            let Some(predicate) = REGISTRY.loot_predicates.by_key(id) else {
+                return Ok(false);
+            };
+            &predicate.condition
+        }
+        LootPredicateArgumentValue::Inline(condition) => condition,
+    };
+
+    let mut random = context.world.random().lock();
+    let mut rng = CommandLootRandom::new(&mut random);
+    let mut loot_context = LootContext::new(&mut rng)
+        .with_origin(context.position.x, context.position.y, context.position.z)
+        .with_game_time(context.world.game_time())
+        .with_weather(command_loot_weather(&context.world));
+    if let Some(entity) = &context.entity {
+        loot_context = loot_context.with_this_entity(command_loot_entity_ref(entity.as_ref()));
+    }
+
+    condition
+        .try_test(&mut loot_context)
+        .map_err(loot_predicate_evaluation_error)
+}
+
+fn loot_predicate_evaluation_error(error: impl std::fmt::Display) -> CommandError {
+    CommandError::failure(TextComponent::from(format!(
+        "unsupported loot predicate: {error}"
+    )))
 }
 
 fn execute_entity_items_condition(
