@@ -4,9 +4,10 @@ use std::sync::Arc;
 
 use steel_protocol::packets::game::{ArgumentType, SuggestionEntry, SuggestionType};
 use steel_utils::translations::{
-    ARGUMENT_ENTITY_SELECTOR_ALL_PLAYERS, ARGUMENT_ENTITY_SELECTOR_NEAREST_PLAYER,
+    self, ARGUMENT_ENTITY_SELECTOR_ALL_PLAYERS, ARGUMENT_ENTITY_SELECTOR_NEAREST_PLAYER,
     ARGUMENT_ENTITY_SELECTOR_RANDOM_PLAYER, ARGUMENT_ENTITY_SELECTOR_SELF,
 };
+use text_components::TextComponent;
 use uuid::Uuid;
 
 use crate::{
@@ -58,12 +59,30 @@ impl PlayerTargetArgumentValue {
     /// # Errors
     ///
     /// Returns a structured command error when the selector cannot resolve.
-    pub fn resolve(
+    pub fn resolve_optional(
         &self,
         context: &dyn CommandInputContext,
     ) -> Result<Vec<Arc<Player>>, CommandError> {
         self.resolve_for_parse(context)
             .map_err(|error| CommandDispatcher::parse_error_to_command_error(&self.input, error))
+    }
+
+    /// Resolves this target and errors when no player matched.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured command error when the selector cannot resolve or no player matched.
+    pub fn resolve_required(
+        &self,
+        context: &dyn CommandInputContext,
+    ) -> Result<Vec<Arc<Player>>, CommandError> {
+        let players = self.resolve_optional(context)?;
+        if players.is_empty() {
+            return Err(self.parse_error(CommandParseErrorKind::InvalidPlayer(
+                self.selector.raw().to_owned(),
+            )));
+        }
+        Ok(players)
     }
 
     fn resolve_for_parse(
@@ -78,6 +97,13 @@ impl PlayerTargetArgumentValue {
             ));
         }
         Ok(players)
+    }
+
+    fn parse_error(&self, kind: CommandParseErrorKind) -> CommandError {
+        CommandDispatcher::parse_error_to_command_error(
+            &self.input,
+            CommandParseError::new(kind, self.cursor),
+        )
     }
 }
 
@@ -116,12 +142,30 @@ impl EntityTargetArgumentValue {
     /// # Errors
     ///
     /// Returns a structured command error when the selector cannot resolve.
-    pub fn resolve(
+    pub fn resolve_optional(
         &self,
         context: &dyn CommandInputContext,
     ) -> Result<Vec<SharedEntity>, CommandError> {
         self.resolve_for_parse(context)
             .map_err(|error| CommandDispatcher::parse_error_to_command_error(&self.input, error))
+    }
+
+    /// Resolves this target and errors when no entity matched.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured command error when the selector cannot resolve or no entity matched.
+    pub fn resolve_required(
+        &self,
+        context: &dyn CommandInputContext,
+    ) -> Result<Vec<SharedEntity>, CommandError> {
+        let entities = self.resolve_optional(context)?;
+        if entities.is_empty() {
+            return Err(self.parse_error(CommandParseErrorKind::InvalidEntity(
+                self.selector.raw().to_owned(),
+            )));
+        }
+        Ok(entities)
     }
 
     fn resolve_for_parse(
@@ -136,6 +180,13 @@ impl EntityTargetArgumentValue {
             ));
         }
         Ok(entities)
+    }
+
+    fn parse_error(&self, kind: CommandParseErrorKind) -> CommandError {
+        CommandDispatcher::parse_error_to_command_error(
+            &self.input,
+            CommandParseError::new(kind, self.cursor),
+        )
     }
 }
 
@@ -376,26 +427,62 @@ impl CommandArgumentParser for EntityParser {
     }
 }
 
-pub(crate) fn resolve_player_targets(
+pub(crate) fn resolve_required_player_targets(
     arguments: &ParsedArguments,
     name: &str,
     context: &dyn CommandInputContext,
 ) -> Result<Vec<Arc<Player>>, CommandError> {
     if let Ok(targets) = arguments.get::<PlayerTargetArgumentValue>(name) {
-        return targets.resolve(context);
+        return targets.resolve_required(context);
+    }
+    let players = arguments
+        .get::<Vec<Arc<Player>>>(name)
+        .map_err(invalid_parsed_argument)?;
+    if players.is_empty() {
+        Err(no_players_found())
+    } else {
+        Ok(players)
+    }
+}
+
+pub(crate) fn resolve_optional_player_targets(
+    arguments: &ParsedArguments,
+    name: &str,
+    context: &dyn CommandInputContext,
+) -> Result<Vec<Arc<Player>>, CommandError> {
+    if let Ok(targets) = arguments.get::<PlayerTargetArgumentValue>(name) {
+        return targets.resolve_optional(context);
     }
     arguments
         .get::<Vec<Arc<Player>>>(name)
         .map_err(invalid_parsed_argument)
 }
 
-pub(crate) fn resolve_entity_targets(
+pub(crate) fn resolve_required_entity_targets(
     arguments: &ParsedArguments,
     name: &str,
     context: &dyn CommandInputContext,
 ) -> Result<Vec<SharedEntity>, CommandError> {
     if let Ok(targets) = arguments.get::<EntityTargetArgumentValue>(name) {
-        return targets.resolve(context);
+        return targets.resolve_required(context);
+    }
+    let entities = arguments
+        .get::<Vec<SharedEntity>>(name)
+        .map_err(invalid_parsed_argument)?;
+    if entities.is_empty() {
+        Err(no_entities_found())
+    } else {
+        Ok(entities)
+    }
+}
+
+pub(crate) fn resolve_optional_entity_targets(
+    arguments: &ParsedArguments,
+    name: &str,
+    context: &dyn CommandInputContext,
+) -> Result<Vec<SharedEntity>, CommandError> {
+    if let Ok(targets) = arguments.get::<EntityTargetArgumentValue>(name) {
+        return targets.resolve_optional(context);
     }
     arguments
         .get::<Vec<SharedEntity>>(name)
@@ -404,6 +491,18 @@ pub(crate) fn resolve_entity_targets(
 
 fn invalid_parsed_argument(error: crate::command::graph::ParsedArgumentError) -> CommandError {
     CommandError::InvalidConsumption(Some(format!("{error:?}")))
+}
+
+fn no_players_found() -> CommandError {
+    CommandError::failure(TextComponent::from(
+        &translations::ARGUMENT_ENTITY_NOTFOUND_PLAYER,
+    ))
+}
+
+fn no_entities_found() -> CommandError {
+    CommandError::failure(TextComponent::from(
+        &translations::ARGUMENT_ENTITY_NOTFOUND_ENTITY,
+    ))
 }
 
 fn push_selector_suggestions(
@@ -434,5 +533,104 @@ fn push_selector_suggestions(
             "@e" | "@n" => suggestions.push(SuggestionEntry::new(selector)),
             _ => suggestions.push(SuggestionEntry::new(selector)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use steel_utils::translations;
+    use text_components::content::Content;
+
+    use crate::command::{
+        error::CommandError,
+        graph::{ParsedArgument, ParsedArguments},
+        requirement::{CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext},
+    };
+
+    use super::{
+        resolve_optional_entity_targets, resolve_optional_player_targets,
+        resolve_required_entity_targets, resolve_required_player_targets,
+    };
+
+    struct TestContext;
+
+    impl RequirementContext for TestContext {
+        fn source_kind(&self) -> CommandSourceKind {
+            CommandSourceKind::Console
+        }
+
+        fn has_permission(&self, _permission: &PermissionExpr) -> bool {
+            false
+        }
+    }
+
+    impl CommandInputContext for TestContext {}
+
+    fn command_failed_translation_key(error: CommandError) -> String {
+        let CommandError::CommandFailed(message) = error else {
+            panic!("error should be a command failure");
+        };
+        let Content::Translate(message) = &message.content else {
+            panic!("command failure should be translated");
+        };
+        message.key.to_string()
+    }
+
+    #[test]
+    fn optional_player_targets_allow_empty_results() {
+        let mut arguments = ParsedArguments::default();
+        arguments.insert("targets", ParsedArgument::Players(Vec::new()));
+
+        let Ok(targets) = resolve_optional_player_targets(&arguments, "targets", &TestContext)
+        else {
+            panic!("optional targets resolve");
+        };
+
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn required_player_targets_reject_empty_results() {
+        let mut arguments = ParsedArguments::default();
+        arguments.insert("targets", ParsedArgument::Players(Vec::new()));
+
+        let Err(error) = resolve_required_player_targets(&arguments, "targets", &TestContext)
+        else {
+            panic!("required targets reject empty results");
+        };
+
+        assert_eq!(
+            command_failed_translation_key(error),
+            translations::ARGUMENT_ENTITY_NOTFOUND_PLAYER.0
+        );
+    }
+
+    #[test]
+    fn optional_entity_targets_allow_empty_results() {
+        let mut arguments = ParsedArguments::default();
+        arguments.insert("targets", ParsedArgument::Entities(Vec::new()));
+
+        let Ok(targets) = resolve_optional_entity_targets(&arguments, "targets", &TestContext)
+        else {
+            panic!("optional targets resolve");
+        };
+
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn required_entity_targets_reject_empty_results() {
+        let mut arguments = ParsedArguments::default();
+        arguments.insert("targets", ParsedArgument::Entities(Vec::new()));
+
+        let Err(error) = resolve_required_entity_targets(&arguments, "targets", &TestContext)
+        else {
+            panic!("required targets reject empty results");
+        };
+
+        assert_eq!(
+            command_failed_translation_key(error),
+            translations::ARGUMENT_ENTITY_NOTFOUND_ENTITY.0
+        );
     }
 }

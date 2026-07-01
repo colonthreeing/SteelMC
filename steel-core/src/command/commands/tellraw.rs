@@ -4,7 +4,7 @@ use crate::command::error::CommandError;
 use crate::command::graph::{
     CommandNodeBuilder, CommandResult, ParsedArguments, argument, literal,
 };
-use crate::command::parsers::{ComponentParser, PlayerParser, resolve_player_targets};
+use crate::command::parsers::{ComponentParser, PlayerParser, resolve_required_player_targets};
 use crate::command::sender::CommandSender;
 use crate::command::CommandRegistrationSpec;
 use text_components::TextComponent;
@@ -24,7 +24,7 @@ fn send_tellraw(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = resolve_player_targets(arguments, "targets", context)?;
+    let targets = resolve_required_player_targets(arguments, "targets", context)?;
     let message = arguments
         .get::<TextComponent>("message")
         .map_err(super::invalid_parsed_argument)?;

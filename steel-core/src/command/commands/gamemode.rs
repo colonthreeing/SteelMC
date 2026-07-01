@@ -5,7 +5,7 @@ use crate::command::graph::{
     CommandNodeBuilder, CommandPermissionArgument, CommandResult, ParsedArguments, argument,
     literal,
 };
-use crate::command::parsers::{GameModeParser, PlayerParser, resolve_player_targets};
+use crate::command::parsers::{GameModeParser, PlayerParser, resolve_required_player_targets};
 use crate::command::requirement::RequirementContext;
 use crate::command::{
     CommandRegistrationSpec, minecraft_command_permission_key,
@@ -112,7 +112,7 @@ fn set_target_game_mode(
     let gamemode = arguments
         .get::<GameType>("gamemode")
         .map_err(super::invalid_parsed_argument)?;
-    let targets = resolve_player_targets(arguments, "targets", context)?;
+    let targets = resolve_required_player_targets(arguments, "targets", context)?;
 
     let mode_translation = get_gamemode_translation(gamemode);
 

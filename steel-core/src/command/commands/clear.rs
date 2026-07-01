@@ -14,7 +14,7 @@ use crate::{
             CommandNodeBuilder, CommandResult, IntegerParser, ItemPredicateArgumentValue,
             ParsedArguments, argument, literal,
         },
-        parsers::{ItemPredicateParser, PlayerParser, resolve_player_targets},
+        parsers::{ItemPredicateParser, PlayerParser, resolve_required_player_targets},
         sender::CommandSender,
     },
     inventory::container::Container,
@@ -208,7 +208,7 @@ fn targets(
     arguments: &ParsedArguments,
     context: &CommandContext,
 ) -> Result<Vec<Arc<Player>>, CommandError> {
-    resolve_player_targets(arguments, "targets", context)
+    resolve_required_player_targets(arguments, "targets", context)
 }
 
 fn item_predicate(arguments: &ParsedArguments) -> Result<ItemPredicateArgumentValue, CommandError> {

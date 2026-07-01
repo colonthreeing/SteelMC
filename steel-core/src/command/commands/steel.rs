@@ -9,7 +9,7 @@ use crate::command::error::CommandError;
 use crate::command::graph::{
     CommandNodeBuilder, CommandResult, ParsedArguments, argument, literal,
 };
-use crate::command::parsers::{PlayerParser, WorldParser, resolve_player_targets};
+use crate::command::parsers::{PlayerParser, WorldParser, resolve_required_player_targets};
 use crate::command::CommandRegistrationSpec;
 use crate::entity::SharedEntity;
 use crate::portal::WorldChangeRequest;
@@ -32,7 +32,7 @@ fn teleport_to_world(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = resolve_player_targets(arguments, "targets", context)?;
+    let targets = resolve_required_player_targets(arguments, "targets", context)?;
     let world = arguments
         .get::<Arc<World>>("world")
         .map_err(super::invalid_parsed_argument)?;

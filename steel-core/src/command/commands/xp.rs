@@ -13,7 +13,7 @@ use crate::{
         graph::{
             CommandNodeBuilder, CommandResult, IntegerParser, ParsedArguments, argument, literal,
         },
-        parsers::{PlayerParser, resolve_player_targets},
+        parsers::{PlayerParser, resolve_required_player_targets},
     },
     player::Player,
 };
@@ -184,7 +184,7 @@ fn players(
     arguments: &ParsedArguments,
     context: &CommandContext,
 ) -> Result<Vec<Arc<Player>>, CommandError> {
-    resolve_player_targets(arguments, "target", context)
+    resolve_required_player_targets(arguments, "target", context)
 }
 
 fn single_player(

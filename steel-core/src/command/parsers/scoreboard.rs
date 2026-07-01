@@ -249,7 +249,7 @@ pub(crate) fn resolve_score_holders(
             resolve_uuid_score_holders(uuid, &raw, context)
         }
         ScoreHolderArgumentValue::Selector(selector) => selector
-            .resolve(context)?
+            .resolve_optional(context)?
             .into_iter()
             .map(|entity| ScoreHolder::new(entity.scoreboard_name()))
             .collect(),

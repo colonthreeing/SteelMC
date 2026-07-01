@@ -15,8 +15,8 @@ use crate::command::parsers::{
 use crate::entity::{Mob, SharedEntity};
 
 use super::{
-    AxesParser, anchor, entities, entity_type, heightmap, position, position_error, rotation,
-    world,
+    AxesParser, anchor, entity_type, heightmap, optional_entities, position, position_error,
+    rotation, world,
 };
 
 pub(super) fn as_operation() -> CommandNodeBuilder {
@@ -110,7 +110,7 @@ fn fork_as(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<Vec<CommandContext>, CommandError> {
-    Ok(entities(context, arguments)?
+    Ok(optional_entities(context, arguments)?
         .into_iter()
         .map(|entity| context.clone().with_entity(entity))
         .collect())
@@ -120,7 +120,7 @@ fn fork_at(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<Vec<CommandContext>, CommandError> {
-    Ok(entities(context, arguments)?
+    Ok(optional_entities(context, arguments)?
         .into_iter()
         .filter_map(|entity| {
             let world = entity.level()?;
@@ -139,7 +139,7 @@ fn fork_positioned_as(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<Vec<CommandContext>, CommandError> {
-    Ok(entities(context, arguments)?
+    Ok(optional_entities(context, arguments)?
         .into_iter()
         .map(|entity| context.clone().with_position(entity.position()))
         .collect())
@@ -149,7 +149,7 @@ fn fork_rotated_as(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<Vec<CommandContext>, CommandError> {
-    Ok(entities(context, arguments)?
+    Ok(optional_entities(context, arguments)?
         .into_iter()
         .map(|entity| context.clone().with_rotation(entity.rotation()))
         .collect())
@@ -160,7 +160,7 @@ fn fork_facing_entity(
     arguments: &ParsedArguments,
 ) -> Result<Vec<CommandContext>, CommandError> {
     let anchor = anchor(arguments)?;
-    Ok(entities(context, arguments)?
+    Ok(optional_entities(context, arguments)?
         .into_iter()
         .map(|entity| {
             let target = anchored_position(entity.position(), Some(entity.as_ref()), anchor);

@@ -13,7 +13,7 @@ use crate::{
         graph::{
             CommandNodeBuilder, CommandResult, IntegerParser, ParsedArguments, argument, literal,
         },
-        parsers::{ItemStackParser, PlayerParser, resolve_player_targets},
+        parsers::{ItemStackParser, PlayerParser, resolve_required_player_targets},
         sender::CommandSender,
     },
     inventory::container::Container,
@@ -129,7 +129,7 @@ fn targets(
     arguments: &ParsedArguments,
     context: &CommandContext,
 ) -> Result<Vec<Arc<Player>>, CommandError> {
-    resolve_player_targets(arguments, "targets", context)
+    resolve_required_player_targets(arguments, "targets", context)
 }
 
 fn item_stack(arguments: &ParsedArguments) -> Result<ItemStack, CommandError> {

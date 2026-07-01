@@ -11,7 +11,7 @@ use crate::{
         context::CommandContext,
         error::CommandError,
         graph::{CommandNodeBuilder, CommandResult, ParsedArguments, argument, literal},
-        parsers::{PlayerParser, RotationParser, Vec3Parser, resolve_player_targets},
+        parsers::{PlayerParser, RotationParser, Vec3Parser, resolve_required_player_targets},
     },
     entity::Entity,
     player::Player,
@@ -122,14 +122,14 @@ fn targets(
     arguments: &ParsedArguments,
     context: &CommandContext,
 ) -> Result<Vec<Arc<Player>>, CommandError> {
-    resolve_player_targets(arguments, "targets", context)
+    resolve_required_player_targets(arguments, "targets", context)
 }
 
 fn destination(
     arguments: &ParsedArguments,
     context: &CommandContext,
 ) -> Result<Vec<Arc<Player>>, CommandError> {
-    resolve_player_targets(arguments, "destination", context)
+    resolve_required_player_targets(arguments, "destination", context)
 }
 
 fn position(arguments: &ParsedArguments) -> Result<DVec3, CommandError> {

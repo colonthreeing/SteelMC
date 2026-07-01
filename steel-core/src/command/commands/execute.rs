@@ -28,7 +28,8 @@ use crate::command::graph::{
     ScoreHolderArgumentValue, ScoreboardObjectiveName, literal,
 };
 use crate::command::parsers::{
-    ScoreHolderWildcardExpansion, resolve_entity_targets, resolve_score_holders,
+    ScoreHolderWildcardExpansion, resolve_optional_entity_targets, resolve_required_entity_targets,
+    resolve_score_holders,
 };
 use crate::command::requirement::CommandInputContext;
 use crate::entity::SharedEntity;
@@ -116,12 +117,20 @@ fn block_data_invalid_error() -> CommandError {
     }))
 }
 
-fn entities(
+fn optional_entities(
     context: &dyn CommandInputContext,
     arguments: &ParsedArguments,
 ) -> Result<Vec<SharedEntity>, CommandError> {
-    resolve_entity_targets(arguments, "targets", context)
-        .or_else(|_| resolve_entity_targets(arguments, "entities", context))
+    resolve_optional_entity_targets(arguments, "targets", context)
+        .or_else(|_| resolve_optional_entity_targets(arguments, "entities", context))
+}
+
+fn required_entities(
+    context: &dyn CommandInputContext,
+    arguments: &ParsedArguments,
+) -> Result<Vec<SharedEntity>, CommandError> {
+    resolve_required_entity_targets(arguments, "targets", context)
+        .or_else(|_| resolve_required_entity_targets(arguments, "entities", context))
 }
 
 fn anchor(arguments: &ParsedArguments) -> Result<EntityAnchor, CommandError> {
@@ -297,7 +306,7 @@ fn single_entity(
     arguments: &ParsedArguments,
     name: &'static str,
 ) -> Result<SharedEntity, CommandError> {
-    let mut entities = resolve_entity_targets(arguments, name, context)?;
+    let mut entities = resolve_required_entity_targets(arguments, name, context)?;
     if entities.len() != 1 {
         return Err(super::invalid_parsed_argument(
             crate::command::graph::ParsedArgumentError::WrongType {

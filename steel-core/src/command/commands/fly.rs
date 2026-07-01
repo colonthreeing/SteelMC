@@ -7,7 +7,7 @@ use crate::command::error::CommandError;
 use crate::command::graph::{
     BoolParser, CommandNodeBuilder, CommandResult, FloatParser, ParsedArguments, argument, literal,
 };
-use crate::command::parsers::{PlayerParser, resolve_player_targets};
+use crate::command::parsers::{PlayerParser, resolve_required_player_targets};
 use crate::command::sender::CommandSender;
 use crate::command::CommandRegistrationSpec;
 use crate::player::Player;
@@ -138,7 +138,7 @@ fn targets(
     arguments: &ParsedArguments,
     context: &CommandContext,
 ) -> Result<Vec<Arc<Player>>, CommandError> {
-    resolve_player_targets(arguments, "target", context)
+    resolve_required_player_targets(arguments, "target", context)
 }
 
 fn speed(arguments: &ParsedArguments) -> Result<f32, CommandError> {

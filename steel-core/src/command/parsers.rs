@@ -37,7 +37,10 @@ pub use target::{
     EntityParser, EntityTargetArgumentValue, PermissionTargetParser, PlayerParser,
     PlayerTargetArgumentValue,
 };
-pub(crate) use target::{resolve_entity_targets, resolve_player_targets};
+pub(crate) use target::{
+    resolve_optional_entity_targets, resolve_optional_player_targets,
+    resolve_required_entity_targets, resolve_required_player_targets,
+};
 pub use text::{ComponentParser, TimeParser};
 pub use world::{DomainParser, WorldParser};
 

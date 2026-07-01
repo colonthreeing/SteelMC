@@ -8,7 +8,7 @@ use crate::command::error::CommandError;
 use crate::command::graph::{
     CommandNodeBuilder, CommandResult, ParsedArguments, argument, literal,
 };
-use crate::command::parsers::{EntityParser, resolve_entity_targets};
+use crate::command::parsers::{EntityParser, resolve_required_entity_targets};
 use crate::command::CommandRegistrationSpec;
 use steel_utils::translations;
 
@@ -48,11 +48,7 @@ fn kill_targets(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = resolve_entity_targets(arguments, "targets", context)?;
-
-    if targets.is_empty() {
-        return Err(CommandError::failure("No entity was found"));
-    }
+    let targets = resolve_required_entity_targets(arguments, "targets", context)?;
 
     let mut last_name = String::new();
     for target in &targets {

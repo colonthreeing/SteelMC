@@ -23,7 +23,7 @@ use crate::{
             ParsedArgument, ParsedArguments, argument, literal,
         },
         parsers::{
-            ComponentParser, PlayerParser, parse_resource_identifier, resolve_player_targets,
+            ComponentParser, PlayerParser, parse_resource_identifier, resolve_optional_player_targets,
         },
         reader::CommandReader,
         requirement::CommandInputContext,
@@ -502,7 +502,7 @@ fn players(
     arguments: &ParsedArguments,
     context: &CommandContext,
 ) -> Result<Vec<Arc<Player>>, CommandError> {
-    resolve_player_targets(arguments, "targets", context)
+    resolve_optional_player_targets(arguments, "targets", context)
 }
 
 fn online_players(context: &CommandContext, uuids: &[Uuid]) -> Vec<Arc<Player>> {

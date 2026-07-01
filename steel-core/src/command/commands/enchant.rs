@@ -18,7 +18,7 @@ use crate::{
         graph::{
             CommandNodeBuilder, CommandResult, IntegerParser, ParsedArguments, argument, literal,
         },
-        parsers::{EnchantmentParser, PlayerParser, resolve_player_targets},
+        parsers::{EnchantmentParser, PlayerParser, resolve_required_player_targets},
     },
     player::Player,
 };
@@ -158,7 +158,7 @@ fn targets(
     arguments: &ParsedArguments,
     context: &CommandContext,
 ) -> Result<Vec<Arc<Player>>, CommandError> {
-    resolve_player_targets(arguments, "targets", context)
+    resolve_required_player_targets(arguments, "targets", context)
 }
 
 fn enchantment(arguments: &ParsedArguments) -> Result<EnchantmentRef, CommandError> {

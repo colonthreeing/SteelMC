@@ -25,9 +25,10 @@ use crate::world::World;
 
 use super::{
     StorageKeyParser, biome_value, block_data_invalid_error, block_entity_full_nbt,
-    block_position, block_predicate, entities, int_range, loaded_named_block_position, nbt_path,
-    double_range, item_predicate, item_slots, loot_predicate, position_error, same_world,
-    scoreboard_objective, single_score_holder, source_entity, storage_id, world,
+    block_position, block_predicate, double_range, int_range, item_predicate, item_slots,
+    loaded_named_block_position, loot_predicate, nbt_path, optional_entities, position_error,
+    required_entities, same_world, scoreboard_objective, single_score_holder, source_entity,
+    storage_id, world,
 };
 use super::super::item_predicate_match_error;
 use super::super::stopwatch::{StopwatchIdParser, stopwatch_does_not_exist};
@@ -237,7 +238,7 @@ fn execute_entity_condition(
     arguments: &ParsedArguments,
     expected: bool,
 ) -> Result<CommandResult, CommandError> {
-    let count = entities(context, arguments)?.len();
+    let count = optional_entities(context, arguments)?.len();
     if expected {
         if count == 0 {
             return Err(conditional_failed(count));
@@ -259,7 +260,7 @@ fn fork_entity_condition(
     arguments: &ParsedArguments,
     expected: bool,
 ) -> Result<Vec<CommandContext>, CommandError> {
-    let matches = !entities(context, arguments)?.is_empty();
+    let matches = !optional_entities(context, arguments)?.is_empty();
     Ok(if matches == expected {
         vec![context.clone()]
     } else {
@@ -364,7 +365,7 @@ pub(super) fn entity_items_match_count(
     context: &dyn crate::command::requirement::CommandInputContext,
     arguments: &ParsedArguments,
 ) -> Result<usize, CommandError> {
-    let targets = entities(context, arguments)?;
+    let targets = required_entities(context, arguments)?;
     let slots = item_slots(arguments)?;
     let predicate = item_predicate(arguments)?;
     let mut count = 0usize;
