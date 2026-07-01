@@ -795,6 +795,60 @@ mod tests {
     }
 
     #[test]
+    fn entity_parser_suggests_selector_option_close_for_empty_list() {
+        let suggestions = EntityParser::multiple().suggest(
+            "@e[",
+            &ParsedArguments::default(),
+            &SelectorPermissionContext,
+        );
+        let texts = suggestions
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+
+        assert!(texts.iter().any(|text| text == "@e[]"));
+        assert!(texts.iter().any(|text| text == "@e[type="));
+    }
+
+    #[test]
+    fn entity_parser_suggests_selector_option_delimiters_after_complete_value() {
+        init_test_registry();
+
+        let suggestions = EntityParser::multiple().suggest(
+            "@e[type=minecraft:pig",
+            &ParsedArguments::default(),
+            &SelectorPermissionContext,
+        );
+        let texts = suggestions
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+
+        assert!(texts.iter().any(|text| text == "@e[type=minecraft:pig,"));
+        assert!(texts.iter().any(|text| text == "@e[type=minecraft:pig]"));
+        assert!(!texts.iter().any(|text| text == "@e[type=minecraft:pig"));
+    }
+
+    #[test]
+    fn entity_parser_does_not_suggest_selector_option_delimiters_for_partial_value() {
+        init_test_registry();
+
+        let suggestions = EntityParser::multiple().suggest(
+            "@e[type=minecraft:pi",
+            &ParsedArguments::default(),
+            &SelectorPermissionContext,
+        );
+        let texts = suggestions
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+
+        assert!(!texts.iter().any(|text| text == "@e[type=minecraft:pi,"));
+        assert!(!texts.iter().any(|text| text == "@e[type=minecraft:pi]"));
+        assert!(texts.iter().any(|text| text == "@e[type=minecraft:pig"));
+    }
+
+    #[test]
     fn entity_parser_treats_advancements_option_as_set_once_for_suggestions() {
         let suggestions = EntityParser::multiple().suggest(
             "@e[advancements={},",
@@ -867,7 +921,7 @@ mod tests {
             .collect::<Vec<_>>();
         let type_suggestions = EntityParser::multiple()
             .suggest(
-                "@e[type=pig",
+                "@e[type=minecraft:pi",
                 &ParsedArguments::default(),
                 &SelectorPermissionContext,
             )
@@ -894,7 +948,7 @@ mod tests {
 
         let tag_suggestions = EntityParser::multiple()
             .suggest(
-                "@e[type=#s",
+                "@e[type=#",
                 &ParsedArguments::default(),
                 &SelectorPermissionContext,
             )
@@ -903,7 +957,7 @@ mod tests {
             .collect::<Vec<_>>();
         let inverted_tag_suggestions = EntityParser::multiple()
             .suggest(
-                "@e[type=!#r",
+                "@e[type=!#",
                 &ParsedArguments::default(),
                 &SelectorPermissionContext,
             )

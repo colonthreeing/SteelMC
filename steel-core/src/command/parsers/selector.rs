@@ -1068,25 +1068,47 @@ fn selector_option_suggestions(
     let expression_prefix = format!("{option_prefix}{completed_entries}");
     if let Some((key, value_prefix)) = current_entry.split_once('=') {
         let value_expression_prefix = format!("{expression_prefix}{key}=");
-        return selector_option_value_suggestions(
+        let mut suggestions = selector_option_value_suggestions(
             &value_expression_prefix,
             key.trim(),
             value_prefix,
             completed_entries,
             context,
         );
+        suggestions.retain(|suggestion| suggestion != prefix);
+        if selector_option_entry_is_complete(selector_type, inside) {
+            suggestions.extend(selector_option_delimiter_suggestions(prefix));
+        }
+        return suggestions;
     }
 
     let used_set_once_options = completed_set_once_selector_options(completed_entries);
-    SELECTOR_OPTION_KEYS
+    let mut suggestions = Vec::new();
+    if completed_entries.is_empty() && current_entry.trim().is_empty() {
+        suggestions.push(format!("{option_prefix}]"));
+    }
+    suggestions.extend(
+        SELECTOR_OPTION_KEYS
+            .iter()
+            .copied()
+            .filter(|key| selector_option_supported_for_suggestions(key))
+            .filter(|key| selector_option_available_for_type(key, selector_type))
+            .filter(|key| !used_set_once_options.iter().any(|used| used == key))
+            .filter(|key| selector_option_available_for_completed_entries(key, completed_entries))
+            .filter(|key| key.starts_with(current_entry.trim_start()))
+            .map(|key| format!("{expression_prefix}{key}=")),
+    );
+    suggestions
+}
+
+fn selector_option_entry_is_complete(selector_type: char, inside: &str) -> bool {
+    parse_selector_plan_with_permissions(format!("@{selector_type}[{inside}]"), true, true).is_ok()
+}
+
+fn selector_option_delimiter_suggestions(prefix: &str) -> Vec<String> {
+    [',', ']']
         .iter()
-        .copied()
-        .filter(|key| selector_option_supported_for_suggestions(key))
-        .filter(|key| selector_option_available_for_type(key, selector_type))
-        .filter(|key| !used_set_once_options.iter().any(|used| used == key))
-        .filter(|key| selector_option_available_for_completed_entries(key, completed_entries))
-        .filter(|key| key.starts_with(current_entry.trim_start()))
-        .map(|key| format!("{expression_prefix}{key}="))
+        .map(|delimiter| format!("{prefix}{delimiter}"))
         .collect()
 }
 
