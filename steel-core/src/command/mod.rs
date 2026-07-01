@@ -42,9 +42,18 @@ use steel_registry::{
 
 pub(crate) use executor::CommandQueue;
 
+const MAX_COMMAND_QUEUE_DEPTH: usize = 10_000_000;
+
 pub(crate) struct CommandExecutionBudget {
     remaining: usize,
     limit: usize,
+    stopped: Option<CommandExecutionStop>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommandExecutionStop {
+    SequenceLimit,
+    QueueOverflow,
 }
 
 impl CommandExecutionBudget {
@@ -57,19 +66,52 @@ impl CommandExecutionBudget {
         Self {
             remaining: limit,
             limit,
+            stopped: None,
         }
     }
 
-    pub(crate) fn consume(&mut self) -> Result<(), CommandError> {
+    pub(crate) fn consume(&mut self) -> bool {
+        if self.stopped.is_some() {
+            return false;
+        }
+
         if self.remaining == 0 {
-            return Err(CommandError::failure(format!(
-                "Command execution stopped due to command sequence limit ({})",
-                self.limit
-            )));
+            self.stop_due_to_sequence_limit();
+            return false;
         }
 
         self.remaining -= 1;
-        Ok(())
+        true
+    }
+
+    fn stop_due_to_sequence_limit(&mut self) {
+        if self
+            .stopped
+            .replace(CommandExecutionStop::SequenceLimit)
+            .is_none()
+        {
+            log::info!(
+                "Command execution stopped due to limit (executed {} commands)",
+                self.limit
+            );
+        }
+    }
+
+    fn stop_due_to_queue_overflow(&mut self) {
+        if self
+            .stopped
+            .replace(CommandExecutionStop::QueueOverflow)
+            .is_none()
+        {
+            log::error!(
+                "Command execution stopped due to command queue overflow (max {})",
+                MAX_COMMAND_QUEUE_DEPTH
+            );
+        }
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.stopped.is_some()
     }
 }
 
@@ -499,18 +541,30 @@ impl CommandDispatcher {
         let function_frame = QueuedFrame::new(1, 1);
         let function_arguments = Arc::new(None);
         for function in functions {
-            queue.push_back(QueuedAction::FunctionCall(QueuedFunctionCall::new(
-                function.clone(),
-                Arc::clone(&function_arguments),
-                function_context.clone(),
-                function_frame.clone(),
-                CommandResultCallback::empty(),
-                FunctionInstantiationFailureContext::ExecuteCondition,
-                true,
-                true,
-            )));
+            if !queue_action_back(
+                &mut queue,
+                QueuedAction::FunctionCall(QueuedFunctionCall::new(
+                    function.clone(),
+                    Arc::clone(&function_arguments),
+                    function_context.clone(),
+                    function_frame.clone(),
+                    CommandResultCallback::empty(),
+                    FunctionInstantiationFailureContext::ExecuteCondition,
+                    true,
+                    true,
+                )),
+                budget,
+            ) {
+                return Ok(CommandFunctionConditionResult::NoFunctions);
+            }
         }
-        queue.push_back(QueuedAction::Fallthrough(function_frame));
+        if !queue_action_back(
+            &mut queue,
+            QueuedAction::Fallthrough(function_frame),
+            budget,
+        ) {
+            return Ok(CommandFunctionConditionResult::NoFunctions);
+        }
 
         let mut frame_return = None;
         let Some(first) = next_queued_command(self, &mut queue, budget, &mut frame_return)? else {
@@ -542,7 +596,14 @@ impl CommandDispatcher {
         let mut frame_return = None;
 
         loop {
-            budget.consume()?;
+            if !budget.consume() {
+                return Ok(dispatch_outcome(
+                    total_success_count,
+                    last_result,
+                    completed_forked_context,
+                    frame_return,
+                ));
+            }
             let active_command = active.command().to_owned();
             let step = self.execute_command_step(&active_command, active.context_mut(), budget);
             let step = match step {
@@ -695,7 +756,14 @@ impl CommandDispatcher {
                             )));
                         }
                     }
-                    queue_next_actions(&mut queue, actions);
+                    if !queue_next_actions(&mut queue, actions, budget) {
+                        return Ok(dispatch_outcome(
+                            total_success_count,
+                            last_result,
+                            completed_forked_context,
+                            frame_return,
+                        ));
+                    }
                     let Some(next) =
                         next_queued_command(self, &mut queue, budget, &mut frame_return)?
                     else {
@@ -719,7 +787,7 @@ impl CommandDispatcher {
                     let next_returning = active.is_returning() || returns;
                     let next_frame = active.frame();
                     if active.is_forked() && !returns {
-                        self.collect_redirect_sibling_contexts(
+                        if !self.collect_redirect_sibling_contexts(
                             RedirectSiblingBatch {
                                 active_command: &active_command,
                                 active_fork_stage: active.fork_stage(),
@@ -732,7 +800,14 @@ impl CommandDispatcher {
                             &mut contexts,
                             &mut queue,
                             budget,
-                        )?;
+                        )? {
+                            return Ok(dispatch_outcome(
+                                total_success_count,
+                                last_result,
+                                completed_forked_context,
+                                frame_return,
+                            ));
+                        }
                     }
                     if returns {
                         discard_command_frame(&mut queue, next_frame.return_discard_depth);
@@ -744,7 +819,7 @@ impl CommandDispatcher {
                             fork_limit,
                         )?;
                     }
-                    queue_next_actions(
+                    if !queue_next_actions(
                         &mut queue,
                         redirect_actions(
                             next_command,
@@ -754,7 +829,15 @@ impl CommandDispatcher {
                             next_returning,
                             next_frame,
                         ),
-                    );
+                        budget,
+                    ) {
+                        return Ok(dispatch_outcome(
+                            total_success_count,
+                            last_result,
+                            completed_forked_context,
+                            frame_return,
+                        ));
+                    }
                     let Some(next) =
                         next_queued_command(self, &mut queue, budget, &mut frame_return)?
                     else {
@@ -803,9 +886,11 @@ impl CommandDispatcher {
         contexts: &mut Vec<CommandContext>,
         queue: &mut VecDeque<QueuedAction>,
         budget: &mut CommandExecutionBudget,
-    ) -> Result<(), CommandError> {
+    ) -> Result<bool, CommandError> {
         for mut sibling in drain_redirect_sibling_commands(queue, &batch) {
-            budget.consume()?;
+            if !budget.consume() {
+                return Ok(false);
+            }
             let step = self.execute_command_step(&sibling.command, &mut sibling.context, budget);
             match step {
                 Ok(CommandExecutionStep::Redirect {
@@ -829,7 +914,7 @@ impl CommandDispatcher {
             }
         }
 
-        Ok(())
+        Ok(true)
     }
 
     pub(crate) fn parse_error_to_command_error(
@@ -1234,7 +1319,8 @@ impl QueuedFunctionCall {
         self,
         dispatcher: &CommandDispatcher,
         queue: &mut VecDeque<QueuedAction>,
-    ) -> Result<(), CommandError> {
+        budget: &mut CommandExecutionBudget,
+    ) -> Result<bool, CommandError> {
         let instantiated = self
             .function
             .instantiate(self.arguments.as_ref().as_ref(), dispatcher, &self.context)
@@ -1261,16 +1347,22 @@ impl QueuedFunctionCall {
             )
         };
         for command in instantiated.commands().iter().rev() {
-            queue.push_front(QueuedAction::Command(QueuedCommand::new(
-                command.clone(),
-                self.context.clone(),
-                false,
-                0,
-                false,
-                child_frame.clone(),
-            )));
+            if !queue_action_front(
+                queue,
+                QueuedAction::Command(QueuedCommand::new(
+                    command.clone(),
+                    self.context.clone(),
+                    false,
+                    0,
+                    false,
+                    child_frame.clone(),
+                )),
+                budget,
+            ) {
+                return Ok(false);
+            }
         }
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -1516,11 +1608,58 @@ struct RedirectSiblingBatch<'a> {
 fn queue_next_actions(
     queue: &mut VecDeque<QueuedAction>,
     actions: impl IntoIterator<Item = QueuedAction>,
-) {
+    budget: &mut CommandExecutionBudget,
+) -> bool {
     let actions = actions.into_iter().collect::<Vec<_>>();
     for action in actions.into_iter().rev() {
-        queue.push_front(action);
+        if !queue_action_front(queue, action, budget) {
+            return false;
+        }
     }
+    true
+}
+
+fn queue_action_front(
+    queue: &mut VecDeque<QueuedAction>,
+    action: QueuedAction,
+    budget: &mut CommandExecutionBudget,
+) -> bool {
+    if queue_would_overflow(queue, budget) {
+        return false;
+    }
+    queue.push_front(action);
+    true
+}
+
+fn queue_action_back(
+    queue: &mut VecDeque<QueuedAction>,
+    action: QueuedAction,
+    budget: &mut CommandExecutionBudget,
+) -> bool {
+    if queue_would_overflow(queue, budget) {
+        return false;
+    }
+    queue.push_back(action);
+    true
+}
+
+fn queue_would_overflow(
+    queue: &mut VecDeque<QueuedAction>,
+    budget: &mut CommandExecutionBudget,
+) -> bool {
+    if budget.is_stopped() {
+        return true;
+    }
+    if !queue_len_exceeds_max(queue.len()) {
+        return false;
+    }
+    budget.stop_due_to_queue_overflow();
+    queue.clear();
+    true
+}
+
+const fn queue_len_exceeds_max(len: usize) -> bool {
+    len > MAX_COMMAND_QUEUE_DEPTH
 }
 
 fn redirect_actions(
@@ -1611,8 +1750,12 @@ fn next_queued_command(
         match action {
             QueuedAction::Command(command) => return Ok(Some(command)),
             QueuedAction::FunctionCall(call) => {
-                budget.consume()?;
-                call.enqueue_commands(dispatcher, queue)?;
+                if !budget.consume() {
+                    return Ok(None);
+                }
+                if !call.enqueue_commands(dispatcher, queue, budget)? {
+                    return Ok(None);
+                }
             }
             QueuedAction::Fallthrough(frame) => {
                 let result = CommandCallbackResult {
@@ -1813,11 +1956,25 @@ mod tests {
     }
 
     #[test]
-    fn command_execution_budget_rejects_after_limit() {
+    fn command_execution_budget_stops_after_limit() {
         let mut budget = CommandExecutionBudget::new(1);
 
-        assert!(budget.consume().is_ok());
-        assert!(budget.consume().is_err());
+        assert!(budget.consume());
+        assert!(!budget.consume());
+        assert_eq!(
+            budget.stopped,
+            Some(super::CommandExecutionStop::SequenceLimit)
+        );
+    }
+
+    #[test]
+    fn command_queue_limit_uses_vanilla_exclusive_boundary() {
+        assert!(!super::queue_len_exceeds_max(
+            super::MAX_COMMAND_QUEUE_DEPTH
+        ));
+        assert!(super::queue_len_exceeds_max(
+            super::MAX_COMMAND_QUEUE_DEPTH + 1
+        ));
     }
 
     #[test]
@@ -1986,13 +2143,16 @@ mod tests {
             super::QueuedFrame::for_depth(0),
         )]);
 
-        super::queue_next_actions(
+        let mut budget = CommandExecutionBudget::new(1);
+
+        assert!(super::queue_next_actions(
             &mut queue,
             [
                 super::QueuedAction::Fallthrough(super::QueuedFrame::for_depth(1)),
                 super::QueuedAction::Fallthrough(super::QueuedFrame::for_depth(2)),
             ],
-        );
+            &mut budget,
+        ));
 
         let depths = queue
             .iter()
