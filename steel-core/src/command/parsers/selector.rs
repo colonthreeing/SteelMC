@@ -293,6 +293,37 @@ impl InvertableOptionState {
         }
         Ok(())
     }
+
+    fn suggestion_mode(&self) -> InvertableSuggestionMode {
+        if self.positive_seen {
+            InvertableSuggestionMode::None
+        } else if self.negative_seen {
+            InvertableSuggestionMode::NegativeOnly
+        } else {
+            InvertableSuggestionMode::Any
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InvertableSuggestionMode {
+    Any,
+    NegativeOnly,
+    None,
+}
+
+impl InvertableSuggestionMode {
+    const fn allows_positive(self) -> bool {
+        matches!(self, Self::Any)
+    }
+
+    const fn allows_negative(self) -> bool {
+        matches!(self, Self::Any | Self::NegativeOnly)
+    }
+
+    const fn allows_any(self) -> bool {
+        !matches!(self, Self::None)
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1040,6 +1071,7 @@ fn selector_option_suggestions(
             &value_expression_prefix,
             key.trim(),
             value_prefix,
+            completed_entries,
             context,
         );
     }
@@ -1050,6 +1082,7 @@ fn selector_option_suggestions(
         .copied()
         .filter(|key| selector_option_available_for_type(key, selector_type))
         .filter(|key| !used_set_once_options.iter().any(|used| used == key))
+        .filter(|key| selector_option_available_for_completed_entries(key, completed_entries))
         .filter(|key| key.starts_with(current_entry.trim_start()))
         .map(|key| format!("{expression_prefix}{key}="))
         .collect()
@@ -1067,10 +1100,23 @@ fn selector_option_available_for_type(key: &str, selector_type: char) -> bool {
     !matches!((key, selector_type), ("limit" | "sort", 's'))
 }
 
+fn selector_option_available_for_completed_entries(key: &str, completed_entries: &str) -> bool {
+    match key {
+        "name" | "gamemode" | "team" => completed_invertable_option_state(completed_entries, key)
+            .suggestion_mode()
+            .allows_any(),
+        "type" => completed_entity_type_suggestion_state(completed_entries)
+            .mode
+            .allows_any(),
+        _ => true,
+    }
+}
+
 fn selector_option_value_suggestions(
     expression_prefix: &str,
     key: &str,
     value_prefix: &str,
+    completed_entries: &str,
     context: &dyn CommandInputContext,
 ) -> Vec<String> {
     match key {
@@ -1079,14 +1125,46 @@ fn selector_option_value_suggestions(
             value_prefix,
             [SORT_NEAREST, SORT_FURTHEST, SORT_RANDOM, SORT_ARBITRARY],
         ),
-        "gamemode" => {
-            invertible_prefixed_values(expression_prefix, value_prefix, GAME_MODE_SUGGESTIONS)
-        }
-        "type" => entity_type_suggestions(expression_prefix, value_prefix),
-        "team" => team_suggestions(expression_prefix, value_prefix, context),
+        "gamemode" => invertible_prefixed_values(
+            expression_prefix,
+            value_prefix,
+            GAME_MODE_SUGGESTIONS,
+            completed_invertable_option_state(completed_entries, key).suggestion_mode(),
+        ),
+        "type" => entity_type_suggestions(
+            expression_prefix,
+            value_prefix,
+            &completed_entity_type_suggestion_state(completed_entries),
+        ),
+        "team" => team_suggestions(
+            expression_prefix,
+            value_prefix,
+            context,
+            completed_invertable_option_state(completed_entries, key).suggestion_mode(),
+        ),
         "predicate" => predicate_suggestions(expression_prefix, value_prefix),
         _ => Vec::new(),
     }
+}
+
+fn completed_invertable_option_state(completed_entries: &str, key: &str) -> InvertableOptionState {
+    let mut state = InvertableOptionState::default();
+    for value in completed_option_values(completed_entries, key) {
+        let _ = state.parse_element(value.trim_start().starts_with('!'), key);
+    }
+    state
+}
+
+fn completed_option_values<'a>(
+    completed_entries: &'a str,
+    key: &'a str,
+) -> impl Iterator<Item = &'a str> {
+    completed_entries
+        .split(',')
+        .filter_map(|entry| entry.split_once('='))
+        .filter(move |(entry_key, _)| entry_key.trim() == key)
+        .map(|(_, value)| value.trim())
+        .filter(|value| !value.is_empty())
 }
 
 fn prefixed_values<const N: usize>(
@@ -1105,16 +1183,21 @@ fn invertible_prefixed_values(
     expression_prefix: &str,
     value_prefix: &str,
     values: &[&'static str],
+    mode: InvertableSuggestionMode,
 ) -> Vec<String> {
     let mut suggestions = Vec::new();
     for value in values {
-        push_prefixed_value(&mut suggestions, expression_prefix, value_prefix, value);
-        push_prefixed_value(
-            &mut suggestions,
-            expression_prefix,
-            value_prefix,
-            &format!("!{value}"),
-        );
+        if mode.allows_positive() {
+            push_prefixed_value(&mut suggestions, expression_prefix, value_prefix, value);
+        }
+        if mode.allows_negative() {
+            push_prefixed_value(
+                &mut suggestions,
+                expression_prefix,
+                value_prefix,
+                &format!("!{value}"),
+            );
+        }
     }
     suggestions
 }
@@ -1130,10 +1213,63 @@ fn push_prefixed_value(
     }
 }
 
-fn entity_type_suggestions(expression_prefix: &str, value_prefix: &str) -> Vec<String> {
+#[derive(Clone, Debug)]
+struct EntityTypeSuggestionState {
+    mode: InvertableSuggestionMode,
+    tags_seen: Vec<Identifier>,
+}
+
+fn completed_entity_type_suggestion_state(completed_entries: &str) -> EntityTypeSuggestionState {
+    let mut state = InvertableOptionState::default();
+    let mut tags_seen = Vec::new();
+    for value in completed_option_values(completed_entries, "type") {
+        let value = value.trim_start();
+        if let Some(tag) = value.strip_prefix("!#").or_else(|| value.strip_prefix('#')) {
+            if let Some(tag) = parse_resource_identifier(tag)
+                && !tags_seen.iter().any(|seen| seen == &tag)
+            {
+                tags_seen.push(tag);
+            }
+            state.negative_seen = true;
+        } else {
+            let _ = state.parse_element(value.starts_with('!'), "type");
+        }
+    }
+
+    EntityTypeSuggestionState {
+        mode: state.suggestion_mode(),
+        tags_seen,
+    }
+}
+
+fn entity_type_suggestions(
+    expression_prefix: &str,
+    value_prefix: &str,
+    state: &EntityTypeSuggestionState,
+) -> Vec<String> {
+    if !state.mode.allows_any() {
+        return Vec::new();
+    }
+
     let mut suggestions = Vec::new();
-    push_entity_type_tag_suggestions(&mut suggestions, expression_prefix, value_prefix, "");
-    push_entity_type_tag_suggestions(&mut suggestions, expression_prefix, value_prefix, "!");
+    if state.mode.allows_positive() {
+        push_entity_type_tag_suggestions(
+            &mut suggestions,
+            expression_prefix,
+            value_prefix,
+            "",
+            state,
+        );
+    }
+    if state.mode.allows_negative() {
+        push_entity_type_tag_suggestions(
+            &mut suggestions,
+            expression_prefix,
+            value_prefix,
+            "!",
+            state,
+        );
+    }
     if value_prefix.starts_with('#') || value_prefix.starts_with("!#") {
         return suggestions;
     }
@@ -1141,6 +1277,11 @@ fn entity_type_suggestions(expression_prefix: &str, value_prefix: &str) -> Vec<S
     let (inversion, resource_prefix) = value_prefix
         .strip_prefix('!')
         .map_or(("", value_prefix), |prefix| ("!", prefix));
+    if inversion.is_empty() && !state.mode.allows_positive()
+        || inversion == "!" && !state.mode.allows_negative()
+    {
+        return suggestions;
+    }
     let stripped_prefix = resource_prefix
         .strip_prefix("minecraft:")
         .unwrap_or(resource_prefix);
@@ -1163,6 +1304,7 @@ fn push_entity_type_tag_suggestions(
     expression_prefix: &str,
     value_prefix: &str,
     inversion: &str,
+    state: &EntityTypeSuggestionState,
 ) {
     let marker = format!("{inversion}#");
     if !marker.starts_with(value_prefix) && !value_prefix.starts_with(&marker) {
@@ -1180,6 +1322,7 @@ fn push_entity_type_tag_suggestions(
     suggestions.extend(
         tag_keys
             .into_iter()
+            .filter(|key| !state.tags_seen.iter().any(|seen| seen == *key))
             .filter(|key| {
                 if key.namespace == Identifier::VANILLA_NAMESPACE {
                     return matches_suggestion_substr(tag_prefix, &key.path);
@@ -1196,6 +1339,7 @@ fn team_suggestions(
     expression_prefix: &str,
     value_prefix: &str,
     context: &dyn CommandInputContext,
+    mode: InvertableSuggestionMode,
 ) -> Vec<String> {
     let Some(server) = context.server() else {
         return Vec::new();
@@ -1203,18 +1347,22 @@ fn team_suggestions(
 
     let mut suggestions = Vec::new();
     for team_name in server.scoreboard.team_names() {
-        push_prefixed_value(
-            &mut suggestions,
-            expression_prefix,
-            value_prefix,
-            &team_name,
-        );
-        push_prefixed_value(
-            &mut suggestions,
-            expression_prefix,
-            value_prefix,
-            &format!("!{team_name}"),
-        );
+        if mode.allows_positive() {
+            push_prefixed_value(
+                &mut suggestions,
+                expression_prefix,
+                value_prefix,
+                &team_name,
+            );
+        }
+        if mode.allows_negative() {
+            push_prefixed_value(
+                &mut suggestions,
+                expression_prefix,
+                value_prefix,
+                &format!("!{team_name}"),
+            );
+        }
     }
     suggestions
 }
@@ -2451,11 +2599,89 @@ mod tests {
 
         let suggestions = selector_argument_suggestions("@e[", false, false, &context);
 
-        assert!(suggestions.iter().any(|suggestion| suggestion == "@e[name="));
+        assert!(
+            suggestions
+                .iter()
+                .any(|suggestion| suggestion == "@e[name=")
+        );
         assert!(
             !suggestions
                 .iter()
                 .any(|suggestion| suggestion == "@e[advancements=")
+        );
+    }
+
+    #[test]
+    fn selector_suggestions_follow_invertible_option_state() {
+        let context = SelectorResolutionPermissionContext {
+            allow_advanced: true,
+        };
+
+        let after_positive =
+            selector_argument_suggestions("@e[gamemode=creative,", false, false, &context);
+        assert!(
+            !after_positive
+                .iter()
+                .any(|suggestion| suggestion == "@e[gamemode=creative,gamemode=")
+        );
+
+        let after_negative = selector_argument_suggestions(
+            "@e[gamemode=!creative,gamemode=",
+            false,
+            false,
+            &context,
+        );
+        assert!(
+            after_negative
+                .iter()
+                .any(|suggestion| suggestion == "@e[gamemode=!creative,gamemode=!survival")
+        );
+        assert!(
+            !after_negative
+                .iter()
+                .any(|suggestion| suggestion == "@e[gamemode=!creative,gamemode=survival")
+        );
+    }
+
+    #[test]
+    fn selector_type_suggestions_follow_tag_repeat_rules() {
+        init_test_registry();
+        let context = SelectorResolutionPermissionContext {
+            allow_advanced: true,
+        };
+
+        let after_positive =
+            selector_argument_suggestions("@e[type=minecraft:pig,", false, false, &context);
+        assert!(
+            !after_positive
+                .iter()
+                .any(|suggestion| suggestion == "@e[type=minecraft:pig,type=")
+        );
+
+        let after_negative =
+            selector_argument_suggestions("@e[type=!minecraft:pig,type=", false, false, &context);
+        assert!(after_negative.iter().all(|suggestion| {
+            suggestion
+                .strip_prefix("@e[type=!minecraft:pig,type=")
+                .is_some_and(|value| value.starts_with('!'))
+        }));
+
+        let after_tag = selector_argument_suggestions(
+            "@e[type=!#minecraft:skeletons,type=!#",
+            false,
+            false,
+            &context,
+        );
+        assert!(!after_tag.iter().any(|suggestion| {
+            suggestion == "@e[type=!#minecraft:skeletons,type=!#minecraft:skeletons"
+        }));
+
+        let after_positive_tag =
+            selector_argument_suggestions("@e[type=#minecraft:skeletons,", false, false, &context);
+        assert!(
+            after_positive_tag
+                .iter()
+                .any(|suggestion| suggestion == "@e[type=#minecraft:skeletons,type=")
         );
     }
 
