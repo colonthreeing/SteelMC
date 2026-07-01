@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt, io::Cursor, sync::Arc};
+use std::{fmt, io::Cursor, sync::Arc};
 
 use simdnbt::{
     borrow::read_compound as read_borrowed_compound,
@@ -8,8 +8,6 @@ use steel_utils::{
     BlockPos, Identifier,
     nbt::{NbtPath, NbtPathMutationError},
 };
-use text_components::{TextComponent, translation::TranslatedMessage};
-
 use crate::command::context::{CommandContext, CommandResultCallback};
 use crate::command::error::CommandError;
 use crate::command::graph::{
@@ -329,10 +327,6 @@ fn store_entity_data(
     store_result: bool,
 ) -> Result<CommandResult, CommandError> {
     let target = single_entity(context, arguments, "target")?;
-    if target.as_player().is_some() {
-        return Err(entity_data_invalid_error());
-    }
-
     let path = nbt_path(arguments)?;
     let scale = double(arguments, "scale")?;
     let callback = CommandResultCallback::new(move |result| {
@@ -355,6 +349,10 @@ pub(super) fn store_entity_data_value(
     path: &NbtPath,
     value: NbtTag,
 ) -> Result<(), StoreEntityDataError> {
+    if entity.as_player().is_some() {
+        return Err(StoreEntityDataError::InvalidPlayer);
+    }
+
     let mut tag = NbtTag::Compound(entity.nbt_for_data_compare());
     path.set(&mut tag, value).map_err(StoreEntityDataError::Path)?;
     let NbtTag::Compound(data) = tag else {
@@ -369,6 +367,7 @@ pub(super) fn store_entity_data_value(
 
 #[derive(Debug)]
 pub(super) enum StoreEntityDataError {
+    InvalidPlayer,
     Path(NbtPathMutationError),
     ExpectedCompoundRoot,
     Load(crate::entity::EntityDataLoadError),
@@ -377,6 +376,7 @@ pub(super) enum StoreEntityDataError {
 impl fmt::Display for StoreEntityDataError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidPlayer => write!(f, "cannot modify player entity data"),
             Self::Path(error) => write!(f, "{error}"),
             Self::ExpectedCompoundRoot => write!(f, "NBT path mutation replaced the root compound"),
             Self::Load(error) => write!(f, "{error}"),
@@ -481,10 +481,27 @@ impl fmt::Display for StoreBlockDataError {
     }
 }
 
-fn entity_data_invalid_error() -> CommandError {
-    CommandError::failure(TextComponent::translated(TranslatedMessage {
-        key: Cow::Borrowed("commands.data.entity.invalid"),
-        fallback: None,
-        args: None,
-    }))
+#[cfg(test)]
+mod tests {
+    use simdnbt::owned::NbtTag;
+
+    use super::StoreDataType;
+
+    #[test]
+    fn store_data_type_casts_match_java_narrowing_boundaries() {
+        assert_eq!(StoreDataType::Byte.tag(128, 1.0), NbtTag::Byte(-128));
+        assert_eq!(StoreDataType::Byte.tag(i32::MAX, 1e20), NbtTag::Byte(-1));
+        assert_eq!(StoreDataType::Byte.tag(i32::MIN, 1e20), NbtTag::Byte(0));
+        assert_eq!(
+            StoreDataType::Short.tag(32_768, 1.0),
+            NbtTag::Short(-32_768)
+        );
+        assert_eq!(StoreDataType::Int.tag(i32::MAX, 1e20), NbtTag::Int(i32::MAX));
+        assert_eq!(
+            StoreDataType::Long.tag(i32::MAX, 1e20),
+            NbtTag::Long(i64::MAX)
+        );
+        assert_eq!(StoreDataType::Float.tag(3, 0.5), NbtTag::Float(1.5));
+        assert_eq!(StoreDataType::Double.tag(3, 0.5), NbtTag::Double(1.5));
+    }
 }
