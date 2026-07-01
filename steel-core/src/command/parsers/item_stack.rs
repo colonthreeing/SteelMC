@@ -136,6 +136,7 @@ fn component_suggestions(base: &str, prefix: &str, removed: bool) -> Vec<Suggest
     let stripped_prefix = prefix.strip_prefix("minecraft:").unwrap_or(prefix);
     (0..REGISTRY.data_components.len())
         .filter_map(|id| REGISTRY.data_components.by_id(id))
+        .filter(|component| component.is_persistent())
         .filter(|component| {
             let key = component.key.to_string();
             let text = key.strip_prefix("minecraft:").unwrap_or(&key);
@@ -187,6 +188,9 @@ impl<'a> ItemStackSyntax<'a> {
             let Some(entry) = REGISTRY.data_components.by_key(&key) else {
                 return Err(self.error_at(key_cursor, format!("unknown item component '{key}'")));
             };
+            if !entry.is_persistent() {
+                return Err(self.error_at(key_cursor, format!("unknown item component '{key}'")));
+            }
 
             if !seen.insert(key.clone()) {
                 return Err(self.error_at(key_cursor, format!("repeated item component '{key}'")));

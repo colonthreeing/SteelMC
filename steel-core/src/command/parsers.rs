@@ -1019,6 +1019,24 @@ mod tests {
     }
 
     #[test]
+    fn item_stack_parser_rejects_transient_components() {
+        init_test_registry();
+
+        for input in ["stone[creative_slot_lock={}]", "stone[!creative_slot_lock]"] {
+            let mut reader = CommandReader::new(input);
+            let error = ItemStackParser
+                .parse(&mut reader, &TestContext)
+                .expect_err("transient components are rejected");
+
+            assert!(matches!(
+                error.kind(),
+                CommandParseErrorKind::InvalidItemStack(value)
+                    if value == "unknown item component 'minecraft:creative_slot_lock'"
+            ));
+        }
+    }
+
+    #[test]
     fn item_stack_parser_uses_native_client_type() {
         let (argument_type, suggestion_type) =
             ItemStackParser.client_parser().into_protocol_argument();
@@ -1044,6 +1062,14 @@ mod tests {
             removal_suggestions
                 .iter()
                 .any(|suggestion| suggestion.text == "stone[!minecraft:damage")
+        );
+
+        let transient_suggestions =
+            ItemStackParser.suggest("stone[creative", &ParsedArguments::default(), &TestContext);
+        assert!(
+            !transient_suggestions
+                .iter()
+                .any(|suggestion| suggestion.text == "stone[minecraft:creative_slot_lock=")
         );
     }
 
