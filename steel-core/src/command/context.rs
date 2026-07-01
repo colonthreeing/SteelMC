@@ -11,6 +11,7 @@ use crate::permission::{
 use crate::player::Player;
 use crate::server::Server;
 use crate::world::World;
+use steel_utils::Identifier;
 
 /// Result reported to a command source callback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,10 +86,33 @@ pub struct CommandContext {
     pub rotation: Option<(f32, f32)>,
     /// The anchor of the command.
     pub anchor: EntityAnchor,
+    authorization: CommandAuthorizationContext,
     permission_catalog: Option<PermissionCatalog>,
     permission_metadata_catalog: Option<PermissionMetadataCatalog>,
     permission_context_catalog: Option<PermissionContextCatalog>,
     result_callback: CommandResultCallback,
+}
+
+/// Authorization state captured when command execution starts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CommandAuthorizationContext {
+    permission_context: PermissionContext,
+}
+
+impl CommandAuthorizationContext {
+    fn for_world(world: &World) -> Self {
+        Self::for_world_key(world.domain().to_owned(), world.key.clone())
+    }
+
+    fn for_world_key(domain: impl Into<String>, world: Identifier) -> Self {
+        Self {
+            permission_context: PermissionContext::for_world(domain, world),
+        }
+    }
+
+    pub(crate) fn permission_context(&self) -> &PermissionContext {
+        &self.permission_context
+    }
 }
 
 /// The position anchor to use for an entity.
@@ -133,6 +157,7 @@ impl CommandContext {
             sender,
             player,
             entity,
+            authorization: CommandAuthorizationContext::for_world(&world),
             world,
             server,
             position,
@@ -178,8 +203,8 @@ impl CommandContext {
         self.permission_context_catalog.as_ref()
     }
 
-    pub(crate) fn permission_check_context(&self) -> PermissionContext {
-        PermissionContext::for_world(self.world.domain().to_owned(), self.world.key.clone())
+    pub(crate) fn permission_check_context(&self) -> &PermissionContext {
+        self.authorization.permission_context()
     }
 
     /// Returns this context with a replaced result callback.
@@ -323,7 +348,9 @@ fn normalize_rotation((mut yaw, mut pitch): (f32, f32)) -> (f32, f32) {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use super::{CommandCallbackResult, CommandResultCallback};
+    use super::{CommandAuthorizationContext, CommandCallbackResult, CommandResultCallback};
+    use crate::permission::PermissionContext;
+    use steel_utils::Identifier;
 
     #[test]
     fn command_result_callbacks_chain_in_order() {
@@ -367,6 +394,17 @@ mod tests {
                     }
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn authorization_context_captures_initial_world_scope() {
+        let world = Identifier::new("lobby", "spawn");
+        let authorization = CommandAuthorizationContext::for_world_key("lobby", world.clone());
+
+        assert_eq!(
+            authorization.permission_context(),
+            &PermissionContext::for_world("lobby", world)
         );
     }
 }

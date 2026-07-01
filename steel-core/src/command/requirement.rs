@@ -177,7 +177,7 @@ fn sender_has_permission(
 ) -> bool {
     match sender {
         CommandSender::Player(player) => {
-            player.has_permission_in(permission, &context.permission_check_context())
+            player.has_permission_in(permission, context.permission_check_context())
         }
         CommandSender::Console | CommandSender::Rcon => true,
         CommandSender::SuppressedOutput(sender) => {
