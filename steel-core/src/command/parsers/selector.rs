@@ -2341,14 +2341,7 @@ impl<'a> SelectorReader<'a> {
         self.skip_whitespace();
         while self.peek().is_some_and(|ch| ch != '}') {
             self.skip_whitespace();
-            let name_cursor = self.cursor;
             let name = self.read_unquoted_string();
-            if name.is_empty() {
-                return Err(SelectorParseError::invalid_at(
-                    "expected scoreboard objective name",
-                    name_cursor,
-                ));
-            }
             self.skip_whitespace();
             self.expect('=')?;
             self.skip_whitespace();
@@ -3080,6 +3073,22 @@ mod tests {
             scores.iter().any(|(name, range)| name == "deaths"
                 && range.min.is_none()
                 && range.max == Some(2))
+        );
+
+        let selector = parse_selector_plan("@e[scores={=1}]".to_owned(), true)
+            .expect("empty score objective parses like vanilla");
+        let Some(SelectorFilter::Scores(scores)) = selector
+            .filters
+            .iter()
+            .find(|filter| matches!(filter, SelectorFilter::Scores(_)))
+        else {
+            panic!("expected scores filter");
+        };
+        assert_eq!(scores.len(), 1);
+        assert!(
+            scores.iter().any(|(name, range)| name.is_empty()
+                && range.min == Some(1)
+                && range.max == Some(1))
         );
     }
 
