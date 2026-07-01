@@ -57,7 +57,12 @@ const SELECTOR_OPTION_KEYS: &[&str] = &[
     "team",
     "nbt",
     "scores",
+    "advancements",
     "predicate",
+];
+const UNSUPPORTED_SELECTOR_OPTION_KEYS: &[&str] = &[
+    // Needs player advancement progress before it can resolve faithfully.
+    "advancements",
 ];
 const SET_ONCE_SELECTOR_OPTIONS: &[&str] = &[
     "distance",
@@ -1076,12 +1081,17 @@ fn selector_option_suggestions(
     SELECTOR_OPTION_KEYS
         .iter()
         .copied()
+        .filter(|key| selector_option_supported_for_suggestions(key))
         .filter(|key| selector_option_available_for_type(key, selector_type))
         .filter(|key| !used_set_once_options.iter().any(|used| used == key))
         .filter(|key| selector_option_available_for_completed_entries(key, completed_entries))
         .filter(|key| key.starts_with(current_entry.trim_start()))
         .map(|key| format!("{expression_prefix}{key}="))
         .collect()
+}
+
+fn selector_option_supported_for_suggestions(key: &str) -> bool {
+    !UNSUPPORTED_SELECTOR_OPTION_KEYS.contains(&key)
 }
 
 fn selector_options_have_top_level_close(input: &str) -> bool {
@@ -2521,10 +2531,11 @@ mod tests {
     };
 
     use super::{
-        IntRange, SelectorFilter, SelectorParseErrorKind, SelectorType, entity_name_filter_matches,
-        entity_nbt_filter_matches, game_mode_filter_matches, parse_selector_plan,
-        parse_selector_plan_with_permissions, player_name_matches, read_selector_argument,
-        score_filter_matches, selector_argument_suggestions, team_filter_matches,
+        IntRange, SELECTOR_OPTION_KEYS, SelectorFilter, SelectorParseErrorKind, SelectorType,
+        UNSUPPORTED_SELECTOR_OPTION_KEYS, entity_name_filter_matches, entity_nbt_filter_matches,
+        game_mode_filter_matches, parse_selector_plan, parse_selector_plan_with_permissions,
+        player_name_matches, read_selector_argument, score_filter_matches,
+        selector_argument_suggestions, team_filter_matches,
     };
 
     struct SelectorNbtTestEntity {
@@ -2693,6 +2704,12 @@ mod tests {
                 .iter()
                 .any(|suggestion| suggestion == "@e[advancements=")
         );
+    }
+
+    #[test]
+    fn selector_tracks_known_but_unsupported_vanilla_options() {
+        assert!(SELECTOR_OPTION_KEYS.contains(&"advancements"));
+        assert!(UNSUPPORTED_SELECTOR_OPTION_KEYS.contains(&"advancements"));
     }
 
     #[test]

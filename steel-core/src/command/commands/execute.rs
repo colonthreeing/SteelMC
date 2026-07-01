@@ -1,8 +1,9 @@
 //! Handler for the "execute" command.
 //!
 //! Function conditions are not registered here yet because Steel still needs a
-//! command-function execution source and permission policy. Data component
-//! predicates without concrete Steel component storage are also omitted.
+//! command-function runtime that preserves vanilla callback/result semantics.
+//! Data component predicates without concrete Steel component storage are also
+//! omitted.
 
 use std::{borrow::Cow, sync::Arc};
 
