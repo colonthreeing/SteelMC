@@ -1773,6 +1773,27 @@ mod tests {
                 .any(|suggestion| suggestion.text == "stone[minecraft:count")
         );
 
+        let predicate_only_suggestions = ItemPredicateParser.suggest(
+            "stone[villager",
+            &ParsedArguments::default(),
+            &TestContext,
+        );
+        assert!(
+            predicate_only_suggestions
+                .iter()
+                .any(|suggestion| suggestion.text == "stone[minecraft:villager/variant")
+        );
+
+        let duplicate_suggestions =
+            ItemPredicateParser.suggest("stone[damage", &ParsedArguments::default(), &TestContext);
+        assert_eq!(
+            duplicate_suggestions
+                .iter()
+                .filter(|suggestion| suggestion.text == "stone[minecraft:damage")
+                .count(),
+            1
+        );
+
         let transient_suggestions = ItemPredicateParser.suggest(
             "stone[creative",
             &ParsedArguments::default(),

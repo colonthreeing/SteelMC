@@ -5,6 +5,24 @@ use steel_protocol::packets::game::{ArgumentType, SuggestionEntry, SuggestionTyp
 use steel_registry::{REGISTRY, RegistryExt, TaggedRegistryExt};
 use steel_utils::{Identifier, nbt::parse_snbt_argument};
 
+const VANILLA_DATA_COMPONENT_PREDICATE_KEYS: &[&str] = &[
+    "damage",
+    "enchantments",
+    "stored_enchantments",
+    "potion_contents",
+    "custom_data",
+    "container",
+    "bundle_contents",
+    "firework_explosion",
+    "fireworks",
+    "writable_book_content",
+    "written_book_content",
+    "attribute_modifiers",
+    "trim",
+    "jukebox_playable",
+    "villager/variant",
+];
+
 use crate::command::{
     graph::{
         CommandArgumentClientParser, CommandArgumentParser, CommandParseError,
@@ -132,21 +150,28 @@ fn component_suggestion_prefix(prefix: &str) -> Option<(&str, &str)> {
 
 fn component_suggestions(base: &str, prefix: &str) -> Vec<SuggestionEntry> {
     let stripped_prefix = prefix.strip_prefix("minecraft:").unwrap_or(prefix);
-    let mut suggestions = data_component_keys()
-        .filter(|key| {
-            let text = key.strip_prefix("minecraft:").unwrap_or(key);
-            matches_suggestion_substr(stripped_prefix, text)
-        })
-        .map(|key| SuggestionEntry::new(format!("{base}{key}")))
-        .collect::<Vec<_>>();
+    let mut suggestions = Vec::new();
 
-    let count = count_key().to_string();
-    let count_text = count.strip_prefix("minecraft:").unwrap_or(&count);
-    if matches_suggestion_substr(stripped_prefix, count_text) {
-        suggestions.push(SuggestionEntry::new(format!("{base}{count}")));
+    for key in item_predicate_term_keys() {
+        let text = key.strip_prefix("minecraft:").unwrap_or(&key);
+        if matches_suggestion_substr(stripped_prefix, text) {
+            push_unique_suggestion(&mut suggestions, format!("{base}{key}"));
+        }
     }
 
     suggestions
+}
+
+fn push_unique_suggestion(suggestions: &mut Vec<SuggestionEntry>, text: String) {
+    if !suggestions.iter().any(|suggestion| suggestion.text == text) {
+        suggestions.push(SuggestionEntry::new(text));
+    }
+}
+
+fn item_predicate_term_keys() -> impl Iterator<Item = String> {
+    data_component_keys()
+        .chain(std::iter::once(count_key().to_string()))
+        .chain(vanilla_data_component_predicate_keys())
 }
 
 fn data_component_keys() -> impl Iterator<Item = String> {
@@ -154,6 +179,12 @@ fn data_component_keys() -> impl Iterator<Item = String> {
         .filter_map(|id| REGISTRY.data_components.by_id(id))
         .filter(|component| component.is_persistent())
         .map(|component| component.key.to_string())
+}
+
+fn vanilla_data_component_predicate_keys() -> impl Iterator<Item = String> {
+    VANILLA_DATA_COMPONENT_PREDICATE_KEYS
+        .iter()
+        .map(|path| Identifier::vanilla_static(path).to_string())
 }
 
 struct ItemPredicateSyntax<'a> {
@@ -437,24 +468,9 @@ fn is_persistent_component_key(key: &Identifier) -> bool {
 
 fn is_vanilla_data_component_predicate_key(key: &Identifier) -> bool {
     key.namespace == Identifier::VANILLA_NAMESPACE
-        && matches!(
-            &*key.path,
-            "damage"
-                | "enchantments"
-                | "stored_enchantments"
-                | "potion_contents"
-                | "custom_data"
-                | "container"
-                | "bundle_contents"
-                | "firework_explosion"
-                | "fireworks"
-                | "writable_book_content"
-                | "written_book_content"
-                | "attribute_modifiers"
-                | "trim"
-                | "jukebox_playable"
-                | "villager/variant"
-        )
+        && VANILLA_DATA_COMPONENT_PREDICATE_KEYS
+            .iter()
+            .any(|path| key.path == *path)
 }
 
 fn is_empty_compound(value: &NbtTag) -> bool {
