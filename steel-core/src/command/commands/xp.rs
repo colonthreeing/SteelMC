@@ -13,7 +13,7 @@ use crate::{
         graph::{
             CommandNodeBuilder, CommandResult, IntegerParser, ParsedArguments, argument, literal,
         },
-        parsers::PlayerParser,
+        parsers::{PlayerParser, resolve_player_targets},
     },
     player::Player,
 };
@@ -79,7 +79,7 @@ fn query_experience(
     arguments: &ParsedArguments,
     xp_type: ExperienceType,
 ) -> Result<CommandResult, CommandError> {
-    let player = single_player(arguments)?;
+    let player = single_player(arguments, context)?;
     let amount = {
         let experience = player.experience.lock();
         match xp_type {
@@ -109,7 +109,7 @@ fn set_points(
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
     set_experience(
-        players(arguments)?,
+        players(arguments, context)?,
         amount(arguments)?,
         ExperienceType::Points,
         context,
@@ -121,7 +121,7 @@ fn set_levels(
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
     set_experience(
-        players(arguments)?,
+        players(arguments, context)?,
         amount(arguments)?,
         ExperienceType::Levels,
         context,
@@ -133,7 +133,7 @@ fn add_points(
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
     let count = add_experience(
-        players(arguments)?,
+        players(arguments, context)?,
         amount(arguments)?,
         ExperienceType::Points,
         context,
@@ -146,7 +146,7 @@ fn add_levels(
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
     let count = add_experience(
-        players(arguments)?,
+        players(arguments, context)?,
         amount(arguments)?,
         ExperienceType::Levels,
         context,
@@ -169,10 +169,10 @@ fn clear_sender(
 }
 
 fn clear_targets(
-    _context: &mut CommandContext,
+    context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let players = players(arguments)?;
+    let players = players(arguments, context)?;
     let count = players.len();
     for player in players {
         player.experience.lock().set_total_points(0);
@@ -180,14 +180,18 @@ fn clear_targets(
     Ok(CommandResult::from_usize_success_count(count))
 }
 
-fn players(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
-    arguments
-        .get::<Vec<Arc<Player>>>("target")
-        .map_err(super::invalid_parsed_argument)
+fn players(
+    arguments: &ParsedArguments,
+    context: &CommandContext,
+) -> Result<Vec<Arc<Player>>, CommandError> {
+    resolve_player_targets(arguments, "target", context)
 }
 
-fn single_player(arguments: &ParsedArguments) -> Result<Arc<Player>, CommandError> {
-    players(arguments)?
+fn single_player(
+    arguments: &ParsedArguments,
+    context: &CommandContext,
+) -> Result<Arc<Player>, CommandError> {
+    players(arguments, context)?
         .into_iter()
         .next()
         .ok_or_else(|| CommandError::InvalidConsumption(Some("target selector produced no players".to_owned())))

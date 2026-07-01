@@ -22,6 +22,7 @@ use uuid::Uuid;
 
 use crate::chunk::heightmap::HeightmapType;
 use crate::command::context::EntityAnchor;
+use crate::command::parsers::{EntityTargetArgumentValue, PlayerTargetArgumentValue};
 use crate::entity::SharedEntity;
 use crate::permission::{
     PermissionKey, PermissionKeyError, PermissionMetadataExpression, PermissionRuleExpression,
@@ -60,10 +61,14 @@ pub enum ParsedArgument {
     GameMode(GameType),
     /// Player target argument.
     Players(Vec<Arc<Player>>),
+    /// Runtime-resolved player target argument.
+    PlayerTargets(PlayerTargetArgumentValue),
     /// Permission-management player target argument.
     PermissionTargets(Vec<PermissionTarget>),
     /// Living entity target argument.
     Entities(Vec<SharedEntity>),
+    /// Runtime-resolved entity target argument.
+    EntityTargets(EntityTargetArgumentValue),
     /// Entity type argument.
     EntityType(EntityTypeRef),
     /// Item argument.
@@ -1429,6 +1434,9 @@ impl fmt::Debug for ParsedArgument {
                 .debug_struct("Players")
                 .field("count", &value.len())
                 .finish(),
+            Self::PlayerTargets(value) => {
+                f.debug_tuple("PlayerTargets").field(&value.raw()).finish()
+            }
             Self::PermissionTargets(value) => f
                 .debug_struct("PermissionTargets")
                 .field("count", &value.len())
@@ -1437,6 +1445,9 @@ impl fmt::Debug for ParsedArgument {
                 .debug_struct("Entities")
                 .field("count", &value.len())
                 .finish(),
+            Self::EntityTargets(value) => {
+                f.debug_tuple("EntityTargets").field(&value.raw()).finish()
+            }
             Self::EntityType(value) => f.debug_tuple("EntityType").field(&value.key).finish(),
             Self::Item(value) => f.debug_tuple("Item").field(&value.key).finish(),
             Self::ItemStack(value) => f.debug_tuple("ItemStack").field(value).finish(),
@@ -1526,8 +1537,10 @@ impl ParsedArgument {
             Self::PermissionMetadataExpression(_) => "permission_metadata_expression",
             Self::GameMode(_) => "gamemode",
             Self::Players(_) => "players",
+            Self::PlayerTargets(_) => "player_targets",
             Self::PermissionTargets(_) => "permission_targets",
             Self::Entities(_) => "entities",
+            Self::EntityTargets(_) => "entity_targets",
             Self::EntityType(_) => "entity_type",
             Self::Item(_) => "item",
             Self::ItemStack(_) => "item_stack",
@@ -1779,6 +1792,17 @@ impl FromParsedArgument for Vec<Arc<Player>> {
     }
 }
 
+impl FromParsedArgument for PlayerTargetArgumentValue {
+    const TYPE_NAME: &'static str = "player_targets";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::PlayerTargets(value) = value else {
+            return None;
+        };
+        Some(value.clone())
+    }
+}
+
 impl FromParsedArgument for Vec<PermissionTarget> {
     const TYPE_NAME: &'static str = "permission_targets";
 
@@ -1795,6 +1819,17 @@ impl FromParsedArgument for Vec<SharedEntity> {
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
         let ParsedArgument::Entities(value) = value else {
+            return None;
+        };
+        Some(value.clone())
+    }
+}
+
+impl FromParsedArgument for EntityTargetArgumentValue {
+    const TYPE_NAME: &'static str = "entity_targets";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::EntityTargets(value) = value else {
             return None;
         };
         Some(value.clone())

@@ -8,9 +8,8 @@ use crate::command::error::CommandError;
 use crate::command::graph::{
     CommandNodeBuilder, CommandResult, ParsedArguments, argument, literal,
 };
-use crate::command::parsers::EntityParser;
+use crate::command::parsers::{EntityParser, resolve_entity_targets};
 use crate::command::CommandRegistrationSpec;
-use crate::entity::SharedEntity;
 use steel_utils::translations;
 
 pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::minecraft();
@@ -49,9 +48,7 @@ fn kill_targets(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = arguments
-        .get::<Vec<SharedEntity>>("targets")
-        .map_err(super::invalid_parsed_argument)?;
+    let targets = resolve_entity_targets(arguments, "targets", context)?;
 
     if targets.is_empty() {
         return Err(CommandError::failure("No entity was found"));

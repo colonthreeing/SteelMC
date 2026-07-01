@@ -352,7 +352,7 @@ fn items_entity_condition_counts_item_entity_contents() {
         ItemSlotRangeArgumentValue::new("contents", vec![0]),
     );
 
-    match super::condition::entity_items_match_count(&arguments) {
+    match super::condition::entity_items_match_count(&TestContext, &arguments) {
         Ok(count) => assert_eq!(count, 4),
         Err(_) => panic!("item entity contents count should succeed"),
     }
@@ -367,7 +367,7 @@ fn items_entity_condition_ignores_missing_slots() {
         ItemSlotRangeArgumentValue::new("contents", vec![0]),
     );
 
-    match super::condition::entity_items_match_count(&arguments) {
+    match super::condition::entity_items_match_count(&TestContext, &arguments) {
         Ok(count) => assert_eq!(count, 0),
         Err(_) => panic!("missing entity slots should count as zero"),
     }

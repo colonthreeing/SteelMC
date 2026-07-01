@@ -13,7 +13,7 @@ use crate::{
         graph::{
             CommandNodeBuilder, CommandResult, IntegerParser, ParsedArguments, argument, literal,
         },
-        parsers::{ItemStackParser, PlayerParser},
+        parsers::{ItemStackParser, PlayerParser, resolve_player_targets},
         sender::CommandSender,
     },
     inventory::container::Container,
@@ -41,7 +41,7 @@ fn give_default_count(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
+    let targets = targets(arguments, context)?;
     let item_stack = item_stack(arguments)?;
 
     Ok(give(&targets, item_stack, 1, &context.sender))
@@ -51,7 +51,7 @@ fn give_with_count(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
+    let targets = targets(arguments, context)?;
     let item_stack = item_stack(arguments)?;
     let count = count(arguments)?;
 
@@ -125,10 +125,11 @@ fn give(targets: &[Arc<Player>], stack: ItemStack, count: i32, sender: &CommandS
     CommandResult::from_usize_success_count(targets.len())
 }
 
-fn targets(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
-    arguments
-        .get::<Vec<Arc<Player>>>("targets")
-        .map_err(super::invalid_parsed_argument)
+fn targets(
+    arguments: &ParsedArguments,
+    context: &CommandContext,
+) -> Result<Vec<Arc<Player>>, CommandError> {
+    resolve_player_targets(arguments, "targets", context)
 }
 
 fn item_stack(arguments: &ParsedArguments) -> Result<ItemStack, CommandError> {

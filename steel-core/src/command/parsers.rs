@@ -32,7 +32,11 @@ pub use resource::{
 };
 pub use scoreboard::{DoubleRangeParser, IntRangeParser, ObjectiveParser, ScoreHolderParser};
 pub use slot::ItemSlotsParser;
-pub use target::{EntityParser, PermissionTargetParser, PlayerParser};
+pub use target::{
+    EntityParser, EntityTargetArgumentValue, PermissionTargetParser, PlayerParser,
+    PlayerTargetArgumentValue,
+};
+pub(crate) use target::{resolve_entity_targets, resolve_player_targets};
 pub use text::{ComponentParser, TimeParser};
 pub use world::{DomainParser, WorldParser};
 

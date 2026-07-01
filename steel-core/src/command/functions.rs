@@ -526,7 +526,11 @@ mod tests {
     use crate::{
         command::{
             CommandDispatcher, CommandRegistration,
-            graph::{CommandFunctionArgumentValue, CommandParseErrorKind, CommandResult, literal},
+            graph::{
+                CommandFunctionArgumentValue, CommandParseErrorKind, CommandResult, argument,
+                literal,
+            },
+            parsers::EntityParser,
             requirement::{
                 CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext,
             },
@@ -561,10 +565,21 @@ mod tests {
             namespace,
         )
         .public();
+        let targeted_registration = CommandRegistration::new(
+            literal("targeted").then(
+                argument("targets", EntityParser::multiple())
+                    .executes(|_, _| Ok(CommandResult::success())),
+            ),
+            PermissionSegment::parse("test").expect("namespace parses"),
+        )
+        .public();
 
         dispatcher
             .register_command(registration)
             .expect("command registers");
+        dispatcher
+            .register_command(targeted_registration)
+            .expect("targeted command registers");
         dispatcher
     }
 
@@ -717,6 +732,18 @@ mod tests {
             error.source().kind(),
             CommandParseErrorKind::UnknownCommand
         ));
+    }
+
+    #[test]
+    fn function_validation_keeps_entity_targets_deferred() {
+        let dispatcher = validation_dispatcher();
+        let function =
+            CommandFunction::from_source(Identifier::new_static("test", "load"), "targeted @a\n")
+                .expect("function source parses");
+
+        function
+            .validate_commands(&dispatcher, &TestContext)
+            .expect("selector target validation should not require live server resolution");
     }
 
     #[test]

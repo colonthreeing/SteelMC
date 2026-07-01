@@ -110,7 +110,7 @@ fn fork_as(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<Vec<CommandContext>, CommandError> {
-    Ok(entities(arguments)?
+    Ok(entities(context, arguments)?
         .into_iter()
         .map(|entity| context.clone().with_entity(entity))
         .collect())
@@ -120,7 +120,7 @@ fn fork_at(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<Vec<CommandContext>, CommandError> {
-    Ok(entities(arguments)?
+    Ok(entities(context, arguments)?
         .into_iter()
         .filter_map(|entity| {
             let world = entity.level()?;
@@ -139,7 +139,7 @@ fn fork_positioned_as(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<Vec<CommandContext>, CommandError> {
-    Ok(entities(arguments)?
+    Ok(entities(context, arguments)?
         .into_iter()
         .map(|entity| context.clone().with_position(entity.position()))
         .collect())
@@ -149,7 +149,7 @@ fn fork_rotated_as(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<Vec<CommandContext>, CommandError> {
-    Ok(entities(arguments)?
+    Ok(entities(context, arguments)?
         .into_iter()
         .map(|entity| context.clone().with_rotation(entity.rotation()))
         .collect())
@@ -160,7 +160,7 @@ fn fork_facing_entity(
     arguments: &ParsedArguments,
 ) -> Result<Vec<CommandContext>, CommandError> {
     let anchor = anchor(arguments)?;
-    Ok(entities(arguments)?
+    Ok(entities(context, arguments)?
         .into_iter()
         .map(|entity| {
             let target = anchored_position(entity.position(), Some(entity.as_ref()), anchor);

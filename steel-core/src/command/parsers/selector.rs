@@ -409,6 +409,10 @@ impl SelectorParseError {
 }
 
 impl EntitySelector {
+    pub(super) fn raw(&self) -> &str {
+        &self.raw
+    }
+
     fn parse(
         raw: String,
         base_cursor: usize,
@@ -873,15 +877,7 @@ pub(super) fn parse_player_selector(
     context: &dyn CommandInputContext,
     single: bool,
 ) -> Result<Vec<Arc<Player>>, CommandParseError> {
-    let cursor = reader.absolute_cursor();
-    let raw = read_selector_argument(reader)?;
-    let selector = EntitySelector::parse(
-        raw,
-        cursor,
-        allow_selectors(context),
-        allow_advanced_selectors(context),
-    )?;
-    selector.validate_for_argument(single, true, cursor)?;
+    let (selector, cursor) = parse_player_selector_argument(reader, context, single)?;
     let players = selector.find_players(context, cursor)?;
     if single && players.len() != 1 {
         return Err(CommandParseError::new(
@@ -892,11 +888,44 @@ pub(super) fn parse_player_selector(
     Ok(players)
 }
 
+pub(super) fn parse_player_selector_argument(
+    reader: &mut CommandReader<'_>,
+    context: &dyn CommandInputContext,
+    single: bool,
+) -> Result<(EntitySelector, usize), CommandParseError> {
+    let cursor = reader.absolute_cursor();
+    let raw = read_selector_argument(reader)?;
+    let selector = EntitySelector::parse(
+        raw,
+        cursor,
+        allow_selectors(context),
+        allow_advanced_selectors(context),
+    )?;
+    selector.validate_for_argument(single, true, cursor)?;
+    Ok((selector, cursor))
+}
+
 pub(super) fn parse_entity_selector(
     reader: &mut CommandReader<'_>,
     context: &dyn CommandInputContext,
     single: bool,
 ) -> Result<Vec<SharedEntity>, CommandParseError> {
+    let (selector, cursor) = parse_entity_selector_argument(reader, context, single)?;
+    let entities = selector.find_entities(context, cursor)?;
+    if single && entities.len() != 1 {
+        return Err(CommandParseError::new(
+            CommandParseErrorKind::InvalidEntity(selector.raw),
+            cursor,
+        ));
+    }
+    Ok(entities)
+}
+
+pub(super) fn parse_entity_selector_argument(
+    reader: &mut CommandReader<'_>,
+    context: &dyn CommandInputContext,
+    single: bool,
+) -> Result<(EntitySelector, usize), CommandParseError> {
     let cursor = reader.absolute_cursor();
     let raw = read_selector_argument(reader)?;
     let selector = EntitySelector::parse(
@@ -906,14 +935,7 @@ pub(super) fn parse_entity_selector(
         allow_advanced_selectors(context),
     )?;
     selector.validate_for_argument(single, false, cursor)?;
-    let entities = selector.find_entities(context, cursor)?;
-    if single && entities.len() != 1 {
-        return Err(CommandParseError::new(
-            CommandParseErrorKind::InvalidEntity(selector.raw),
-            cursor,
-        ));
-    }
-    Ok(entities)
+    Ok((selector, cursor))
 }
 
 pub(super) fn allow_selectors(context: &dyn CommandInputContext) -> bool {

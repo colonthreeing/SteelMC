@@ -14,7 +14,7 @@ use crate::{
             CommandNodeBuilder, CommandResult, IntegerParser, ItemPredicateArgumentValue,
             ParsedArguments, argument, literal,
         },
-        parsers::{ItemPredicateParser, PlayerParser},
+        parsers::{ItemPredicateParser, PlayerParser, resolve_player_targets},
         sender::CommandSender,
     },
     inventory::container::Container,
@@ -66,7 +66,7 @@ fn clear_targets(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
+    let targets = targets(arguments, context)?;
 
     let count = targets
         .iter()
@@ -88,7 +88,7 @@ fn clear_targets_with_item(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
+    let targets = targets(arguments, context)?;
     let predicate = item_predicate(arguments)?;
     let count = clear_targets_matching(&targets, &predicate, -1)?;
 
@@ -107,7 +107,7 @@ fn clear_targets_with_max_amount(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
+    let targets = targets(arguments, context)?;
     let predicate = item_predicate(arguments)?;
     let max_amount = max_amount(arguments)?;
     let count = clear_targets_matching(&targets, &predicate, max_amount)?;
@@ -204,10 +204,11 @@ fn clear_player_matching(
     Ok(removed)
 }
 
-fn targets(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
-    arguments
-        .get::<Vec<Arc<Player>>>("targets")
-        .map_err(super::invalid_parsed_argument)
+fn targets(
+    arguments: &ParsedArguments,
+    context: &CommandContext,
+) -> Result<Vec<Arc<Player>>, CommandError> {
+    resolve_player_targets(arguments, "targets", context)
 }
 
 fn item_predicate(arguments: &ParsedArguments) -> Result<ItemPredicateArgumentValue, CommandError> {

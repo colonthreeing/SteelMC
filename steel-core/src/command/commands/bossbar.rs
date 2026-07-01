@@ -22,7 +22,9 @@ use crate::{
             CommandParseError, CommandParseErrorKind, CommandResult, IntegerParser,
             ParsedArgument, ParsedArguments, argument, literal,
         },
-        parsers::{ComponentParser, PlayerParser, parse_resource_identifier},
+        parsers::{
+            ComponentParser, PlayerParser, parse_resource_identifier, resolve_player_targets,
+        },
         reader::CommandReader,
         requirement::CommandInputContext,
         suggestions::matches_suggestion_substr,
@@ -338,7 +340,7 @@ fn set_players(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = players(arguments)?;
+    let targets = players(arguments, context)?;
     let uuids = targets
         .iter()
         .map(|player| player.uuid())
@@ -496,10 +498,11 @@ fn integer(arguments: &ParsedArguments, name: &str) -> Result<i32, CommandError>
         .map_err(super::invalid_parsed_argument)
 }
 
-fn players(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
-    arguments
-        .get::<Vec<Arc<Player>>>("targets")
-        .map_err(super::invalid_parsed_argument)
+fn players(
+    arguments: &ParsedArguments,
+    context: &CommandContext,
+) -> Result<Vec<Arc<Player>>, CommandError> {
+    resolve_player_targets(arguments, "targets", context)
 }
 
 fn online_players(context: &CommandContext, uuids: &[Uuid]) -> Vec<Arc<Player>> {

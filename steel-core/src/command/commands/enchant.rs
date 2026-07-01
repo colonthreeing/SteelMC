@@ -18,7 +18,7 @@ use crate::{
         graph::{
             CommandNodeBuilder, CommandResult, IntegerParser, ParsedArguments, argument, literal,
         },
-        parsers::{EnchantmentParser, PlayerParser},
+        parsers::{EnchantmentParser, PlayerParser, resolve_player_targets},
     },
     player::Player,
 };
@@ -44,7 +44,7 @@ fn enchant_default_level(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
+    let targets = targets(arguments, context)?;
     let enchantment = enchantment(arguments)?;
 
     Ok(CommandResult::from_success_count(enchant(
@@ -59,7 +59,7 @@ fn enchant_with_level(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
+    let targets = targets(arguments, context)?;
     let enchantment = enchantment(arguments)?;
     let level = level(arguments)?;
 
@@ -154,10 +154,11 @@ fn enchant(
     Ok(success)
 }
 
-fn targets(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
-    arguments
-        .get::<Vec<Arc<Player>>>("targets")
-        .map_err(super::invalid_parsed_argument)
+fn targets(
+    arguments: &ParsedArguments,
+    context: &CommandContext,
+) -> Result<Vec<Arc<Player>>, CommandError> {
+    resolve_player_targets(arguments, "targets", context)
 }
 
 fn enchantment(arguments: &ParsedArguments) -> Result<EnchantmentRef, CommandError> {

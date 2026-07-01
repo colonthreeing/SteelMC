@@ -1,5 +1,7 @@
 //! Target command argument parsers.
 
+use std::sync::Arc;
+
 use steel_protocol::packets::game::{ArgumentType, SuggestionEntry, SuggestionType};
 use steel_utils::translations::{
     ARGUMENT_ENTITY_SELECTOR_ALL_PLAYERS, ARGUMENT_ENTITY_SELECTOR_NEAREST_PLAYER,
@@ -9,18 +11,128 @@ use uuid::Uuid;
 
 use crate::{
     command::{
+        CommandDispatcher,
+        error::CommandError,
         graph::{
             CommandArgumentClientParser, CommandArgumentParser, CommandParseError,
             CommandParseErrorKind, ParsedArgument, ParsedArguments, PermissionTarget,
         },
         parsers::selector::{
-            parse_entity_selector, parse_player_selector, selector_argument_suggestions,
+            EntitySelector, parse_entity_selector_argument, parse_player_selector,
+            parse_player_selector_argument, selector_argument_suggestions,
         },
         reader::CommandReader,
         requirement::CommandInputContext,
     },
-    entity::Entity,
+    entity::{Entity, SharedEntity},
+    player::Player,
 };
+
+/// Parsed player target argument that resolves against the runtime command context.
+#[derive(Clone, Debug)]
+pub struct PlayerTargetArgumentValue {
+    selector: EntitySelector,
+    cursor: usize,
+    input: String,
+    single: bool,
+}
+
+impl PlayerTargetArgumentValue {
+    fn new(selector: EntitySelector, cursor: usize, input: String, single: bool) -> Self {
+        Self {
+            selector,
+            cursor,
+            input,
+            single,
+        }
+    }
+
+    /// Returns the original selector text.
+    #[must_use]
+    pub fn raw(&self) -> &str {
+        self.selector.raw()
+    }
+
+    /// Resolves this target against a runtime command context.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured command error when the selector cannot resolve.
+    pub fn resolve(
+        &self,
+        context: &dyn CommandInputContext,
+    ) -> Result<Vec<Arc<Player>>, CommandError> {
+        self.resolve_for_parse(context)
+            .map_err(|error| CommandDispatcher::parse_error_to_command_error(&self.input, error))
+    }
+
+    fn resolve_for_parse(
+        &self,
+        context: &dyn CommandInputContext,
+    ) -> Result<Vec<Arc<Player>>, CommandParseError> {
+        let players = self.selector.find_players(context, self.cursor)?;
+        if self.single && players.len() != 1 {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidPlayer(self.selector.raw().to_owned()),
+                self.cursor,
+            ));
+        }
+        Ok(players)
+    }
+}
+
+/// Parsed entity target argument that resolves against the runtime command context.
+#[derive(Clone, Debug)]
+pub struct EntityTargetArgumentValue {
+    selector: EntitySelector,
+    cursor: usize,
+    input: String,
+    single: bool,
+}
+
+impl EntityTargetArgumentValue {
+    fn new(selector: EntitySelector, cursor: usize, input: String, single: bool) -> Self {
+        Self {
+            selector,
+            cursor,
+            input,
+            single,
+        }
+    }
+
+    /// Returns the original selector text.
+    #[must_use]
+    pub fn raw(&self) -> &str {
+        self.selector.raw()
+    }
+
+    /// Resolves this target against a runtime command context.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured command error when the selector cannot resolve.
+    pub fn resolve(
+        &self,
+        context: &dyn CommandInputContext,
+    ) -> Result<Vec<SharedEntity>, CommandError> {
+        self.resolve_for_parse(context)
+            .map_err(|error| CommandDispatcher::parse_error_to_command_error(&self.input, error))
+    }
+
+    fn resolve_for_parse(
+        &self,
+        context: &dyn CommandInputContext,
+    ) -> Result<Vec<SharedEntity>, CommandParseError> {
+        let entities = self.selector.find_entities(context, self.cursor)?;
+        if self.single && entities.len() != 1 {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::InvalidEntity(self.selector.raw().to_owned()),
+                self.cursor,
+            ));
+        }
+        Ok(entities)
+    }
+}
 
 /// Player target argument parser.
 #[derive(Clone, Copy, Debug, Default)]
@@ -48,9 +160,11 @@ impl CommandArgumentParser for PlayerParser {
         reader: &mut CommandReader<'_>,
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
-        Ok(ParsedArgument::Players(parse_player_selector(
-            reader, context, self.one,
-        )?))
+        let input = reader.input().to_owned();
+        let (selector, cursor) = parse_player_selector_argument(reader, context, self.one)?;
+        Ok(ParsedArgument::PlayerTargets(
+            PlayerTargetArgumentValue::new(selector, cursor, input, self.one),
+        ))
     }
 
     fn client_parser(&self) -> CommandArgumentClientParser {
@@ -214,9 +328,11 @@ impl CommandArgumentParser for EntityParser {
         reader: &mut CommandReader<'_>,
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
-        Ok(ParsedArgument::Entities(parse_entity_selector(
-            reader, context, self.one,
-        )?))
+        let input = reader.input().to_owned();
+        let (selector, cursor) = parse_entity_selector_argument(reader, context, self.one)?;
+        Ok(ParsedArgument::EntityTargets(
+            EntityTargetArgumentValue::new(selector, cursor, input, self.one),
+        ))
     }
 
     fn client_parser(&self) -> CommandArgumentClientParser {
@@ -253,6 +369,36 @@ impl CommandArgumentParser for EntityParser {
 
         suggestions
     }
+}
+
+pub(crate) fn resolve_player_targets(
+    arguments: &ParsedArguments,
+    name: &str,
+    context: &dyn CommandInputContext,
+) -> Result<Vec<Arc<Player>>, CommandError> {
+    if let Ok(targets) = arguments.get::<PlayerTargetArgumentValue>(name) {
+        return targets.resolve(context);
+    }
+    arguments
+        .get::<Vec<Arc<Player>>>(name)
+        .map_err(invalid_parsed_argument)
+}
+
+pub(crate) fn resolve_entity_targets(
+    arguments: &ParsedArguments,
+    name: &str,
+    context: &dyn CommandInputContext,
+) -> Result<Vec<SharedEntity>, CommandError> {
+    if let Ok(targets) = arguments.get::<EntityTargetArgumentValue>(name) {
+        return targets.resolve(context);
+    }
+    arguments
+        .get::<Vec<SharedEntity>>(name)
+        .map_err(invalid_parsed_argument)
+}
+
+fn invalid_parsed_argument(error: crate::command::graph::ParsedArgumentError) -> CommandError {
+    CommandError::InvalidConsumption(Some(format!("{error:?}")))
 }
 
 fn push_selector_suggestions(

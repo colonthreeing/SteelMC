@@ -237,7 +237,7 @@ fn execute_entity_condition(
     arguments: &ParsedArguments,
     expected: bool,
 ) -> Result<CommandResult, CommandError> {
-    let count = entities(arguments)?.len();
+    let count = entities(context, arguments)?.len();
     if expected {
         if count == 0 {
             return Err(conditional_failed(count));
@@ -259,7 +259,7 @@ fn fork_entity_condition(
     arguments: &ParsedArguments,
     expected: bool,
 ) -> Result<Vec<CommandContext>, CommandError> {
-    let matches = !entities(arguments)?.is_empty();
+    let matches = !entities(context, arguments)?.is_empty();
     Ok(if matches == expected {
         vec![context.clone()]
     } else {
@@ -330,7 +330,7 @@ fn execute_entity_items_condition(
     arguments: &ParsedArguments,
     expected: bool,
 ) -> Result<CommandResult, CommandError> {
-    let count = entity_items_match_count(arguments)?;
+    let count = entity_items_match_count(context, arguments)?;
     if expected {
         if count == 0 {
             return Err(conditional_failed(count));
@@ -352,7 +352,7 @@ fn fork_entity_items_condition(
     arguments: &ParsedArguments,
     expected: bool,
 ) -> Result<Vec<CommandContext>, CommandError> {
-    let matches = entity_items_match_count(arguments)? > 0;
+    let matches = entity_items_match_count(context, arguments)? > 0;
     Ok(if matches == expected {
         vec![context.clone()]
     } else {
@@ -360,8 +360,11 @@ fn fork_entity_items_condition(
     })
 }
 
-pub(super) fn entity_items_match_count(arguments: &ParsedArguments) -> Result<usize, CommandError> {
-    let targets = entities(arguments)?;
+pub(super) fn entity_items_match_count(
+    context: &dyn crate::command::requirement::CommandInputContext,
+    arguments: &ParsedArguments,
+) -> Result<usize, CommandError> {
+    let targets = entities(context, arguments)?;
     let slots = item_slots(arguments)?;
     let predicate = item_predicate(arguments)?;
     let mut count = 0usize;
@@ -852,7 +855,7 @@ fn execute_entity_data_condition(
     arguments: &ParsedArguments,
     expected: bool,
 ) -> Result<CommandResult, CommandError> {
-    let count = entity_data_match_count(arguments)?;
+    let count = entity_data_match_count(context, arguments)?;
     if expected {
         if count == 0 {
             return Err(conditional_failed(count));
@@ -918,7 +921,7 @@ fn fork_entity_data_condition(
     arguments: &ParsedArguments,
     expected: bool,
 ) -> Result<Vec<CommandContext>, CommandError> {
-    let matches = entity_data_match_count(arguments)? > 0;
+    let matches = entity_data_match_count(context, arguments)? > 0;
     Ok(if matches == expected {
         vec![context.clone()]
     } else {
@@ -926,8 +929,11 @@ fn fork_entity_data_condition(
     })
 }
 
-fn entity_data_match_count(arguments: &ParsedArguments) -> Result<usize, CommandError> {
-    let entity = source_entity(arguments)?;
+fn entity_data_match_count(
+    context: &dyn crate::command::requirement::CommandInputContext,
+    arguments: &ParsedArguments,
+) -> Result<usize, CommandError> {
+    let entity = source_entity(context, arguments)?;
     let tag = NbtTag::Compound(entity.nbt_for_data_compare());
     Ok(nbt_path(arguments)?.count_matching(&tag))
 }

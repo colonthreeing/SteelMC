@@ -4,11 +4,9 @@ use crate::command::error::CommandError;
 use crate::command::graph::{
     CommandNodeBuilder, CommandResult, ParsedArguments, argument, literal,
 };
-use crate::command::parsers::{ComponentParser, PlayerParser};
+use crate::command::parsers::{ComponentParser, PlayerParser, resolve_player_targets};
 use crate::command::sender::CommandSender;
 use crate::command::CommandRegistrationSpec;
-use crate::player::Player;
-use std::sync::Arc;
 use text_components::TextComponent;
 
 pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::minecraft();
@@ -26,9 +24,7 @@ fn send_tellraw(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = arguments
-        .get::<Vec<Arc<Player>>>("targets")
-        .map_err(super::invalid_parsed_argument)?;
+    let targets = resolve_player_targets(arguments, "targets", context)?;
     let message = arguments
         .get::<TextComponent>("message")
         .map_err(super::invalid_parsed_argument)?;

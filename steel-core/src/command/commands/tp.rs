@@ -11,7 +11,7 @@ use crate::{
         context::CommandContext,
         error::CommandError,
         graph::{CommandNodeBuilder, CommandResult, ParsedArguments, argument, literal},
-        parsers::{PlayerParser, RotationParser, Vec3Parser},
+        parsers::{PlayerParser, RotationParser, Vec3Parser, resolve_player_targets},
     },
     entity::Entity,
     player::Player,
@@ -55,7 +55,7 @@ fn teleport_targets_to_position(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
+    let targets = targets(arguments, context)?;
     let pos = position(arguments)?;
     let player = context
         .sender
@@ -70,7 +70,7 @@ fn teleport_targets_to_position_with_rotation(
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
     teleport_to_pos(
-        &targets(arguments)?,
+        &targets(arguments, context)?,
         position(arguments)?,
         rotation(arguments)?,
         context,
@@ -81,7 +81,11 @@ fn teleport_targets_to_player(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    teleport_to_player(&targets(arguments)?, &destination(arguments)?, context)
+    teleport_to_player(
+        &targets(arguments, context)?,
+        &destination(arguments, context)?,
+        context,
+    )
 }
 
 fn teleport_sender_to_location(
@@ -114,16 +118,18 @@ fn teleport_sender_to_location_with_rotation(
     )
 }
 
-fn targets(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
-    arguments
-        .get::<Vec<Arc<Player>>>("targets")
-        .map_err(super::invalid_parsed_argument)
+fn targets(
+    arguments: &ParsedArguments,
+    context: &CommandContext,
+) -> Result<Vec<Arc<Player>>, CommandError> {
+    resolve_player_targets(arguments, "targets", context)
 }
 
-fn destination(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
-    arguments
-        .get::<Vec<Arc<Player>>>("destination")
-        .map_err(super::invalid_parsed_argument)
+fn destination(
+    arguments: &ParsedArguments,
+    context: &CommandContext,
+) -> Result<Vec<Arc<Player>>, CommandError> {
+    resolve_player_targets(arguments, "destination", context)
 }
 
 fn position(arguments: &ParsedArguments) -> Result<DVec3, CommandError> {

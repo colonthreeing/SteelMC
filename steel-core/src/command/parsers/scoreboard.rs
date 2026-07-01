@@ -12,7 +12,7 @@ use crate::{
             CommandParseErrorKind, DoubleRangeArgumentValue, IntRangeArgumentValue, ParsedArgument,
             ParsedArguments, ScoreHolderArgumentValue,
         },
-        parsers::{EntityParser, selector::selector_argument_suggestions},
+        parsers::selector::{parse_entity_selector, selector_argument_suggestions},
         reader::{CommandReader, StringMode},
         requirement::CommandInputContext,
     },
@@ -220,18 +220,8 @@ fn parse_entity_score_holders(
     multiple: bool,
     context: &dyn CommandInputContext,
 ) -> Result<ParsedArgument, CommandParseError> {
-    let parser = if multiple {
-        EntityParser::multiple()
-    } else {
-        EntityParser::one()
-    };
     let mut reader = CommandReader::with_offset(raw, cursor);
-    let ParsedArgument::Entities(entities) = parser.parse(&mut reader, context)? else {
-        return Err(CommandParseError::new(
-            CommandParseErrorKind::InvalidEntity(raw.to_owned()),
-            cursor,
-        ));
-    };
+    let entities = parse_entity_selector(&mut reader, context, !multiple)?;
 
     Ok(ParsedArgument::ScoreHolders(
         ScoreHolderArgumentValue::Holders(

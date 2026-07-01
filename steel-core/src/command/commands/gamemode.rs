@@ -5,15 +5,13 @@ use crate::command::graph::{
     CommandNodeBuilder, CommandPermissionArgument, CommandResult, ParsedArguments, argument,
     literal,
 };
-use crate::command::parsers::{GameModeParser, PlayerParser};
+use crate::command::parsers::{GameModeParser, PlayerParser, resolve_player_targets};
 use crate::command::requirement::RequirementContext;
 use crate::command::{
     CommandRegistrationSpec, minecraft_command_permission_key,
 };
 use crate::entity::Entity;
 use crate::permission::{PermissionExpr, PermissionKey, PermissionKeyError};
-use crate::player::Player;
-use std::sync::Arc;
 use steel_utils::translations;
 use steel_utils::types::GameType;
 use text_components::TextComponent;
@@ -114,9 +112,7 @@ fn set_target_game_mode(
     let gamemode = arguments
         .get::<GameType>("gamemode")
         .map_err(super::invalid_parsed_argument)?;
-    let targets = arguments
-        .get::<Vec<Arc<Player>>>("targets")
-        .map_err(super::invalid_parsed_argument)?;
+    let targets = resolve_player_targets(arguments, "targets", context)?;
 
     let mode_translation = get_gamemode_translation(gamemode);
 

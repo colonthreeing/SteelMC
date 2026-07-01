@@ -328,7 +328,7 @@ fn store_entity_data(
     data_type: StoreDataType,
     store_result: bool,
 ) -> Result<CommandResult, CommandError> {
-    let target = single_entity(arguments, "target")?;
+    let target = single_entity(context, arguments, "target")?;
     if target.as_player().is_some() {
         return Err(entity_data_invalid_error());
     }

@@ -27,6 +27,8 @@ use crate::command::graph::{
     ItemSlotRangeArgumentValue, LootPredicateArgumentValue, ParsedArguments,
     ScoreHolderArgumentValue, ScoreboardObjectiveName, literal,
 };
+use crate::command::parsers::resolve_entity_targets;
+use crate::command::requirement::CommandInputContext;
 use crate::entity::SharedEntity;
 use crate::scoreboard::{ScoreHolder, ScoreboardObjective};
 use crate::world::World;
@@ -112,11 +114,12 @@ fn block_data_invalid_error() -> CommandError {
     }))
 }
 
-fn entities(arguments: &ParsedArguments) -> Result<Vec<SharedEntity>, CommandError> {
-    arguments
-        .get::<Vec<SharedEntity>>("targets")
-        .or_else(|_| arguments.get::<Vec<SharedEntity>>("entities"))
-        .map_err(super::invalid_parsed_argument)
+fn entities(
+    context: &dyn CommandInputContext,
+    arguments: &ParsedArguments,
+) -> Result<Vec<SharedEntity>, CommandError> {
+    resolve_entity_targets(arguments, "targets", context)
+        .or_else(|_| resolve_entity_targets(arguments, "entities", context))
 }
 
 fn anchor(arguments: &ParsedArguments) -> Result<EntityAnchor, CommandError> {
@@ -270,14 +273,19 @@ fn double_range(arguments: &ParsedArguments) -> Result<DoubleRangeArgumentValue,
         .map_err(super::invalid_parsed_argument)
 }
 
-fn source_entity(arguments: &ParsedArguments) -> Result<SharedEntity, CommandError> {
-    single_entity(arguments, "source")
+fn source_entity(
+    context: &dyn CommandInputContext,
+    arguments: &ParsedArguments,
+) -> Result<SharedEntity, CommandError> {
+    single_entity(context, arguments, "source")
 }
 
-fn single_entity(arguments: &ParsedArguments, name: &'static str) -> Result<SharedEntity, CommandError> {
-    let mut entities = arguments
-        .get::<Vec<SharedEntity>>(name)
-        .map_err(super::invalid_parsed_argument)?;
+fn single_entity(
+    context: &dyn CommandInputContext,
+    arguments: &ParsedArguments,
+    name: &'static str,
+) -> Result<SharedEntity, CommandError> {
+    let mut entities = resolve_entity_targets(arguments, name, context)?;
     if entities.len() != 1 {
         return Err(super::invalid_parsed_argument(
             crate::command::graph::ParsedArgumentError::WrongType {

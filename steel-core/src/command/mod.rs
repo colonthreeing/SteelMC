@@ -573,7 +573,10 @@ impl CommandDispatcher {
         }
     }
 
-    fn parse_error_to_command_error(input: &str, error: CommandParseError) -> CommandError {
+    pub(crate) fn parse_error_to_command_error(
+        input: &str,
+        error: CommandParseError,
+    ) -> CommandError {
         let cursor = error.cursor();
         CommandError::parse(Self::parse_error_message(error.kind()), input, cursor)
     }

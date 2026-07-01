@@ -7,7 +7,7 @@ use crate::command::error::CommandError;
 use crate::command::graph::{
     BoolParser, CommandNodeBuilder, CommandResult, FloatParser, ParsedArguments, argument, literal,
 };
-use crate::command::parsers::PlayerParser;
+use crate::command::parsers::{PlayerParser, resolve_player_targets};
 use crate::command::sender::CommandSender;
 use crate::command::CommandRegistrationSpec;
 use crate::player::Player;
@@ -62,20 +62,20 @@ fn toggle_sender_fly(
 }
 
 fn toggle_target_fly(
-    _context: &mut CommandContext,
+    context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
+    let targets = targets(arguments, context)?;
     toggle_fly(&targets);
 
     Ok(CommandResult::success())
 }
 
 fn set_target_fly(
-    _context: &mut CommandContext,
+    context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
+    let targets = targets(arguments, context)?;
     let value = arguments
         .get::<bool>("value")
         .map_err(super::invalid_parsed_argument)?;
@@ -88,7 +88,7 @@ fn query_target_flying_speed(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
+    let targets = targets(arguments, context)?;
     query_flying_speed(&targets, &context.sender);
 
     Ok(CommandResult::success())
@@ -98,7 +98,7 @@ fn set_target_flying_speed(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
+    let targets = targets(arguments, context)?;
     let speed = speed(arguments)?;
     set_flying_speed(&targets, speed, &context.sender);
 
@@ -134,10 +134,11 @@ fn set_sender_flying_speed(
     Ok(CommandResult::success())
 }
 
-fn targets(arguments: &ParsedArguments) -> Result<Vec<Arc<Player>>, CommandError> {
-    arguments
-        .get::<Vec<Arc<Player>>>("target")
-        .map_err(super::invalid_parsed_argument)
+fn targets(
+    arguments: &ParsedArguments,
+    context: &CommandContext,
+) -> Result<Vec<Arc<Player>>, CommandError> {
+    resolve_player_targets(arguments, "target", context)
 }
 
 fn speed(arguments: &ParsedArguments) -> Result<f32, CommandError> {
