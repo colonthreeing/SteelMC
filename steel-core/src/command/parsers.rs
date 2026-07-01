@@ -680,7 +680,32 @@ mod tests {
 
         assert!(texts.iter().any(|text| text == "@e[type="));
         assert!(texts.iter().any(|text| text == "@e[sort="));
+        assert!(texts.iter().any(|text| text == "@e[advancements="));
         assert!(texts.iter().any(|text| text == "@e[predicate="));
+    }
+
+    #[test]
+    fn entity_parser_treats_advancements_option_as_set_once_for_suggestions() {
+        let suggestions = EntityParser::multiple().suggest(
+            "@e[advancements={},",
+            &ParsedArguments::default(),
+            &SelectorPermissionContext,
+        );
+        let texts = suggestions
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+
+        assert!(
+            !texts
+                .iter()
+                .any(|text| text == "@e[advancements={},advancements=")
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|text| text == "@e[advancements={},predicate=")
+        );
     }
 
     #[test]

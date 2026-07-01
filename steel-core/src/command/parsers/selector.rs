@@ -57,6 +57,7 @@ const SELECTOR_OPTION_KEYS: &[&str] = &[
     "team",
     "nbt",
     "scores",
+    "advancements",
     "predicate",
 ];
 const SET_ONCE_SELECTOR_OPTIONS: &[&str] = &[
@@ -73,6 +74,7 @@ const SET_ONCE_SELECTOR_OPTIONS: &[&str] = &[
     "limit",
     "sort",
     "scores",
+    "advancements",
 ];
 const GAME_MODE_SUGGESTIONS: &[&str] = &["survival", "creative", "adventure", "spectator"];
 
