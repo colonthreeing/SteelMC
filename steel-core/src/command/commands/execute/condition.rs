@@ -10,15 +10,17 @@ use text_components::{TextComponent, translation::TranslatedMessage};
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandNodeBuilder, CommandRedirectTarget, CommandResult, DoubleRangeArgumentValue,
-    IntRangeArgumentValue, LootPredicateArgumentValue, ParsedArguments, argument, literal,
+    CommandFunctionArgumentValue, CommandNodeBuilder, CommandRedirectTarget, CommandResult,
+    DoubleRangeArgumentValue, IntRangeArgumentValue, LootPredicateArgumentValue, ParsedArguments,
+    argument, literal,
 };
 use crate::command::loot::{CommandLootRandom, command_loot_entity_ref, command_loot_weather};
 use crate::command::parsers::{
-    BiomeParser, BlockPosParser, BlockPredicateParser, DoubleRangeParser, EntityParser,
-    IntRangeParser, ItemPredicateParser, ItemSlotsParser, LootPredicateParser, NbtPathParser,
-    ObjectiveParser, ScoreHolderParser, WorldParser,
+    BiomeParser, BlockPosParser, BlockPredicateParser, CommandFunctionParser, DoubleRangeParser,
+    EntityParser, IntRangeParser, ItemPredicateParser, ItemSlotsParser, LootPredicateParser,
+    NbtPathParser, ObjectiveParser, ScoreHolderParser, WorldParser,
 };
+use crate::command::{CommandExecutionBudget, CommandFunctionConditionResult};
 use crate::entity::EntityCommandItemSlotResult;
 use crate::scoreboard::{ScoreHolder, Scoreboard, ScoreboardObjective};
 use crate::world::World;
@@ -64,6 +66,12 @@ pub(super) fn conditionals(name: &'static str, expected: bool) -> CommandNodeBui
                     fork_predicate_condition(context, arguments, expected)
                 }),
         ))
+        .then(literal("function").then(argument("name", CommandFunctionParser).forks_with_budget(
+            CommandRedirectTarget::Current,
+            move |context, arguments, budget| {
+                fork_function_condition(context, arguments, expected, budget)
+            },
+        )))
         .then(
             literal("items")
                 .then(literal("entity").then(
@@ -288,6 +296,49 @@ fn fork_predicate_condition(
     } else {
         Vec::new()
     })
+}
+
+fn fork_function_condition(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    expected: bool,
+    budget: &mut CommandExecutionBudget,
+) -> Result<Vec<CommandContext>, CommandError> {
+    let Some(result) = function_condition_result(context, arguments, budget)? else {
+        return Ok(Vec::new());
+    };
+    Ok(if (result != 0) == expected {
+        vec![context.clone()]
+    } else {
+        Vec::new()
+    })
+}
+
+fn function_condition_result(
+    context: &CommandContext,
+    arguments: &ParsedArguments,
+    budget: &mut CommandExecutionBudget,
+) -> Result<Option<i32>, CommandError> {
+    let functions = {
+        let registry = context.server.command_functions.read();
+        registry
+            .resolve_argument(&command_function_argument(arguments)?)
+            .map_err(|error| CommandError::failure(error.to_string()))?
+    };
+    let dispatcher = context.server.command_dispatcher.read().clone();
+    match dispatcher.run_functions_for_condition(&functions, context, budget)? {
+        CommandFunctionConditionResult::NoFunctions => Ok(None),
+        CommandFunctionConditionResult::Returned(result) => Ok(Some(result.result)),
+        CommandFunctionConditionResult::Fallthrough => Ok(Some(0)),
+    }
+}
+
+fn command_function_argument(
+    arguments: &ParsedArguments,
+) -> Result<CommandFunctionArgumentValue, CommandError> {
+    arguments
+        .get::<CommandFunctionArgumentValue>("name")
+        .map_err(super::super::invalid_parsed_argument)
 }
 
 fn predicate_condition_matches(

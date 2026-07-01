@@ -210,6 +210,44 @@ impl CommandNodeBuilder {
         self.redirect = Some(CommandRedirect {
             target,
             modifier: CommandRedirectModifier::Single(Arc::new(executor)),
+            returns: false,
+        });
+        self
+    }
+
+    /// Redirects and returns the redirected command result from the current command frame.
+    #[must_use]
+    pub fn redirects_returning(
+        self,
+        target: CommandRedirectTarget,
+        executor: impl Fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.redirects_returning_with_budget(target, move |context, arguments, _budget| {
+            executor(context, arguments)
+        })
+    }
+
+    /// Budget-aware variant of [`Self::redirects_returning`].
+    #[must_use]
+    pub(crate) fn redirects_returning_with_budget(
+        mut self,
+        target: CommandRedirectTarget,
+        executor: impl Fn(
+            &mut CommandContext,
+            &ParsedArguments,
+            &mut CommandExecutionBudget,
+        ) -> Result<CommandResult, CommandError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.redirect = Some(CommandRedirect {
+            target,
+            modifier: CommandRedirectModifier::Single(Arc::new(executor)),
+            returns: true,
         });
         self
     }
@@ -249,6 +287,7 @@ impl CommandNodeBuilder {
         self.redirect = Some(CommandRedirect {
             target,
             modifier: CommandRedirectModifier::Fork(Arc::new(executor)),
+            returns: false,
         });
         self
     }

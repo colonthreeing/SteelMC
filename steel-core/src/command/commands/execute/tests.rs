@@ -207,6 +207,24 @@ fn predicate_condition_parses_direct_and_redirect_forms() {
 }
 
 #[test]
+fn function_condition_matches_vanilla_redirect_only_shape() {
+    let graph = graph();
+    let context = TestContext;
+
+    let redirected = graph
+        .parse("execute if function test:gate run seed", &context)
+        .expect("redirected function conditional parses");
+    assert_eq!(redirected.path(), ["execute", "if", "function", "name"]);
+
+    assert!(
+        graph
+            .parse("execute unless function #test:gates", &context)
+            .is_err(),
+        "function conditions require a redirected command tail"
+    );
+}
+
+#[test]
 fn bossbar_store_parses_value_and_max_targets() {
     let graph = graph();
     let context = TestContext;

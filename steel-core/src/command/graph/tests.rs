@@ -1168,6 +1168,31 @@ fn redirect_to_all_suggests_dispatcher_roots() {
 }
 
 #[test]
+fn returning_redirect_marks_remaining_command_tail() {
+    let graph = CommandGraph::new()
+        .with_root(literal("seed"))
+        .expect("seed root registers")
+        .with_root(literal("return").then(
+            literal("run").redirects_returning(CommandRedirectTarget::All, |_, _| {
+                Ok(CommandResult::success())
+            }),
+        ))
+        .expect("return root registers");
+
+    let parsed = graph
+        .parse("return run seed", &player_context())
+        .expect("return run parses");
+    let ParsedCommandAction::Redirect(redirect) = &parsed.action else {
+        panic!("return run should parse as a redirect");
+    };
+
+    assert_eq!(parsed.path(), ["return", "run"]);
+    assert_eq!(redirect.target, CommandRedirectTarget::All);
+    assert_eq!(redirect.command, "seed");
+    assert!(redirect.returns);
+}
+
+#[test]
 fn redirect_to_current_suggests_current_root_children() {
     let graph = graph_with_root(
         literal("execute")

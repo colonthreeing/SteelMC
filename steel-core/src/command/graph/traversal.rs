@@ -391,6 +391,7 @@ impl CommandNode {
                         super::ParsedRedirectModifier::Fork(Arc::clone(executor))
                     }
                 },
+                returns: redirect.returns,
             }),
         })
     }

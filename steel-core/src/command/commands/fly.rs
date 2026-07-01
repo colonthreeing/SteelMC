@@ -23,18 +23,20 @@ pub(crate) fn command() -> CommandNodeBuilder {
     literal("fly")
         .executes(toggle_sender_fly)
         .then(
-            argument("target", PlayerParser::multiple())
-                .executes(toggle_target_fly)
-                .then(argument("value", BoolParser).executes(set_target_fly))
-                .then(
-                    literal("speed").executes(query_target_flying_speed).then(
-                        argument(
-                            "speed",
-                            FloatParser::bounded(Some(0.0), Some(MAX_FLY_SPEED)),
-                        )
-                        .executes(set_target_flying_speed),
+            literal("target").then(
+                argument("target", PlayerParser::multiple())
+                    .executes(toggle_target_fly)
+                    .then(argument("value", BoolParser).executes(set_target_fly))
+                    .then(
+                        literal("speed").executes(query_target_flying_speed).then(
+                            argument(
+                                "speed",
+                                FloatParser::bounded(Some(0.0), Some(MAX_FLY_SPEED)),
+                            )
+                            .executes(set_target_flying_speed),
+                        ),
                     ),
-                ),
+            ),
         )
         .then(
             literal("speed").executes(query_sender_flying_speed).then(

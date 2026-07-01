@@ -20,6 +20,7 @@ use text_components::translation::TranslatedMessage;
 
 use crate::command::context::{CommandCallbackResult, CommandContext};
 use crate::command::error::CommandError;
+use crate::command::functions::CommandFunction;
 use crate::command::graph::{
     CommandExecutionStep, CommandGraph, CommandGraphError, CommandNodeBuilder, CommandParseError,
     CommandParseErrorKind, CommandResult, validate_command_node_name,
@@ -470,12 +471,63 @@ impl CommandDispatcher {
         context: &mut CommandContext,
         budget: &mut CommandExecutionBudget,
     ) -> Result<CommandResult, CommandError> {
+        Ok(self
+            .dispatch_active_with_queue(
+                ActiveCommand::Borrowed { command, context },
+                VecDeque::new(),
+                budget,
+            )?
+            .result)
+    }
+
+    pub(crate) fn run_functions_for_condition(
+        &self,
+        functions: &[CommandFunction],
+        context: &CommandContext,
+        budget: &mut CommandExecutionBudget,
+    ) -> Result<CommandFunctionConditionResult, CommandError> {
+        if functions.is_empty() {
+            return Ok(CommandFunctionConditionResult::NoFunctions);
+        }
+
+        let function_context = context
+            .clone()
+            .without_result_callbacks()
+            .with_suppressed_output();
         let mut queue = VecDeque::new();
-        let mut active = ActiveCommand::Borrowed { command, context };
+        for function in functions {
+            for command in function.commands() {
+                queue.push_back(QueuedCommand::function_frame(
+                    command.clone(),
+                    function_context.clone(),
+                ));
+            }
+        }
+
+        let Some(first) = queue.pop_front() else {
+            return Ok(CommandFunctionConditionResult::Fallthrough);
+        };
+
+        let outcome = self
+            .dispatch_active_with_queue(ActiveCommand::Owned(first), queue, budget)?
+            .frame_return;
+        Ok(outcome.map_or(
+            CommandFunctionConditionResult::Fallthrough,
+            CommandFunctionConditionResult::Returned,
+        ))
+    }
+
+    fn dispatch_active_with_queue(
+        &self,
+        mut active: ActiveCommand<'_>,
+        mut queue: VecDeque<QueuedCommand>,
+        budget: &mut CommandExecutionBudget,
+    ) -> Result<DispatchOutcome, CommandError> {
         let fork_limit = command_fork_limit(active.context());
         let mut total_success_count = 0_i32;
         let mut last_result = 0_i32;
         let mut completed_forked_context = false;
+        let mut frame_return = None;
 
         loop {
             budget.consume()?;
@@ -506,10 +558,11 @@ impl CommandDispatcher {
                 Ok(step) => step,
                 Err(_error) if active.is_forked() => {
                     let Some(next) = queue.pop_front() else {
-                        return Ok(dispatch_result(
+                        return Ok(dispatch_outcome(
                             total_success_count,
                             last_result,
                             completed_forked_context,
+                            frame_return,
                         ));
                     };
                     active = ActiveCommand::Owned(next);
@@ -519,21 +572,30 @@ impl CommandDispatcher {
             };
 
             match step {
-                CommandExecutionStep::Complete(result) => {
-                    active
-                        .context_mut()
-                        .on_command_result(successful_command_callback_result(result));
+                CommandExecutionStep::Complete(mut result) => {
+                    if active.is_returning() && !result.returns_from_frame() {
+                        result = result.as_return_success();
+                    }
+                    let returns_from_frame = result.returns_from_frame();
+                    let frame_depth = active.frame_depth();
+                    let callback_result = command_callback_result(result);
+                    active.context_mut().on_command_result(callback_result);
                     if active.is_forked() {
                         completed_forked_context = true;
                     }
                     last_result = result.return_value();
                     total_success_count = total_success_count
                         .saturating_add(execution_success_count(result, active.is_forked()));
+                    if returns_from_frame {
+                        frame_return = Some(callback_result);
+                        discard_command_frame(&mut queue, frame_depth);
+                    }
                     let Some(next) = queue.pop_front() else {
-                        return Ok(dispatch_result(
+                        return Ok(dispatch_outcome(
                             total_success_count,
                             last_result,
                             completed_forked_context,
+                            frame_return,
                         ));
                     };
                     active = ActiveCommand::Owned(next);
@@ -542,9 +604,15 @@ impl CommandDispatcher {
                     command: next_command,
                     contexts,
                     forked,
+                    returns,
                 } => {
                     let next_forked = active.is_forked() || forked;
                     let next_fork_stage = active.next_fork_stage(forked);
+                    let next_returning = active.is_returning() || returns;
+                    let next_frame_depth = active.frame_depth();
+                    if returns {
+                        discard_command_frame(&mut queue, next_frame_depth);
+                    }
                     if forked {
                         check_command_fork_limit(
                             queued_fork_stage_contexts(&queue, next_fork_stage, &next_command),
@@ -553,18 +621,21 @@ impl CommandDispatcher {
                         )?;
                     }
                     for context in contexts {
-                        queue.push_back(QueuedCommand {
-                            command: next_command.clone(),
+                        queue.push_back(QueuedCommand::new(
+                            next_command.clone(),
                             context,
-                            forked: next_forked,
-                            fork_stage: next_fork_stage,
-                        });
+                            next_forked,
+                            next_fork_stage,
+                            next_returning,
+                            next_frame_depth,
+                        ));
                     }
                     let Some(next) = queue.pop_front() else {
-                        return Ok(dispatch_result(
+                        return Ok(dispatch_outcome(
                             total_success_count,
                             last_result,
                             completed_forked_context,
+                            frame_return,
                         ));
                     };
                     active = ActiveCommand::Owned(next);
@@ -867,6 +938,44 @@ struct QueuedCommand {
     context: CommandContext,
     forked: bool,
     fork_stage: usize,
+    returning: bool,
+    frame_depth: usize,
+}
+
+impl QueuedCommand {
+    fn new(
+        command: String,
+        context: CommandContext,
+        forked: bool,
+        fork_stage: usize,
+        returning: bool,
+        frame_depth: usize,
+    ) -> Self {
+        Self {
+            command,
+            context,
+            forked,
+            fork_stage,
+            returning,
+            frame_depth,
+        }
+    }
+
+    fn function_frame(command: String, context: CommandContext) -> Self {
+        Self::new(command, context, false, 0, false, 1)
+    }
+}
+
+struct DispatchOutcome {
+    result: CommandResult,
+    frame_return: Option<CommandCallbackResult>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CommandFunctionConditionResult {
+    NoFunctions,
+    Returned(CommandCallbackResult),
+    Fallthrough,
 }
 
 impl ActiveCommand<'_> {
@@ -900,10 +1009,24 @@ impl ActiveCommand<'_> {
         }
     }
 
+    const fn is_returning(&self) -> bool {
+        match self {
+            Self::Borrowed { .. } => false,
+            Self::Owned(QueuedCommand { returning, .. }) => *returning,
+        }
+    }
+
     fn fork_stage(&self) -> usize {
         match self {
             Self::Borrowed { .. } => 0,
             Self::Owned(QueuedCommand { fork_stage, .. }) => *fork_stage,
+        }
+    }
+
+    fn frame_depth(&self) -> usize {
+        match self {
+            Self::Borrowed { .. } => 0,
+            Self::Owned(QueuedCommand { frame_depth, .. }) => *frame_depth,
         }
     }
 
@@ -914,6 +1037,10 @@ impl ActiveCommand<'_> {
             self.fork_stage()
         }
     }
+}
+
+fn discard_command_frame(queue: &mut VecDeque<QueuedCommand>, frame_depth: usize) {
+    queue.retain(|queued| queued.frame_depth < frame_depth);
 }
 
 fn queued_fork_stage_contexts(
@@ -931,9 +1058,9 @@ fn execution_success_count(result: CommandResult, forked: bool) -> i32 {
     if forked { 1 } else { result.return_value() }
 }
 
-fn successful_command_callback_result(result: CommandResult) -> CommandCallbackResult {
+fn command_callback_result(result: CommandResult) -> CommandCallbackResult {
     CommandCallbackResult {
-        success: true,
+        success: result.callback_success(),
         result: result.return_value(),
     }
 }
@@ -948,6 +1075,30 @@ fn dispatch_result(
     } else {
         last_result
     })
+}
+
+fn dispatch_outcome(
+    total_success_count: i32,
+    last_result: i32,
+    completed_forked_context: bool,
+    frame_return: Option<CommandCallbackResult>,
+) -> DispatchOutcome {
+    let result = frame_return.map_or_else(
+        || dispatch_result(total_success_count, last_result, completed_forked_context),
+        command_result_from_callback,
+    );
+    DispatchOutcome {
+        result,
+        frame_return,
+    }
+}
+
+fn command_result_from_callback(callback: CommandCallbackResult) -> CommandResult {
+    if callback.success {
+        CommandResult::return_success(callback.result)
+    } else {
+        CommandResult::return_failure()
+    }
 }
 
 #[cfg(test)]
@@ -1079,11 +1230,18 @@ mod tests {
 
     #[test]
     fn command_result_callback_receives_command_return_value() {
-        let callback =
-            super::successful_command_callback_result(CommandResult::from_return_value(37));
+        let callback = super::command_callback_result(CommandResult::from_return_value(37));
 
         assert!(callback.success);
         assert_eq!(callback.result, 37);
+    }
+
+    #[test]
+    fn return_failure_callback_reports_failure() {
+        let callback = super::command_callback_result(CommandResult::return_failure());
+
+        assert!(!callback.success);
+        assert_eq!(callback.result, 0);
     }
 
     #[test]
@@ -1295,7 +1453,10 @@ mod tests {
             dispatcher
                 .permission_catalog
                 .suggestions(super::ENTITY_SELECTOR_PERMISSION_KEY),
-            vec![super::ENTITY_SELECTOR_PERMISSION_KEY.to_owned()]
+            vec![
+                super::ENTITY_SELECTOR_PERMISSION_KEY.to_owned(),
+                super::ENTITY_SELECTOR_ADVANCED_PERMISSION_KEY.to_owned(),
+            ]
         );
         assert!(
             dispatcher

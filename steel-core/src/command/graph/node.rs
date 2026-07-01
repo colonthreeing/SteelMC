@@ -29,6 +29,7 @@ impl RequirementContext for NoPermissionContext {
 pub(super) struct CommandRedirect {
     pub(super) target: CommandRedirectTarget,
     pub(super) modifier: CommandRedirectModifier,
+    pub(super) returns: bool,
 }
 
 #[derive(Clone)]

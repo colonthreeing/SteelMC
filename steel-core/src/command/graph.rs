@@ -519,6 +519,16 @@ impl From<PermissionKeyError> for DynamicPermissionError {
 pub struct CommandResult {
     /// Integer value returned by the command.
     return_value: i32,
+    control: CommandResultControl,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum CommandResultControl {
+    #[default]
+    Continue,
+    Return {
+        success: bool,
+    },
 }
 
 impl CommandResult {
@@ -533,6 +543,25 @@ impl CommandResult {
     pub const fn from_return_value(value: i32) -> Self {
         Self {
             return_value: value,
+            control: CommandResultControl::Continue,
+        }
+    }
+
+    /// Creates a result that returns `value` from the current command frame.
+    #[must_use]
+    pub const fn return_success(value: i32) -> Self {
+        Self {
+            return_value: value,
+            control: CommandResultControl::Return { success: true },
+        }
+    }
+
+    /// Creates a result that returns failure from the current command frame.
+    #[must_use]
+    pub const fn return_failure() -> Self {
+        Self {
+            return_value: 0,
+            control: CommandResultControl::Return { success: false },
         }
     }
 
@@ -552,6 +581,22 @@ impl CommandResult {
     #[must_use]
     pub const fn return_value(self) -> i32 {
         self.return_value
+    }
+
+    pub(crate) const fn returns_from_frame(self) -> bool {
+        matches!(self.control, CommandResultControl::Return { .. })
+    }
+
+    pub(crate) const fn callback_success(self) -> bool {
+        match self.control {
+            CommandResultControl::Continue => true,
+            CommandResultControl::Return { success } => success,
+        }
+    }
+
+    pub(crate) const fn as_return_success(mut self) -> Self {
+        self.control = CommandResultControl::Return { success: true };
+        self
     }
 }
 
@@ -723,6 +768,7 @@ struct ParsedRedirect {
     current_root: String,
     command: String,
     modifier: ParsedRedirectModifier,
+    returns: bool,
 }
 
 #[derive(Clone)]
@@ -737,6 +783,7 @@ pub(crate) enum CommandExecutionStep {
         command: String,
         contexts: Vec<CommandContext>,
         forked: bool,
+        returns: bool,
     },
 }
 
@@ -831,6 +878,7 @@ impl ParseResults {
                     command,
                     contexts,
                     forked: matches!(redirect.modifier, ParsedRedirectModifier::Fork(_)),
+                    returns: redirect.returns,
                 })
             }
         }
