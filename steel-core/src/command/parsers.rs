@@ -1260,6 +1260,42 @@ mod tests {
     }
 
     #[test]
+    fn item_predicate_parser_treats_component_tilde_empty_as_presence() {
+        init_test_registry();
+
+        let mut reader = CommandReader::new("stone[custom_name~{}]");
+        let ParsedArgument::ItemPredicate(predicate) = ItemPredicateParser
+            .parse(&mut reader, &TestContext)
+            .expect("item predicate parses")
+        else {
+            panic!("expected item predicate");
+        };
+
+        let condition = &predicate.conditions()[0].alternatives()[0];
+        assert!(matches!(
+            condition,
+            ItemPredicateTerm::ComponentPresence { key }
+                if key == &Identifier::vanilla_static("custom_name")
+        ));
+    }
+
+    #[test]
+    fn item_predicate_parser_rejects_non_empty_component_existence_predicates() {
+        init_test_registry();
+
+        let mut reader = CommandReader::new("stone[custom_name~{value:1}]");
+        let error = ItemPredicateParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("non-empty component existence predicate rejects");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidItemPredicate(value)
+                if value == "item component existence predicate 'minecraft:custom_name' requires an empty compound"
+        ));
+    }
+
+    #[test]
     fn item_predicate_matches_item_tags_and_count_ranges() {
         init_test_registry();
 

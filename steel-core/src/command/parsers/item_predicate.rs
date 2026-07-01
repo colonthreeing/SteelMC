@@ -258,10 +258,20 @@ impl<'a> ItemPredicateSyntax<'a> {
 
         if self.consume_raw('~') {
             self.validate_predicate_key(key_cursor, &key)?;
-            return Ok(ItemPredicateTerm::PredicateValue {
-                key,
-                value: self.read_nbt("predicate")?,
-            });
+            let value = self.read_nbt("predicate")?;
+            if is_component_existence_predicate_key(&key) {
+                if !is_empty_compound(&value) {
+                    return Err(self.error_at(
+                        key_cursor,
+                        format!(
+                            "item component existence predicate '{key}' requires an empty compound"
+                        ),
+                    ));
+                }
+                return Ok(ItemPredicateTerm::ComponentPresence { key });
+            }
+
+            return Ok(ItemPredicateTerm::PredicateValue { key, value });
         }
 
         self.validate_component_key(key_cursor, &key)?;
@@ -285,7 +295,10 @@ impl<'a> ItemPredicateSyntax<'a> {
         cursor: usize,
         key: &Identifier,
     ) -> Result<(), ItemPredicateParseError> {
-        if is_count_key(key) || REGISTRY.data_components.by_key(key).is_some() {
+        if is_count_key(key)
+            || is_vanilla_data_component_predicate_key(key)
+            || REGISTRY.data_components.by_key(key).is_some()
+        {
             return Ok(());
         }
 
@@ -406,6 +419,38 @@ fn count_key() -> Identifier {
 
 fn is_count_key(key: &Identifier) -> bool {
     key.namespace == Identifier::VANILLA_NAMESPACE && key.path == "count"
+}
+
+fn is_component_existence_predicate_key(key: &Identifier) -> bool {
+    !is_count_key(key)
+        && !is_vanilla_data_component_predicate_key(key)
+        && REGISTRY.data_components.by_key(key).is_some()
+}
+
+fn is_vanilla_data_component_predicate_key(key: &Identifier) -> bool {
+    key.namespace == Identifier::VANILLA_NAMESPACE
+        && matches!(
+            &*key.path,
+            "damage"
+                | "enchantments"
+                | "stored_enchantments"
+                | "potion_contents"
+                | "custom_data"
+                | "container"
+                | "bundle_contents"
+                | "firework_explosion"
+                | "fireworks"
+                | "writable_book_content"
+                | "written_book_content"
+                | "attribute_modifiers"
+                | "trim"
+                | "jukebox_playable"
+                | "villager/variant"
+        )
+}
+
+fn is_empty_compound(value: &NbtTag) -> bool {
+    matches!(value, NbtTag::Compound(compound) if compound.is_empty())
 }
 
 #[derive(Debug)]
