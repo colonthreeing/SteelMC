@@ -57,7 +57,6 @@ const SELECTOR_OPTION_KEYS: &[&str] = &[
     "team",
     "nbt",
     "scores",
-    "advancements",
     "predicate",
 ];
 const SET_ONCE_SELECTOR_OPTIONS: &[&str] = &[
@@ -2293,7 +2292,7 @@ mod tests {
         IntRange, SelectorFilter, SelectorParseErrorKind, SelectorType, entity_name_filter_matches,
         entity_nbt_filter_matches, game_mode_filter_matches, parse_selector_plan,
         parse_selector_plan_with_permissions, player_name_matches, read_selector_argument,
-        score_filter_matches, team_filter_matches,
+        score_filter_matches, selector_argument_suggestions, team_filter_matches,
     };
 
     struct SelectorNbtTestEntity {
@@ -2442,6 +2441,22 @@ mod tests {
         assert!(selector.includes_entities);
         assert!(selector.world_limited);
         assert!(selector.distance.is_some());
+    }
+
+    #[test]
+    fn selector_suggestions_omit_unsupported_options() {
+        let context = SelectorResolutionPermissionContext {
+            allow_advanced: true,
+        };
+
+        let suggestions = selector_argument_suggestions("@e[", false, false, &context);
+
+        assert!(suggestions.iter().any(|suggestion| suggestion == "@e[name="));
+        assert!(
+            !suggestions
+                .iter()
+                .any(|suggestion| suggestion == "@e[advancements=")
+        );
     }
 
     #[test]
