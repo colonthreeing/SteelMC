@@ -14,7 +14,7 @@ pub mod storage;
 pub(crate) mod suggestions;
 
 use steel_protocol::packets::game::{CCommandSuggestions, CCommands, CommandNode, SuggestionEntry};
-use steel_utils::{locks::SyncMutex, translations};
+use steel_utils::{Identifier, locks::SyncMutex, translations};
 use text_components::TextComponent;
 use text_components::translation::TranslatedMessage;
 
@@ -617,6 +617,8 @@ impl CommandDispatcher {
                 CommandExecutionStep::CallFunctions { functions } => {
                     let active_frame = active.frame();
                     let return_parent_frame = active.is_returning();
+                    let output_suppressed = active.context().is_output_suppressed();
+                    let original_sender = active.context().sender.clone();
                     let original_callback = active.context().result_callback();
                     let function_context = active
                         .context()
@@ -635,11 +637,17 @@ impl CommandDispatcher {
                         let function_return_callback =
                             original_callback.chain(active_frame.return_callback());
                         for function in functions {
+                            let return_callback = decorated_function_callback(
+                                original_sender.clone(),
+                                output_suppressed,
+                                function.id().clone(),
+                                function_return_callback.clone(),
+                            );
                             actions.push(QueuedAction::FunctionCall(QueuedFunctionCall::new(
                                 function,
                                 function_context.clone(),
                                 active_frame.clone(),
-                                function_return_callback.clone(),
+                                return_callback,
                                 true,
                                 true,
                             )));
@@ -651,11 +659,17 @@ impl CommandDispatcher {
                         let function_return_callback =
                             accumulating_function_callback(Arc::clone(&accumulator));
                         for function in functions {
+                            let return_callback = decorated_function_callback(
+                                original_sender.clone(),
+                                output_suppressed,
+                                function.id().clone(),
+                                function_return_callback.clone(),
+                            );
                             actions.push(QueuedAction::FunctionCall(QueuedFunctionCall::new(
                                 function,
                                 function_context.clone(),
                                 active_frame.clone(),
-                                function_return_callback.clone(),
+                                return_callback,
                                 false,
                                 false,
                             )));
@@ -674,11 +688,17 @@ impl CommandDispatcher {
                         )));
                     } else {
                         for function in functions {
+                            let return_callback = decorated_function_callback(
+                                original_sender.clone(),
+                                output_suppressed,
+                                function.id().clone(),
+                                original_callback.clone(),
+                            );
                             actions.push(QueuedAction::FunctionCall(QueuedFunctionCall::new(
                                 function,
                                 function_context.clone(),
                                 active_frame.clone(),
-                                original_callback.clone(),
+                                return_callback,
                                 false,
                                 false,
                             )));
@@ -1240,6 +1260,33 @@ fn accumulating_function_callback(
     })
 }
 
+fn decorated_function_callback(
+    sender: CommandSender,
+    output_suppressed: bool,
+    function_id: Identifier,
+    callback: CommandResultCallback,
+) -> CommandResultCallback {
+    if output_suppressed {
+        return callback;
+    }
+
+    CommandResultCallback::new(move |result| {
+        sender.send_message(&function_result_message(&function_id, result.result));
+        callback.on_result(result);
+    })
+}
+
+fn function_result_message(function_id: &Identifier, result: i32) -> TextComponent {
+    TextComponent::translated(TranslatedMessage {
+        key: Cow::Borrowed("commands.function.result"),
+        fallback: None,
+        args: Some(Box::new([
+            TextComponent::from(function_id.to_string()),
+            TextComponent::from(result.to_string()),
+        ])),
+    })
+}
+
 impl ActiveCommand<'_> {
     fn parts(&mut self) -> (&str, &mut CommandContext) {
         match self {
@@ -1468,6 +1515,7 @@ mod tests {
         CommandRegistrationError,
     };
     use crate::command::{
+        context::CommandResultCallback,
         error::CommandError,
         graph::{
             CommandGraphError, CommandParseErrorKind, CommandResult, StringParser, argument,
@@ -1475,12 +1523,13 @@ mod tests {
         },
         reader::StringMode,
         requirement::{CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext},
+        sender::CommandSender,
     };
     use crate::permission::{
         PermissionCatalogSource, PermissionEntry, PermissionKey, PermissionSegment, PermissionSet,
     };
     use steel_registry::test_support::init_test_registry;
-    use steel_utils::translations;
+    use steel_utils::{Identifier, translations};
     use text_components::{TextComponent, content::Content};
 
     struct TestContext {
@@ -1595,6 +1644,42 @@ mod tests {
 
         assert!(callback.success);
         assert_eq!(callback.result, 37);
+    }
+
+    #[test]
+    fn function_result_message_uses_vanilla_translation_key() {
+        let message = super::function_result_message(&Identifier::new_static("test", "gate"), 37);
+        let Content::Translate(message) = &message.content else {
+            panic!("function result should be translated");
+        };
+        let args = message.args.as_ref().expect("function result has args");
+
+        assert_eq!(message.key.as_ref(), "commands.function.result");
+        assert_eq!(text_content(&args[0]), "test:gate");
+        assert_eq!(text_content(&args[1]), "37");
+    }
+
+    #[test]
+    fn decorated_function_callback_invokes_downstream_callback() {
+        let seen = std::sync::Arc::new(steel_utils::locks::SyncMutex::new(Vec::new()));
+        let callback_seen = std::sync::Arc::clone(&seen);
+        let callback = CommandResultCallback::new(move |result| {
+            callback_seen.lock().push(result);
+        });
+        let result = CommandCallbackResult {
+            success: true,
+            result: 37,
+        };
+
+        let decorated = super::decorated_function_callback(
+            CommandSender::SuppressedOutput(std::sync::Arc::new(CommandSender::Console)),
+            false,
+            Identifier::new_static("test", "gate"),
+            callback,
+        );
+        decorated.on_result(result);
+
+        assert_eq!(*seen.lock(), vec![result]);
     }
 
     #[test]
