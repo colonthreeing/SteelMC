@@ -1,8 +1,7 @@
 //! Handler for the "execute" command.
 //!
-//! Function conditions currently run non-macro command functions. Function
-//! macros remain rejected by the command-function loader until macro
-//! instantiation has a runtime.
+//! Function conditions pass no macro arguments, matching vanilla's
+//! `execute if function` behavior.
 //! Data component predicates without concrete Steel component storage are also
 //! omitted.
 

@@ -2,6 +2,7 @@
 
 use std::{error::Error, fmt, sync::Arc};
 
+use simdnbt::owned::NbtCompound;
 use steel_protocol::packets::game::{CommandNode as ProtocolCommandNode, SuggestionEntry};
 
 use crate::command::{
@@ -191,6 +192,8 @@ pub enum CommandParseErrorKind {
     InvalidBiome(String),
     /// A block predicate argument was invalid.
     InvalidBlockPredicate(String),
+    /// An NBT argument was invalid.
+    InvalidNbt(String),
     /// An NBT path argument was invalid.
     InvalidNbtPath(String),
     /// A structure argument was invalid.
@@ -279,6 +282,7 @@ impl CommandParseErrorKind {
             | Self::InvalidEnchantment(_)
             | Self::InvalidBiome(_)
             | Self::InvalidBlockPredicate(_)
+            | Self::InvalidNbt(_)
             | Self::InvalidNbtPath(_)
             | Self::InvalidStructure(_)
             | Self::InvalidDomain(_)
@@ -795,6 +799,7 @@ pub(crate) enum CommandExecutionStep {
     Complete(CommandResult),
     CallFunctions {
         functions: Vec<CommandFunction>,
+        arguments: Option<NbtCompound>,
     },
     Redirect {
         command: String,

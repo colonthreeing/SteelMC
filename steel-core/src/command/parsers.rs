@@ -23,7 +23,7 @@ pub use game::GameModeParser;
 pub use item_predicate::ItemPredicateParser;
 pub use item_stack::ItemStackParser;
 pub use loot_predicate::LootPredicateParser;
-pub use nbt::NbtPathParser;
+pub use nbt::{NbtCompoundParser, NbtPathParser};
 pub use permission::{PermissionGroupParser, PermissionKeyParser, PermissionRuleExpressionParser};
 pub use position::{BlockPosParser, HeightmapParser, RotationParser, Vec3Parser};
 pub(crate) use resource::parse_resource_identifier;
@@ -68,7 +68,7 @@ mod tests {
                 ComponentParser, DomainParser, DoubleRangeParser, EnchantmentParser, EntityParser,
                 EntitySummonParser, GameModeParser, HeightmapParser, IntRangeParser, ItemParser,
                 ItemPredicateParser, ItemSlotsParser, ItemStackParser, LootPredicateParser,
-                NbtPathParser, ObjectiveParser, PermissionKeyParser,
+                NbtCompoundParser, NbtPathParser, ObjectiveParser, PermissionKeyParser,
                 PermissionRuleExpressionParser, PermissionTargetParser, PlayerParser,
                 RotationParser, ScoreHolderParser, StructureParser, TimeParser, Vec3Parser,
                 WorldArgumentValue, WorldParser,
@@ -2000,6 +2000,31 @@ mod tests {
                 .iter()
                 .any(|suggestion| suggestion.text == "#minecraft:logs")
         );
+    }
+
+    #[test]
+    fn nbt_compound_parser_reads_one_command_argument() {
+        let mut reader = CommandReader::new("{value:1,name:\"test\"} run seed");
+        let value = NbtCompoundParser
+            .parse(&mut reader, &TestContext)
+            .expect("nbt compound parses");
+
+        let ParsedArgument::NbtCompound(compound) = value else {
+            panic!("expected nbt compound");
+        };
+        assert_eq!(compound.get("value"), Some(&simdnbt::owned::NbtTag::Int(1)));
+        assert_eq!(reader.remaining(), " run seed");
+    }
+
+    #[test]
+    fn nbt_compound_parser_uses_native_client_type() {
+        let (argument, suggestion) = NbtCompoundParser.client_parser().into_protocol_argument();
+
+        assert!(matches!(
+            argument,
+            steel_protocol::packets::game::ArgumentType::Nbt
+        ));
+        assert!(suggestion.is_none());
     }
 
     #[test]

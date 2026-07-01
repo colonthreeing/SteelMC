@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 
+use simdnbt::owned::NbtCompound;
 use text_components::{TextComponent, translation::TranslatedMessage};
 
 use crate::command::{
@@ -10,10 +11,10 @@ use crate::command::{
     error::CommandError,
     functions::CommandFunction,
     graph::{
-        CommandExecutionStep, CommandFunctionArgumentValue, CommandNodeBuilder, ParsedArguments,
-        argument, literal,
+        CommandExecutionStep, CommandFunctionArgumentValue, CommandNodeBuilder, ParsedArgumentError,
+        ParsedArguments, argument, literal,
     },
-    parsers::CommandFunctionParser,
+    parsers::{CommandFunctionParser, NbtCompoundParser},
 };
 
 pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::minecraft();
@@ -21,8 +22,14 @@ pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec
 /// Handler for the "function" command.
 #[must_use]
 pub(crate) fn command() -> CommandNodeBuilder {
-    literal("function")
-        .then(argument("name", CommandFunctionParser).executes_step_with_budget(execute_function))
+    literal("function").then(
+        argument("name", CommandFunctionParser)
+            .executes_step_with_budget(execute_function)
+            .then(
+                argument("arguments", NbtCompoundParser)
+                    .executes_step_with_budget(execute_function),
+            ),
+    )
 }
 
 fn execute_function(
@@ -33,6 +40,7 @@ fn execute_function(
     let target = arguments
         .get::<CommandFunctionArgumentValue>("name")
         .map_err(super::invalid_parsed_argument)?;
+    let macro_arguments = function_macro_arguments(arguments)?;
     let functions = {
         let registry = context.server.command_functions.read();
         registry
@@ -44,7 +52,18 @@ fn execute_function(
     }
 
     send_scheduled_message(context, &functions);
-    Ok(CommandExecutionStep::CallFunctions { functions })
+    Ok(CommandExecutionStep::CallFunctions {
+        functions,
+        arguments: macro_arguments,
+    })
+}
+
+fn function_macro_arguments(arguments: &ParsedArguments) -> Result<Option<NbtCompound>, CommandError> {
+    match arguments.get::<NbtCompound>("arguments") {
+        Ok(arguments) => Ok(Some(arguments)),
+        Err(ParsedArgumentError::Missing(_)) => Ok(None),
+        Err(error) => Err(super::invalid_parsed_argument(error)),
+    }
 }
 
 fn no_functions_error(target: &CommandFunctionArgumentValue) -> CommandError {

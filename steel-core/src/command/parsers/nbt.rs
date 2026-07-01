@@ -1,7 +1,7 @@
 //! NBT command argument parsers.
 
 use steel_protocol::packets::game::ArgumentType;
-use steel_utils::nbt::parse_nbt_path_argument;
+use steel_utils::nbt::{parse_nbt_path_argument, parse_snbt_compound_argument};
 
 use crate::command::{
     graph::{
@@ -11,6 +11,41 @@ use crate::command::{
     reader::CommandReader,
     requirement::CommandInputContext,
 };
+
+/// NBT compound argument parser.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NbtCompoundParser;
+
+impl CommandArgumentParser for NbtCompoundParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let start = reader.absolute_cursor();
+        let (compound, consumed) =
+            parse_snbt_compound_argument(reader.remaining()).map_err(|error| {
+                CommandParseError::new(
+                    CommandParseErrorKind::InvalidNbt(error.message().to_owned()),
+                    start + error.cursor(),
+                )
+            })?;
+        advance_reader(reader, consumed);
+        Ok(ParsedArgument::NbtCompound(compound))
+    }
+
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        CommandArgumentClientParser::new(ArgumentType::Nbt, None)
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        "nbt_compound"
+    }
+
+    fn examples(&self) -> &'static [&'static str] {
+        &["{}", "{value:1}", "{name:\"Steve\"}"]
+    }
+}
 
 /// NBT path argument parser.
 #[derive(Clone, Copy, Debug, Default)]

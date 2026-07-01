@@ -92,6 +92,8 @@ pub enum ParsedArgument {
     BlockPredicate(BlockPredicateArgumentValue),
     /// NBT path argument.
     NbtPath(NbtPath),
+    /// NBT compound argument.
+    NbtCompound(NbtCompound),
     /// Structure or structure tag argument.
     Structure(StructureArgumentValue),
     /// Loaded world argument.
@@ -1460,6 +1462,7 @@ impl fmt::Debug for ParsedArgument {
             Self::Biome(value) => f.debug_tuple("Biome").field(value).finish(),
             Self::BlockPredicate(value) => f.debug_tuple("BlockPredicate").field(value).finish(),
             Self::NbtPath(value) => f.debug_tuple("NbtPath").field(value).finish(),
+            Self::NbtCompound(value) => f.debug_tuple("NbtCompound").field(value).finish(),
             Self::Structure(value) => f.debug_tuple("Structure").field(value).finish(),
             Self::World(value) => f.debug_tuple("World").field(value).finish(),
             Self::Vec3(value) => f.debug_tuple("Vec3").field(value).finish(),
@@ -1553,6 +1556,7 @@ impl ParsedArgument {
             Self::Biome(_) => "biome",
             Self::BlockPredicate(_) => "block_predicate",
             Self::NbtPath(_) => "nbt_path",
+            Self::NbtCompound(_) => "nbt_compound",
             Self::Structure(_) => "structure",
             Self::World(_) => "world",
             Self::Vec3(_) => "vec3",
@@ -1963,6 +1967,17 @@ impl FromParsedArgument for NbtPath {
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
         let ParsedArgument::NbtPath(value) = value else {
+            return None;
+        };
+        Some(value.clone())
+    }
+}
+
+impl FromParsedArgument for NbtCompound {
+    const TYPE_NAME: &'static str = "nbt_compound";
+
+    fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
+        let ParsedArgument::NbtCompound(value) = value else {
             return None;
         };
         Some(value.clone())

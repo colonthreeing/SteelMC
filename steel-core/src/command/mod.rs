@@ -33,6 +33,7 @@ use crate::permission::{
 };
 use crate::player::Player;
 use crate::server::Server;
+use simdnbt::owned::NbtCompound;
 use std::{borrow::Cow, collections::VecDeque, error::Error, fmt, sync::Arc};
 use steel_registry::{
     game_rules::GameRuleValue,
@@ -493,9 +494,11 @@ impl CommandDispatcher {
         let function_context = function_execution_context(context);
         let mut queue = VecDeque::new();
         let function_frame = QueuedFrame::new(1, 1);
+        let function_arguments = Arc::new(None);
         for function in functions {
             queue.push_back(QueuedAction::FunctionCall(QueuedFunctionCall::new(
                 function.clone(),
+                Arc::clone(&function_arguments),
                 function_context.clone(),
                 function_frame.clone(),
                 CommandResultCallback::empty(),
@@ -506,7 +509,7 @@ impl CommandDispatcher {
         queue.push_back(QueuedAction::Fallthrough(function_frame));
 
         let mut frame_return = None;
-        let Some(first) = next_queued_command(&mut queue, budget, &mut frame_return)? else {
+        let Some(first) = next_queued_command(self, &mut queue, budget, &mut frame_return)? else {
             return Ok(frame_return.map_or(
                 CommandFunctionConditionResult::NoFunctions,
                 CommandFunctionConditionResult::Callback,
@@ -541,7 +544,8 @@ impl CommandDispatcher {
             let step = match step {
                 Ok(step) => step,
                 Err(_error) if active.continues_after_command_error() => {
-                    let Some(next) = next_queued_command(&mut queue, budget, &mut frame_return)?
+                    let Some(next) =
+                        next_queued_command(self, &mut queue, budget, &mut frame_return)?
                     else {
                         return Ok(dispatch_outcome(
                             total_success_count,
@@ -579,7 +583,8 @@ impl CommandDispatcher {
                             &mut frame_return,
                         );
                     }
-                    let Some(next) = next_queued_command(&mut queue, budget, &mut frame_return)?
+                    let Some(next) =
+                        next_queued_command(self, &mut queue, budget, &mut frame_return)?
                     else {
                         return Ok(dispatch_outcome(
                             total_success_count,
@@ -590,13 +595,17 @@ impl CommandDispatcher {
                     };
                     active = ActiveCommand::Owned(next);
                 }
-                CommandExecutionStep::CallFunctions { functions } => {
+                CommandExecutionStep::CallFunctions {
+                    functions,
+                    arguments,
+                } => {
                     let active_frame = active.frame();
                     let return_parent_frame = active.is_returning();
                     let output_suppressed = active.context().is_output_suppressed();
                     let original_sender = active.context().sender.clone();
                     let original_callback = active.context().result_callback();
                     let function_context = function_execution_context(active.context());
+                    let function_arguments = Arc::new(arguments);
                     let mut actions = Vec::with_capacity(
                         functions
                             .len()
@@ -617,6 +626,7 @@ impl CommandDispatcher {
                             );
                             actions.push(QueuedAction::FunctionCall(QueuedFunctionCall::new(
                                 function,
+                                Arc::clone(&function_arguments),
                                 function_context.clone(),
                                 active_frame.clone(),
                                 return_callback,
@@ -639,6 +649,7 @@ impl CommandDispatcher {
                             );
                             actions.push(QueuedAction::FunctionCall(QueuedFunctionCall::new(
                                 function,
+                                Arc::clone(&function_arguments),
                                 function_context.clone(),
                                 active_frame.clone(),
                                 return_callback,
@@ -668,6 +679,7 @@ impl CommandDispatcher {
                             );
                             actions.push(QueuedAction::FunctionCall(QueuedFunctionCall::new(
                                 function,
+                                Arc::clone(&function_arguments),
                                 function_context.clone(),
                                 active_frame.clone(),
                                 return_callback,
@@ -677,7 +689,8 @@ impl CommandDispatcher {
                         }
                     }
                     queue_next_actions(&mut queue, actions);
-                    let Some(next) = next_queued_command(&mut queue, budget, &mut frame_return)?
+                    let Some(next) =
+                        next_queued_command(self, &mut queue, budget, &mut frame_return)?
                     else {
                         return Ok(dispatch_outcome(
                             total_success_count,
@@ -735,7 +748,8 @@ impl CommandDispatcher {
                             next_frame,
                         ),
                     );
-                    let Some(next) = next_queued_command(&mut queue, budget, &mut frame_return)?
+                    let Some(next) =
+                        next_queued_command(self, &mut queue, budget, &mut frame_return)?
                     else {
                         return Ok(dispatch_outcome(
                             total_success_count,
@@ -977,6 +991,9 @@ impl CommandDispatcher {
             CommandParseErrorKind::InvalidBlockPredicate(value) => {
                 TextComponent::plain(format!("Invalid block predicate: {value}"))
             }
+            CommandParseErrorKind::InvalidNbt(value) => {
+                TextComponent::plain(format!("Invalid NBT: {value}"))
+            }
             CommandParseErrorKind::InvalidNbtPath(value) => {
                 TextComponent::plain(format!("Invalid NBT path: {value}"))
             }
@@ -1174,6 +1191,7 @@ impl QueuedAction {
 
 struct QueuedFunctionCall {
     function: CommandFunction,
+    arguments: Arc<Option<NbtCompound>>,
     context: CommandContext,
     frame: QueuedFrame,
     return_callback: CommandResultCallback,
@@ -1184,6 +1202,7 @@ struct QueuedFunctionCall {
 impl QueuedFunctionCall {
     fn new(
         function: CommandFunction,
+        arguments: Arc<Option<NbtCompound>>,
         context: CommandContext,
         frame: QueuedFrame,
         return_callback: CommandResultCallback,
@@ -1192,6 +1211,7 @@ impl QueuedFunctionCall {
     ) -> Self {
         Self {
             function,
+            arguments,
             context,
             frame,
             return_callback,
@@ -1200,7 +1220,15 @@ impl QueuedFunctionCall {
         }
     }
 
-    fn enqueue_commands(self, queue: &mut VecDeque<QueuedAction>) {
+    fn enqueue_commands(
+        self,
+        dispatcher: &CommandDispatcher,
+        queue: &mut VecDeque<QueuedAction>,
+    ) -> Result<(), CommandError> {
+        let instantiated = self
+            .function
+            .instantiate(self.arguments.as_ref().as_ref(), dispatcher, &self.context)
+            .map_err(|error| CommandError::failure(error.to_string()))?;
         let child_frame = if self.return_parent_frame {
             QueuedFrame::with_return_callback(
                 self.frame.depth.saturating_add(1),
@@ -1216,7 +1244,7 @@ impl QueuedFunctionCall {
                 self.propagates_return,
             )
         };
-        for command in self.function.commands().iter().rev() {
+        for command in instantiated.commands().iter().rev() {
             queue.push_front(QueuedAction::Command(QueuedCommand::new(
                 command.clone(),
                 self.context.clone(),
@@ -1226,6 +1254,7 @@ impl QueuedFunctionCall {
                 child_frame.clone(),
             )));
         }
+        Ok(())
     }
 }
 
@@ -1524,6 +1553,7 @@ fn return_from_frame(
 }
 
 fn next_queued_command(
+    dispatcher: &CommandDispatcher,
     queue: &mut VecDeque<QueuedAction>,
     budget: &mut CommandExecutionBudget,
     frame_return: &mut Option<CommandCallbackResult>,
@@ -1536,7 +1566,7 @@ fn next_queued_command(
             QueuedAction::Command(command) => return Ok(Some(command)),
             QueuedAction::FunctionCall(call) => {
                 budget.consume()?;
-                call.enqueue_commands(queue);
+                call.enqueue_commands(dispatcher, queue)?;
             }
             QueuedAction::Fallthrough(frame) => {
                 let result = CommandCallbackResult {
@@ -2063,6 +2093,20 @@ mod tests {
         let steelperms_player = player_context_with("steel.command.steelperms");
         assert!(dispatcher.graph.has_root("steelperms", &steelperms_player));
         assert!(dispatcher.graph.has_root("sp", &steelperms_player));
+    }
+
+    #[test]
+    fn function_command_parses_direct_macro_arguments() {
+        init_test_registry();
+
+        let dispatcher = CommandDispatcher::new().expect("built-in commands register");
+        let function_player = player_context_with("minecraft.command.function");
+        let parsed = dispatcher
+            .graph
+            .parse("function test:macro {value:1}", &function_player)
+            .expect("function command with direct macro arguments parses");
+
+        assert_eq!(parsed.path(), ["function", "name", "arguments"]);
     }
 
     #[test]

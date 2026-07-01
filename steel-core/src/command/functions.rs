@@ -1,8 +1,14 @@
 //! Server command function registry.
 
-use std::{collections::HashMap, error::Error, fmt, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    error::Error,
+    fmt,
+    sync::Arc,
+};
 
-use steel_utils::Identifier;
+use simdnbt::owned::{NbtCompound, NbtList, NbtTag};
+use steel_utils::{Identifier, locks::SyncMutex};
 
 use crate::command::{
     CommandDispatcher,
@@ -11,13 +17,69 @@ use crate::command::{
 };
 
 const MAX_COMMAND_FUNCTION_LINE_LENGTH: usize = 2_000_000;
+const MAX_MACRO_CACHE_ENTRIES: usize = 8;
 
 /// One registered command function.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct CommandFunction {
     id: Identifier,
     commands: Arc<[String]>,
+    entries: Arc<[CommandFunctionEntry]>,
     source_lines: Arc<[usize]>,
+    macro_parameters: Arc<[String]>,
+    macro_cache: Arc<SyncMutex<CommandFunctionMacroCache>>,
+}
+
+impl PartialEq for CommandFunction {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.commands == other.commands
+            && self.entries == other.entries
+            && self.source_lines == other.source_lines
+            && self.macro_parameters == other.macro_parameters
+    }
+}
+
+impl Eq for CommandFunction {}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CommandFunctionEntry {
+    Plain {
+        command_index: usize,
+    },
+    Macro {
+        template: MacroTemplate,
+        parameter_indices: Arc<[usize]>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MacroTemplate {
+    segments: Arc<[String]>,
+    variables: Arc<[String]>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct CommandFunctionMacroCache {
+    entries: VecDeque<CommandFunctionMacroCacheEntry>,
+}
+
+#[derive(Clone, Debug)]
+struct CommandFunctionMacroCacheEntry {
+    parameter_values: Arc<[String]>,
+    commands: Arc<[String]>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct InstantiatedCommandFunction {
+    commands: Arc<[String]>,
+}
+
+impl InstantiatedCommandFunction {
+    #[must_use]
+    pub(crate) fn commands(&self) -> &[String] {
+        &self.commands
+    }
 }
 
 impl CommandFunction {
@@ -35,10 +97,29 @@ impl CommandFunction {
         source_lines: Arc<[usize]>,
     ) -> Self {
         debug_assert_eq!(commands.len(), source_lines.len());
+        let entries = (0..commands.len())
+            .map(|command_index| CommandFunctionEntry::Plain { command_index })
+            .collect::<Vec<_>>()
+            .into();
+        Self::new_with_entries(id, commands, entries, source_lines, Vec::new().into())
+    }
+
+    fn new_with_entries(
+        id: Identifier,
+        commands: Arc<[String]>,
+        entries: Arc<[CommandFunctionEntry]>,
+        source_lines: Arc<[usize]>,
+        macro_parameters: Arc<[String]>,
+    ) -> Self {
+        debug_assert_eq!(commands.len(), source_lines.len());
+        debug_assert_eq!(commands.len(), entries.len());
         Self {
             id,
             commands,
+            entries,
             source_lines,
+            macro_parameters,
+            macro_cache: Arc::new(SyncMutex::new(CommandFunctionMacroCache::default())),
         }
     }
 
@@ -48,10 +129,20 @@ impl CommandFunction {
         &self.id
     }
 
-    /// Returns command lines in execution order.
+    /// Returns normalized source lines in execution order.
+    ///
+    /// Macro functions keep their source macro lines here, including the
+    /// leading `$`; use the function instantiation path when executable
+    /// command lines are needed.
     #[must_use]
     pub fn commands(&self) -> &[String] {
         &self.commands
+    }
+
+    /// Returns true when this function has at least one macro entry.
+    #[must_use]
+    pub fn is_macro(&self) -> bool {
+        !self.macro_parameters.is_empty()
     }
 
     /// Returns the original source line for a parsed command.
@@ -74,10 +165,12 @@ impl CommandFunction {
     /// cannot faithfully load yet.
     pub fn from_source(id: Identifier, source: &str) -> Result<Self, CommandFunctionParseError> {
         let parsed = parse_function_source(source)?;
-        Ok(Self::new_with_source_lines(
+        Ok(Self::new_with_entries(
             id,
             parsed.commands.into(),
+            parsed.entries.into(),
             parsed.source_lines.into(),
+            parsed.macro_parameters.into(),
         ))
     }
 
@@ -94,16 +187,128 @@ impl CommandFunction {
         dispatcher: &CommandDispatcher,
         context: &dyn CommandInputContext,
     ) -> Result<(), CommandFunctionValidationError> {
-        for (index, command) in self.commands.iter().enumerate() {
+        for (index, entry) in self.entries.iter().enumerate() {
+            let CommandFunctionEntry::Plain { command_index } = entry else {
+                continue;
+            };
+            let command = &self.commands[*command_index];
             if let Err(source) = dispatcher.graph.parse(command, context) {
                 return Err(CommandFunctionValidationError::new(
                     self.command_source_line(index).unwrap_or(index + 1),
-                    command.clone(),
+                    command.to_owned(),
                     source,
                 ));
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn instantiate(
+        &self,
+        arguments: Option<&NbtCompound>,
+        dispatcher: &CommandDispatcher,
+        context: &dyn CommandInputContext,
+    ) -> Result<InstantiatedCommandFunction, CommandFunctionInstantiationError> {
+        if !self.is_macro() {
+            return Ok(InstantiatedCommandFunction {
+                commands: Arc::clone(&self.commands),
+            });
+        }
+
+        let Some(arguments) = arguments else {
+            return Err(CommandFunctionInstantiationError::missing_arguments(
+                self.id.clone(),
+            ));
+        };
+        let parameter_values = self.parameter_values(arguments)?;
+        if let Some(commands) = self.cached_instantiation(&parameter_values) {
+            return Ok(InstantiatedCommandFunction { commands });
+        }
+
+        let commands = self.substitute_and_parse(&parameter_values, dispatcher, context)?;
+        self.insert_cached_instantiation(parameter_values.into(), Arc::clone(&commands));
+        Ok(InstantiatedCommandFunction { commands })
+    }
+
+    fn parameter_values(
+        &self,
+        arguments: &NbtCompound,
+    ) -> Result<Vec<String>, CommandFunctionInstantiationError> {
+        self.macro_parameters
+            .iter()
+            .map(|parameter| {
+                let Some(value) = arguments.get(parameter) else {
+                    return Err(CommandFunctionInstantiationError::missing_argument(
+                        self.id.clone(),
+                        parameter.to_owned(),
+                    ));
+                };
+                Ok(stringify_macro_argument(value))
+            })
+            .collect()
+    }
+
+    fn cached_instantiation(&self, parameter_values: &[String]) -> Option<Arc<[String]>> {
+        let mut cache = self.macro_cache.lock();
+        let index = cache
+            .entries
+            .iter()
+            .position(|entry| entry.parameter_values.as_ref() == parameter_values)?;
+        let entry = cache.entries.remove(index)?;
+        let commands = Arc::clone(&entry.commands);
+        cache.entries.push_back(entry);
+        Some(commands)
+    }
+
+    fn insert_cached_instantiation(
+        &self,
+        parameter_values: Arc<[String]>,
+        commands: Arc<[String]>,
+    ) {
+        let mut cache = self.macro_cache.lock();
+        if cache.entries.len() >= MAX_MACRO_CACHE_ENTRIES {
+            cache.entries.pop_front();
+        }
+        cache.entries.push_back(CommandFunctionMacroCacheEntry {
+            parameter_values,
+            commands,
+        });
+    }
+
+    fn substitute_and_parse(
+        &self,
+        parameter_values: &[String],
+        dispatcher: &CommandDispatcher,
+        context: &dyn CommandInputContext,
+    ) -> Result<Arc<[String]>, CommandFunctionInstantiationError> {
+        let mut commands = Vec::with_capacity(self.entries.len());
+        for (entry_index, entry) in self.entries.iter().enumerate() {
+            let command = match entry {
+                CommandFunctionEntry::Plain { command_index } => {
+                    self.commands[*command_index].to_owned()
+                }
+                CommandFunctionEntry::Macro {
+                    template,
+                    parameter_indices,
+                } => template.substitute(
+                    parameter_indices
+                        .iter()
+                        .map(|index| parameter_values[*index].as_str()),
+                )?,
+            };
+
+            if let Err(source) = dispatcher.graph.parse(&command, context) {
+                return Err(CommandFunctionInstantiationError::invalid_command(
+                    self.id.clone(),
+                    self.command_source_line(entry_index)
+                        .unwrap_or(entry_index + 1),
+                    command,
+                    source,
+                ));
+            }
+            commands.push(command);
+        }
+        Ok(commands.into())
     }
 }
 
@@ -157,6 +362,120 @@ impl fmt::Display for CommandFunctionValidationError {
 
 impl Error for CommandFunctionValidationError {}
 
+/// Error returned when a macro command function cannot instantiate.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CommandFunctionInstantiationError {
+    kind: CommandFunctionInstantiationErrorKind,
+}
+
+impl CommandFunctionInstantiationError {
+    fn missing_arguments(function: Identifier) -> Self {
+        Self {
+            kind: CommandFunctionInstantiationErrorKind::MissingArguments { function },
+        }
+    }
+
+    fn missing_argument(function: Identifier, argument: String) -> Self {
+        Self {
+            kind: CommandFunctionInstantiationErrorKind::MissingArgument { function, argument },
+        }
+    }
+
+    fn command_too_long(length: usize, max: usize) -> Self {
+        Self {
+            kind: CommandFunctionInstantiationErrorKind::CommandTooLong { length, max },
+        }
+    }
+
+    fn invalid_command(
+        function: Identifier,
+        line: usize,
+        command: String,
+        source: CommandParseError,
+    ) -> Self {
+        Self {
+            kind: CommandFunctionInstantiationErrorKind::InvalidCommand {
+                function,
+                line,
+                command,
+                source,
+            },
+        }
+    }
+
+    /// Returns the specific instantiation failure.
+    #[must_use]
+    pub const fn kind(&self) -> &CommandFunctionInstantiationErrorKind {
+        &self.kind
+    }
+}
+
+impl fmt::Display for CommandFunctionInstantiationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.kind {
+            CommandFunctionInstantiationErrorKind::MissingArguments { function } => {
+                write!(f, "function {function} requires macro arguments")
+            }
+            CommandFunctionInstantiationErrorKind::MissingArgument { function, argument } => {
+                write!(f, "function {function} missing macro argument '{argument}'")
+            }
+            CommandFunctionInstantiationErrorKind::CommandTooLong { length, max } => {
+                write!(
+                    f,
+                    "instantiated macro command is too long: {length} UTF-16 code units, maximum is {max}"
+                )
+            }
+            CommandFunctionInstantiationErrorKind::InvalidCommand {
+                function,
+                line,
+                command,
+                source,
+            } => write!(
+                f,
+                "function {function} macro command on line {line} parsed as invalid command '{command}': {:?}",
+                source.kind()
+            ),
+        }
+    }
+}
+
+impl Error for CommandFunctionInstantiationError {}
+
+/// Specific command function instantiation failure.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CommandFunctionInstantiationErrorKind {
+    /// A macro function was called without any argument compound.
+    MissingArguments {
+        /// Function identifier.
+        function: Identifier,
+    },
+    /// A macro function argument compound did not contain one referenced key.
+    MissingArgument {
+        /// Function identifier.
+        function: Identifier,
+        /// Missing macro argument key.
+        argument: String,
+    },
+    /// A substituted macro command exceeded vanilla's line length limit.
+    CommandTooLong {
+        /// Instantiated UTF-16 code unit length.
+        length: usize,
+        /// Maximum accepted UTF-16 code units.
+        max: usize,
+    },
+    /// A substituted macro command does not parse in the live command graph.
+    InvalidCommand {
+        /// Function identifier.
+        function: Identifier,
+        /// Source line containing the macro template.
+        line: usize,
+        /// Substituted command text.
+        command: String,
+        /// Underlying command parse error.
+        source: CommandParseError,
+    },
+}
+
 /// Error returned when parsing `.mcfunction` source.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandFunctionParseError {
@@ -202,8 +521,8 @@ impl fmt::Display for CommandFunctionParseError {
                 f,
                 "unknown or invalid command; did you mean '{command}'? Do not use a preceding slash"
             ),
-            CommandFunctionParseErrorKind::MacrosUnsupported => {
-                f.write_str("command function macros need macro execution support")
+            CommandFunctionParseErrorKind::InvalidMacro { message } => {
+                write!(f, "invalid command function macro: {message}")
             }
         }
     }
@@ -230,8 +549,11 @@ pub enum CommandFunctionParseErrorKind {
         /// Command name after the slash, used for the vanilla-style hint.
         command: String,
     },
-    /// The line starts with `$`, but Steel has no command macro runtime yet.
-    MacrosUnsupported,
+    /// The line starts with `$`, but the macro template is invalid.
+    InvalidMacro {
+        /// Template parse failure.
+        message: String,
+    },
 }
 
 /// Server-level command function registry.
@@ -413,13 +735,17 @@ fn sorted_ids<'a>(ids: impl Iterator<Item = &'a Identifier>) -> Vec<&'a Identifi
 
 struct ParsedFunctionSource {
     commands: Vec<String>,
+    entries: Vec<CommandFunctionEntry>,
     source_lines: Vec<usize>,
+    macro_parameters: Vec<String>,
 }
 
 fn parse_function_source(source: &str) -> Result<ParsedFunctionSource, CommandFunctionParseError> {
     let lines = source.lines().collect::<Vec<_>>();
     let mut commands = Vec::new();
+    let mut entries = Vec::new();
     let mut source_lines = Vec::new();
+    let mut macro_parameters = Vec::new();
     let mut line_index = 0;
     while line_index < lines.len() {
         let line_number = line_index + 1;
@@ -449,14 +775,18 @@ fn parse_function_source(source: &str) -> Result<ParsedFunctionSource, CommandFu
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        validate_command_function_line(&line, line_number)?;
+        let entry =
+            parse_command_function_line(&line, line_number, commands.len(), &mut macro_parameters)?;
         commands.push(line);
+        entries.push(entry);
         source_lines.push(line_number);
     }
 
     Ok(ParsedFunctionSource {
         commands,
+        entries,
         source_lines,
+        macro_parameters,
     })
 }
 
@@ -481,10 +811,12 @@ fn check_command_line_length(
     Ok(())
 }
 
-fn validate_command_function_line(
+fn parse_command_function_line(
     line: &str,
     line_number: usize,
-) -> Result<(), CommandFunctionParseError> {
+    command_index: usize,
+    macro_parameters: &mut Vec<String>,
+) -> Result<CommandFunctionEntry, CommandFunctionParseError> {
     if line.starts_with("//") {
         return Err(CommandFunctionParseError::new(
             line_number,
@@ -499,13 +831,243 @@ fn validate_command_function_line(
             },
         ));
     }
-    if line.starts_with('$') {
-        return Err(CommandFunctionParseError::new(
+    let Some(template_source) = line.strip_prefix('$') else {
+        return Ok(CommandFunctionEntry::Plain { command_index });
+    };
+
+    let template = MacroTemplate::parse(template_source).map_err(|message| {
+        CommandFunctionParseError::new(
             line_number,
-            CommandFunctionParseErrorKind::MacrosUnsupported,
+            CommandFunctionParseErrorKind::InvalidMacro { message },
+        )
+    })?;
+    let parameter_indices = template
+        .variables
+        .iter()
+        .map(|variable| macro_parameter_index(macro_parameters, variable))
+        .collect::<Vec<_>>()
+        .into();
+
+    Ok(CommandFunctionEntry::Macro {
+        template,
+        parameter_indices,
+    })
+}
+
+fn macro_parameter_index(parameters: &mut Vec<String>, variable: &str) -> usize {
+    if let Some(index) = parameters
+        .iter()
+        .position(|parameter| parameter == variable)
+    {
+        return index;
+    }
+    let index = parameters.len();
+    parameters.push(variable.to_owned());
+    index
+}
+
+impl MacroTemplate {
+    fn parse(input: &str) -> Result<Self, String> {
+        let mut segments = Vec::new();
+        let mut variables = Vec::new();
+        let mut start = 0;
+        let mut search_start = 0;
+        while let Some(relative_index) = input[search_start..].find('$') {
+            let index = search_start + relative_index;
+            if input[index + 1..].starts_with('(') {
+                segments.push(input[start..index].to_owned());
+                let variable_start = index + 2;
+                let Some(relative_end) = input[variable_start..].find(')') else {
+                    return Err("unterminated macro variable".to_owned());
+                };
+                let variable_end = variable_start + relative_end;
+                let variable = &input[variable_start..variable_end];
+                if !is_valid_macro_variable(variable) {
+                    return Err(format!("invalid macro variable name '{variable}'"));
+                }
+                variables.push(variable.to_owned());
+                start = variable_end + 1;
+                search_start = start;
+            } else {
+                search_start = index + 1;
+            }
+        }
+
+        if start == 0 {
+            return Err("no variables in macro".to_owned());
+        }
+        if start != input.len() {
+            segments.push(input[start..].to_owned());
+        }
+
+        Ok(Self {
+            segments: segments.into(),
+            variables: variables.into(),
+        })
+    }
+
+    fn substitute<'a>(
+        &self,
+        substitutions: impl IntoIterator<Item = &'a str>,
+    ) -> Result<String, CommandFunctionInstantiationError> {
+        let mut output = String::new();
+        for (segment, substitution) in self.segments.iter().zip(substitutions) {
+            output.push_str(segment);
+            output.push_str(substitution);
+            check_instantiated_command_line_length(&output)?;
+        }
+        if self.segments.len() > self.variables.len() {
+            if let Some(segment) = self.segments.last() {
+                output.push_str(segment);
+            }
+        }
+        check_instantiated_command_line_length(&output)?;
+        Ok(output)
+    }
+}
+
+fn is_valid_macro_variable(variable: &str) -> bool {
+    variable.chars().all(|ch| ch.is_alphanumeric() || ch == '_')
+}
+
+fn check_instantiated_command_line_length(
+    line: &str,
+) -> Result<(), CommandFunctionInstantiationError> {
+    let length = line.encode_utf16().count();
+    if length > MAX_COMMAND_FUNCTION_LINE_LENGTH {
+        return Err(CommandFunctionInstantiationError::command_too_long(
+            length,
+            MAX_COMMAND_FUNCTION_LINE_LENGTH,
         ));
     }
     Ok(())
+}
+
+fn stringify_macro_argument(tag: &NbtTag) -> String {
+    match tag {
+        NbtTag::Byte(value) => value.to_string(),
+        NbtTag::Short(value) => value.to_string(),
+        NbtTag::Int(value) => value.to_string(),
+        NbtTag::Long(value) => value.to_string(),
+        NbtTag::Float(value) => format_decimal_f32(*value),
+        NbtTag::Double(value) => format_decimal_f64(*value),
+        NbtTag::String(value) => value.to_str().into_owned(),
+        NbtTag::ByteArray(_)
+        | NbtTag::List(_)
+        | NbtTag::Compound(_)
+        | NbtTag::IntArray(_)
+        | NbtTag::LongArray(_) => snbt_tag(tag),
+    }
+}
+
+fn snbt_tag(tag: &NbtTag) -> String {
+    match tag {
+        NbtTag::Byte(value) => format!("{value}b"),
+        NbtTag::Short(value) => format!("{value}s"),
+        NbtTag::Int(value) => value.to_string(),
+        NbtTag::Long(value) => format!("{value}l"),
+        NbtTag::Float(value) => format!("{}f", format_decimal_f32(*value)),
+        NbtTag::Double(value) => format!("{}d", format_decimal_f64(*value)),
+        NbtTag::ByteArray(values) => format!(
+            "[B;{}]",
+            values
+                .iter()
+                .map(|value| format!("{}b", *value as i8))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        NbtTag::String(value) => quote_snbt_string(&value.to_str()),
+        NbtTag::List(list) => snbt_list(list),
+        NbtTag::Compound(compound) => snbt_compound(compound),
+        NbtTag::IntArray(values) => {
+            format!(
+                "[I;{}]",
+                values
+                    .iter()
+                    .map(i32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        }
+        NbtTag::LongArray(values) => format!(
+            "[L;{}]",
+            values
+                .iter()
+                .map(|value| format!("{value}l"))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    }
+}
+
+fn snbt_list(list: &NbtList) -> String {
+    format!(
+        "[{}]",
+        list.as_nbt_tags()
+            .iter()
+            .map(snbt_tag)
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+fn snbt_compound(compound: &NbtCompound) -> String {
+    format!(
+        "{{{}}}",
+        compound
+            .iter()
+            .map(|(key, value)| format!("{}:{}", snbt_key(&key.to_str()), snbt_tag(value)))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+fn snbt_key(key: &str) -> String {
+    if key
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '+'))
+    {
+        return key.to_owned();
+    }
+    quote_snbt_string(key)
+}
+
+fn quote_snbt_string(value: &str) -> String {
+    let mut output = String::with_capacity(value.len() + 2);
+    output.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => output.push_str("\\\\"),
+            '"' => output.push_str("\\\""),
+            _ => output.push(ch),
+        }
+    }
+    output.push('"');
+    output
+}
+
+fn format_decimal_f32(value: f32) -> String {
+    format_decimal_f64(f64::from(value))
+}
+
+fn format_decimal_f64(value: f64) -> String {
+    if !value.is_finite() {
+        return value.to_string();
+    }
+    let mut formatted = format!("{value:.15}");
+    if let Some(decimal) = formatted.find('.') {
+        let trim_start = decimal + 1;
+        while formatted.len() > trim_start && formatted.ends_with('0') {
+            formatted.pop();
+        }
+        if formatted.ends_with('.') {
+            formatted.pop();
+        }
+    }
+    if formatted == "-0" {
+        return "0".to_owned();
+    }
+    formatted
 }
 
 fn read_unquoted_command_name(input: &str) -> String {
@@ -521,16 +1083,18 @@ fn is_brigadier_unquoted_char(ch: char) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use simdnbt::owned::{NbtCompound, NbtTag};
     use steel_utils::Identifier;
 
     use crate::{
         command::{
             CommandDispatcher, CommandRegistration,
             graph::{
-                CommandFunctionArgumentValue, CommandParseErrorKind, CommandResult, argument,
-                literal,
+                CommandFunctionArgumentValue, CommandParseErrorKind, CommandResult, StringParser,
+                argument, literal,
             },
             parsers::{EntityParser, ScoreHolderParser},
+            reader::StringMode,
             requirement::{
                 CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext,
             },
@@ -539,8 +1103,8 @@ mod tests {
     };
 
     use super::{
-        CommandFunction, CommandFunctionParseErrorKind, CommandFunctionRegistry,
-        CommandFunctionResolveErrorKind, MAX_COMMAND_FUNCTION_LINE_LENGTH,
+        CommandFunction, CommandFunctionInstantiationErrorKind, CommandFunctionParseErrorKind,
+        CommandFunctionRegistry, CommandFunctionResolveErrorKind, MAX_COMMAND_FUNCTION_LINE_LENGTH,
     };
 
     struct TestContext;
@@ -581,6 +1145,14 @@ mod tests {
             PermissionSegment::parse("test").expect("namespace parses"),
         )
         .public();
+        let echo_registration = CommandRegistration::new(
+            literal("echo").then(
+                argument("message", StringParser::new(StringMode::GreedyPhrase))
+                    .executes(|_, _| Ok(CommandResult::success())),
+            ),
+            PermissionSegment::parse("test").expect("namespace parses"),
+        )
+        .public();
 
         dispatcher
             .register_command(registration)
@@ -591,6 +1163,9 @@ mod tests {
         dispatcher
             .register_command(score_targeted_registration)
             .expect("score-targeted command registers");
+        dispatcher
+            .register_command(echo_registration)
+            .expect("echo command registers");
         dispatcher
     }
 
@@ -809,14 +1384,116 @@ mod tests {
     }
 
     #[test]
-    fn function_source_parser_rejects_macros_until_runtime_exists() {
+    fn function_source_parser_accepts_macro_templates() {
+        let function = CommandFunction::from_source(
+            Identifier::new_static("test", "macro"),
+            "known\n$echo $(value)\n",
+        )
+        .expect("macro function source parses");
+
+        assert!(function.is_macro());
+        assert_eq!(function.commands(), ["known", "$echo $(value)"]);
+        assert_eq!(function.command_source_line(1), Some(2));
+    }
+
+    #[test]
+    fn function_source_parser_rejects_macro_without_variables() {
         let error =
-            CommandFunction::from_source(Identifier::new_static("test", "bad"), "$say $(value)")
-                .expect_err("macro line rejects");
+            CommandFunction::from_source(Identifier::new_static("test", "bad"), "$echo value")
+                .expect_err("macro without variables rejects");
 
         assert!(matches!(
             error.kind(),
-            CommandFunctionParseErrorKind::MacrosUnsupported
+            CommandFunctionParseErrorKind::InvalidMacro { message }
+                if message == "no variables in macro"
+        ));
+    }
+
+    #[test]
+    fn function_macro_instantiates_with_compound_arguments() {
+        let dispatcher = validation_dispatcher();
+        let function = CommandFunction::from_source(
+            Identifier::new_static("test", "macro"),
+            "known\n$echo $(value)\n",
+        )
+        .expect("macro function source parses");
+        function
+            .validate_commands(&dispatcher, &TestContext)
+            .expect("plain commands validate while macros stay deferred");
+
+        let mut arguments = NbtCompound::new();
+        arguments.insert("value", NbtTag::String("hello world".into()));
+        let instantiated = function
+            .instantiate(Some(&arguments), &dispatcher, &TestContext)
+            .expect("macro instantiates");
+
+        assert_eq!(instantiated.commands(), ["known", "echo hello world"]);
+    }
+
+    #[test]
+    fn function_macro_requires_arguments() {
+        let dispatcher = validation_dispatcher();
+        let function = CommandFunction::from_source(
+            Identifier::new_static("test", "macro"),
+            "$echo $(value)\n",
+        )
+        .expect("macro function source parses");
+
+        let error = function
+            .instantiate(None, &dispatcher, &TestContext)
+            .expect_err("macro requires arguments");
+
+        assert!(matches!(
+            error.kind(),
+            CommandFunctionInstantiationErrorKind::MissingArguments { function }
+                if function == &Identifier::new_static("test", "macro")
+        ));
+    }
+
+    #[test]
+    fn function_macro_requires_each_referenced_argument() {
+        let dispatcher = validation_dispatcher();
+        let function = CommandFunction::from_source(
+            Identifier::new_static("test", "macro"),
+            "$echo $(value)\n",
+        )
+        .expect("macro function source parses");
+        let arguments = NbtCompound::new();
+
+        let error = function
+            .instantiate(Some(&arguments), &dispatcher, &TestContext)
+            .expect_err("macro requires referenced argument");
+
+        assert!(matches!(
+            error.kind(),
+            CommandFunctionInstantiationErrorKind::MissingArgument { function, argument }
+                if function == &Identifier::new_static("test", "macro") && argument == "value"
+        ));
+    }
+
+    #[test]
+    fn function_macro_validates_substituted_commands() {
+        let dispatcher = validation_dispatcher();
+        let function =
+            CommandFunction::from_source(Identifier::new_static("test", "macro"), "$$(command)\n")
+                .expect("macro function source parses");
+        let mut arguments = NbtCompound::new();
+        arguments.insert("command", NbtTag::String("missing value".into()));
+
+        let error = function
+            .instantiate(Some(&arguments), &dispatcher, &TestContext)
+            .expect_err("substituted command must parse");
+
+        assert!(matches!(
+            error.kind(),
+            CommandFunctionInstantiationErrorKind::InvalidCommand {
+                function,
+                line: 1,
+                command,
+                source,
+            } if function == &Identifier::new_static("test", "macro")
+                && command == "missing value"
+                && matches!(source.kind(), CommandParseErrorKind::UnknownCommand)
         ));
     }
 
