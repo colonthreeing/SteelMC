@@ -292,6 +292,29 @@ mod tests {
     }
 
     #[test]
+    fn score_holder_parser_respects_advanced_selector_permission() {
+        let option_suggestions = ScoreHolderParser::multiple()
+            .suggest(
+                "@e[",
+                &ParsedArguments::default(),
+                &SelectorOnlyPermissionContext,
+            )
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+        assert!(option_suggestions.is_empty());
+
+        let mut reader = CommandReader::new("@e[distance=..10]");
+        let error = ScoreHolderParser::multiple()
+            .parse(&mut reader, &SelectorOnlyPermissionContext)
+            .expect_err("advanced selector options require permission");
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::AdvancedEntitySelectorsNotAllowed
+        ));
+    }
+
+    #[test]
     fn score_holder_parser_keeps_selectors_deferred() {
         let mut reader = CommandReader::new("@a");
         let value = ScoreHolderParser::multiple()
