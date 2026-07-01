@@ -2696,6 +2696,19 @@ mod tests {
     }
 
     #[test]
+    fn selector_advancements_option_reports_missing_foundation() {
+        let error = parse_selector_plan("@e[advancements={}]".to_owned(), true)
+            .expect_err("advancements option is not supported yet");
+
+        assert!(matches!(
+            error.kind,
+            SelectorParseErrorKind::Unsupported(ref option)
+                if option == "advancements needs player advancement foundation"
+        ));
+        assert_eq!(error.cursor, "@e[".len());
+    }
+
+    #[test]
     fn selector_suggestions_follow_invertible_option_state() {
         let context = SelectorResolutionPermissionContext {
             allow_advanced: true,
