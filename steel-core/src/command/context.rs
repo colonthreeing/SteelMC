@@ -115,8 +115,7 @@ impl CommandContext {
             .map(|player| Arc::clone(player) as SharedEntity);
         let position = entity
             .as_ref()
-            // TODO: Check this. The default position is the surface of the world center
-            // (Where the compass should point to)
+            // Vanilla uses the lower corner of the server respawn block for non-entity sources.
             .map_or(
                 DVec3::new(
                     f64::from(world_spawn.x),
