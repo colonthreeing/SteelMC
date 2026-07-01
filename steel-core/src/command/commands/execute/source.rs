@@ -271,11 +271,7 @@ fn fork_on_attacker(
 ) -> Result<Vec<CommandContext>, CommandError> {
     Ok(one_relation_context(
         context,
-        context
-            .entity
-            .as_ref()
-            .and_then(|entity| entity.as_living_entity())
-            .and_then(|living| living.living_base().last_hurt_by_mob()),
+        context.entity.as_ref().and_then(attacker_relation),
     ))
 }
 
@@ -352,11 +348,7 @@ fn fork_on_target(
 ) -> Result<Vec<CommandContext>, CommandError> {
     Ok(one_relation_context(
         context,
-        context
-            .entity
-            .as_ref()
-            .and_then(|entity| entity.as_mob())
-            .and_then(Mob::target),
+        context.entity.as_ref().and_then(target_relation),
     ))
 }
 
@@ -374,4 +366,115 @@ fn one_relation_context(context: &CommandContext, entity: Option<SharedEntity>) 
     entity
         .filter(|entity| !entity.is_removed())
         .map_or_else(Vec::new, |entity| vec![context.clone().with_entity(entity)])
+}
+
+fn attacker_relation(entity: &SharedEntity) -> Option<SharedEntity> {
+    entity
+        .as_attackable()
+        .and_then(|attackable| attackable.last_attacker())
+}
+
+fn target_relation(entity: &SharedEntity) -> Option<SharedEntity> {
+    entity
+        .as_targeting()
+        .and_then(|targeting| targeting.target_entity())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Weak};
+
+    use glam::DVec3;
+    use steel_registry::{
+        entity_type::EntityTypeRef, test_support::init_test_registry, vanilla_entities,
+    };
+
+    use super::{attacker_relation, target_relation};
+    use crate::entity::{
+        Attackable, Entity, EntityBase, EntityCapabilities, SharedEntity, Targeting,
+    };
+
+    struct RelationTestEntity {
+        base: EntityBase,
+        attacker: Option<SharedEntity>,
+        target: Option<SharedEntity>,
+        attackable: bool,
+        targeting: bool,
+    }
+
+    impl RelationTestEntity {
+        fn shared(
+            id: i32,
+            attacker: Option<SharedEntity>,
+            target: Option<SharedEntity>,
+            attackable: bool,
+            targeting: bool,
+        ) -> SharedEntity {
+            Arc::new(Self {
+                base: EntityBase::new(id, DVec3::ZERO, vanilla_entities::ITEM.dimensions, Weak::new()),
+                attacker,
+                target,
+                attackable,
+                targeting,
+            })
+        }
+    }
+
+    impl Entity for RelationTestEntity {
+        fn base(&self) -> &EntityBase {
+            &self.base
+        }
+
+        fn entity_type(&self) -> EntityTypeRef {
+            &vanilla_entities::ITEM
+        }
+
+        fn capabilities(&self) -> EntityCapabilities<'_> {
+            let mut capabilities = EntityCapabilities::none();
+            if self.attackable {
+                capabilities = capabilities.with_attackable(self);
+            }
+            if self.targeting {
+                capabilities = capabilities.with_targeting(self);
+            }
+            capabilities
+        }
+    }
+
+    impl Attackable for RelationTestEntity {
+        fn last_attacker(&self) -> Option<SharedEntity> {
+            self.attacker.clone()
+        }
+    }
+
+    impl Targeting for RelationTestEntity {
+        fn target_entity(&self) -> Option<SharedEntity> {
+            self.target.clone()
+        }
+    }
+
+    #[test]
+    fn execute_on_attacker_uses_attackable_capability_without_living_behavior() {
+        init_test_registry();
+        let attacker = RelationTestEntity::shared(2, None, None, false, false);
+        let entity =
+            RelationTestEntity::shared(1, Some(Arc::clone(&attacker)), None, true, false);
+
+        assert!(entity.as_living_entity().is_none());
+        let resolved = attacker_relation(&entity).expect("attackable relation resolves attacker");
+
+        assert!(Arc::ptr_eq(&resolved, &attacker));
+    }
+
+    #[test]
+    fn execute_on_target_uses_targeting_capability_without_mob_behavior() {
+        init_test_registry();
+        let target = RelationTestEntity::shared(2, None, None, false, false);
+        let entity = RelationTestEntity::shared(1, None, Some(Arc::clone(&target)), false, true);
+
+        assert!(entity.as_mob().is_none());
+        let resolved = target_relation(&entity).expect("targeting relation resolves target");
+
+        assert!(Arc::ptr_eq(&resolved, &target));
+    }
 }

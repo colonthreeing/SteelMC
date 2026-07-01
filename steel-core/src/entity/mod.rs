@@ -1018,7 +1018,9 @@ pub trait LeashFenceKnot: Entity {
 pub struct EntityCapabilities<'a> {
     player: Option<&'a Player>,
     living: Option<&'a dyn LivingEntity>,
+    attackable: Option<&'a dyn Attackable>,
     mob: Option<&'a dyn Mob>,
+    targeting: Option<&'a dyn Targeting>,
     pathfinder_mob: Option<&'a dyn PathfinderMob>,
     animal: Option<&'a dyn Animal>,
     item_steerable: Option<&'a dyn ItemSteerable>,
@@ -1034,7 +1036,9 @@ impl<'a> EntityCapabilities<'a> {
         Self {
             player: None,
             living: None,
+            attackable: None,
             mob: None,
+            targeting: None,
             pathfinder_mob: None,
             animal: None,
             item_steerable: None,
@@ -1058,10 +1062,24 @@ impl<'a> EntityCapabilities<'a> {
         self
     }
 
+    /// Exposes attack-target memory behavior for this entity.
+    #[must_use]
+    pub const fn with_attackable(mut self, attackable: &'a dyn Attackable) -> Self {
+        self.attackable = Some(attackable);
+        self
+    }
+
     /// Exposes mob behavior for this entity.
     #[must_use]
     pub const fn with_mob(mut self, mob: &'a dyn Mob) -> Self {
         self.mob = Some(mob);
+        self
+    }
+
+    /// Exposes active target behavior for this entity.
+    #[must_use]
+    pub const fn with_targeting(mut self, targeting: &'a dyn Targeting) -> Self {
+        self.targeting = Some(targeting);
         self
     }
 
@@ -1111,6 +1129,30 @@ impl<'a> EntityCapabilities<'a> {
     pub const fn with_leash_fence_knot(mut self, leash_fence_knot: &'a dyn LeashFenceKnot) -> Self {
         self.leash_fence_knot = Some(leash_fence_knot);
         self
+    }
+}
+
+/// Behavior for entities that expose vanilla `Attackable.getLastAttacker`.
+pub trait Attackable: Entity {
+    /// Returns the last entity that attacked this entity, if it is still available.
+    fn last_attacker(&self) -> Option<SharedEntity>;
+}
+
+impl<T: LivingEntity + ?Sized> Attackable for T {
+    fn last_attacker(&self) -> Option<SharedEntity> {
+        self.last_hurt_by_mob()
+    }
+}
+
+/// Behavior for entities that expose vanilla `Targeting.getTarget`.
+pub trait Targeting: Entity {
+    /// Returns this entity's active target, if it has one.
+    fn target_entity(&self) -> Option<SharedEntity>;
+}
+
+impl<T: Mob + ?Sized> Targeting for T {
+    fn target_entity(&self) -> Option<SharedEntity> {
+        Mob::target(self)
     }
 }
 
@@ -2405,6 +2447,12 @@ pub trait Entity: EntityEventSource + Send + Sync {
         self.capabilities().living
     }
 
+    /// Returns this entity as attackable when it exposes vanilla
+    /// `Attackable.getLastAttacker`.
+    fn as_attackable(&self) -> Option<&dyn Attackable> {
+        self.capabilities().attackable
+    }
+
     /// Returns this entity as a player when it is the concrete server player.
     ///
     /// Mirrors vanilla player-only branches without requiring core code to
@@ -2471,6 +2519,12 @@ pub trait Entity: EntityEventSource + Send + Sync {
     /// core code to downcast through `Any`.
     fn as_mob(&self) -> Option<&dyn Mob> {
         self.capabilities().mob
+    }
+
+    /// Returns this entity as targeting when it exposes vanilla
+    /// `Targeting.getTarget`.
+    fn as_targeting(&self) -> Option<&dyn Targeting> {
+        self.capabilities().targeting
     }
 
     /// Returns true for entities that implement vanilla animal behavior.

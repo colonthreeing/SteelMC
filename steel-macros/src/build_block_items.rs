@@ -17,7 +17,7 @@ const KNOWN_ENTITY_CLASSES: &[&str] = &[
     "animal",
 ];
 
-const KNOWN_ENTITY_INTERFACES: &[&str] = &["item_steerable"];
+const KNOWN_ENTITY_INTERFACES: &[&str] = &["attackable", "targeting", "item_steerable"];
 
 /// Attribute macro for block behavior structs.
 ///
@@ -147,11 +147,20 @@ impl EntityClass {
     const fn capabilities(self) -> &'static [&'static str] {
         match self {
             Self::Entity => &[],
-            Self::Player => &["player", "living"],
-            Self::Living => &["living"],
-            Self::Mob => &["living", "mob"],
-            Self::PathfinderMob | Self::AgeableMob => &["living", "mob", "pathfinder_mob"],
-            Self::Animal => &["living", "mob", "pathfinder_mob", "animal"],
+            Self::Player => &["player", "living", "attackable"],
+            Self::Living => &["living", "attackable"],
+            Self::Mob => &["living", "attackable", "mob", "targeting"],
+            Self::PathfinderMob | Self::AgeableMob => {
+                &["living", "attackable", "mob", "targeting", "pathfinder_mob"]
+            }
+            Self::Animal => &[
+                "living",
+                "attackable",
+                "mob",
+                "targeting",
+                "pathfinder_mob",
+                "animal",
+            ],
         }
     }
 
