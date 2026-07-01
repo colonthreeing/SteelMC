@@ -1889,7 +1889,7 @@ fn parse_name_option(
                 value_cursor,
             )
         })?;
-    let value = reader.read_string_value()?;
+    let value = reader.read_string()?;
     selector
         .filters
         .push(SelectorFilter::Name { value, inverted });
@@ -2479,35 +2479,12 @@ impl<'a> SelectorReader<'a> {
         })
     }
 
-    fn read_string_value(&mut self) -> Result<String, SelectorParseError> {
+    fn read_string(&mut self) -> Result<String, SelectorParseError> {
         self.skip_whitespace();
         match self.peek() {
             Some(ch) if is_quoted_string_start(ch) => self.read_quoted_string(),
-            _ => self.read_raw_value(),
+            _ => Ok(self.read_unquoted_string()),
         }
-    }
-
-    fn read_raw_value(&mut self) -> Result<String, SelectorParseError> {
-        let value = self.read_raw_value_allow_empty()?;
-        if value.is_empty() {
-            return Err(SelectorParseError::invalid_at(
-                "expected selector option value",
-                self.cursor,
-            ));
-        }
-        Ok(value)
-    }
-
-    fn read_raw_value_allow_empty(&mut self) -> Result<String, SelectorParseError> {
-        self.skip_whitespace();
-        let start = self.cursor;
-        while self
-            .peek()
-            .is_some_and(|ch| ch != ',' && ch != ']' && !ch.is_whitespace())
-        {
-            self.read();
-        }
-        Ok(self.input[start..self.cursor].to_owned())
     }
 
     fn read_quoted_string(&mut self) -> Result<String, SelectorParseError> {
@@ -2795,6 +2772,14 @@ mod tests {
         );
         assert_eq!(unquoted_error.cursor, "@e[tag=foo".len());
 
+        let name_error = parse_selector_plan("@e[name=foo:bar]".to_owned(), true)
+            .expect_err("name option leaves ':' as trailing data");
+        assert!(
+            matches!(name_error.kind, SelectorParseErrorKind::Invalid(ref message)
+                if message == "expected ',' or ']' after selector option")
+        );
+        assert_eq!(name_error.cursor, "@e[name=foo".len());
+
         let range_error = parse_selector_plan("@e[distance=1:2]".to_owned(), true)
             .expect_err("range option leaves trailing non-number data");
         assert!(
@@ -3013,6 +2998,12 @@ mod tests {
         assert!(selector.includes_entities);
         assert!(selector.filters.iter().any(
             |filter| matches!(filter, SelectorFilter::Name { value, .. } if value == "Steve")
+        ));
+
+        let selector =
+            parse_selector_plan("@e[name=]".to_owned(), true).expect("empty name parses");
+        assert!(selector.filters.iter().any(
+            |filter| matches!(filter, SelectorFilter::Name { value, inverted: false } if value.is_empty())
         ));
     }
 
