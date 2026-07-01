@@ -13,7 +13,7 @@ use crate::command::{
         CommandArgumentClientParser, CommandArgumentParser, CommandParseError,
         CommandParseErrorKind, ParsedArgument, ParsedArguments,
     },
-    reader::CommandReader,
+    reader::{ARGUMENT_SEPARATOR, CommandReader},
     requirement::CommandInputContext,
 };
 
@@ -27,52 +27,66 @@ impl CommandArgumentParser for Vec3Parser {
         reader: &mut CommandReader<'_>,
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
-        let cursor = reader.absolute_cursor();
-        let start = reader.cursor();
-        let x = reader.read_token()?;
-        expect_coordinate_separator(reader, start, cursor, CommandParseErrorKind::InvalidVec3)?;
-        let y = read_coordinate_token(reader, start, cursor, CommandParseErrorKind::InvalidVec3)?;
-        expect_coordinate_separator(reader, start, cursor, CommandParseErrorKind::InvalidVec3)?;
-        let z = read_coordinate_token(reader, start, cursor, CommandParseErrorKind::InvalidVec3)?;
-        let raw = format!("{x} {y} {z}");
+        let error_cursor = reader.absolute_cursor();
+        let argument_start = reader.cursor();
 
-        if x.starts_with('^') {
-            let Some(pos) = parse_local_coordinates((&x, &y, &z), context) else {
-                return Err(CommandParseError::new(
-                    CommandParseErrorKind::InvalidVec3(raw),
-                    cursor,
-                ));
-            };
+        if reader.peek() == Some('^') {
+            let pos = parse_local_coordinates(
+                reader,
+                context,
+                argument_start,
+                error_cursor,
+                CommandParseErrorKind::InvalidVec3,
+            )?;
 
             return Ok(ParsedArgument::Vec3(pos));
         }
 
+        let x = parse_world_double_coordinate(
+            reader,
+            true,
+            argument_start,
+            error_cursor,
+            CommandParseErrorKind::InvalidVec3,
+        )?;
+        expect_coordinate_separator(
+            reader,
+            argument_start,
+            error_cursor,
+            CommandParseErrorKind::InvalidVec3,
+        )?;
+        let y = parse_world_double_coordinate(
+            reader,
+            false,
+            argument_start,
+            error_cursor,
+            CommandParseErrorKind::InvalidVec3,
+        )?;
+        expect_coordinate_separator(
+            reader,
+            argument_start,
+            error_cursor,
+            CommandParseErrorKind::InvalidVec3,
+        )?;
+        let z = parse_world_double_coordinate(
+            reader,
+            true,
+            argument_start,
+            error_cursor,
+            CommandParseErrorKind::InvalidVec3,
+        )?;
         let Some(origin) = context.position() else {
             return Err(CommandParseError::new(
                 CommandParseErrorKind::MissingCommandContext("position"),
-                cursor,
-            ));
-        };
-        let Some(x) = parse_vec3_coordinate::<false>(&x, origin.x) else {
-            return Err(CommandParseError::new(
-                CommandParseErrorKind::InvalidVec3(raw),
-                cursor,
-            ));
-        };
-        let Some(y) = parse_vec3_coordinate::<true>(&y, origin.y) else {
-            return Err(CommandParseError::new(
-                CommandParseErrorKind::InvalidVec3(raw),
-                cursor,
-            ));
-        };
-        let Some(z) = parse_vec3_coordinate::<false>(&z, origin.z) else {
-            return Err(CommandParseError::new(
-                CommandParseErrorKind::InvalidVec3(raw),
-                cursor,
+                error_cursor,
             ));
         };
 
-        Ok(ParsedArgument::Vec3(DVec3::new(x, y, z)))
+        Ok(ParsedArgument::Vec3(DVec3::new(
+            x.resolve(origin.x),
+            y.resolve(origin.y),
+            z.resolve(origin.z),
+        )))
     }
 
     fn client_parser(&self) -> CommandArgumentClientParser {
@@ -94,74 +108,65 @@ impl CommandArgumentParser for BlockPosParser {
         reader: &mut CommandReader<'_>,
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
-        let cursor = reader.absolute_cursor();
-        let start = reader.cursor();
-        let x = reader.read_token()?;
-        expect_coordinate_separator(
-            reader,
-            start,
-            cursor,
-            CommandParseErrorKind::InvalidBlockPos,
-        )?;
-        let y = read_coordinate_token(
-            reader,
-            start,
-            cursor,
-            CommandParseErrorKind::InvalidBlockPos,
-        )?;
-        expect_coordinate_separator(
-            reader,
-            start,
-            cursor,
-            CommandParseErrorKind::InvalidBlockPos,
-        )?;
-        let z = read_coordinate_token(
-            reader,
-            start,
-            cursor,
-            CommandParseErrorKind::InvalidBlockPos,
-        )?;
-        let raw = format!("{x} {y} {z}");
+        let error_cursor = reader.absolute_cursor();
+        let argument_start = reader.cursor();
 
-        if x.starts_with('^') {
-            let Some(pos) = parse_local_coordinates((&x, &y, &z), context) else {
-                return Err(CommandParseError::new(
-                    CommandParseErrorKind::InvalidBlockPos(raw),
-                    cursor,
-                ));
-            };
+        if reader.peek() == Some('^') {
+            let pos = parse_local_coordinates(
+                reader,
+                context,
+                argument_start,
+                error_cursor,
+                CommandParseErrorKind::InvalidBlockPos,
+            )?;
 
             return Ok(ParsedArgument::BlockPos(BlockPos::containing(
                 pos.x, pos.y, pos.z,
             )));
         }
 
+        let x = parse_world_block_coordinate(
+            reader,
+            argument_start,
+            error_cursor,
+            CommandParseErrorKind::InvalidBlockPos,
+        )?;
+        expect_coordinate_separator(
+            reader,
+            argument_start,
+            error_cursor,
+            CommandParseErrorKind::InvalidBlockPos,
+        )?;
+        let y = parse_world_block_coordinate(
+            reader,
+            argument_start,
+            error_cursor,
+            CommandParseErrorKind::InvalidBlockPos,
+        )?;
+        expect_coordinate_separator(
+            reader,
+            argument_start,
+            error_cursor,
+            CommandParseErrorKind::InvalidBlockPos,
+        )?;
+        let z = parse_world_block_coordinate(
+            reader,
+            argument_start,
+            error_cursor,
+            CommandParseErrorKind::InvalidBlockPos,
+        )?;
         let Some(origin) = context.position() else {
             return Err(CommandParseError::new(
                 CommandParseErrorKind::MissingCommandContext("position"),
-                cursor,
-            ));
-        };
-        let Some(x) = parse_block_coordinate(&x, origin.x) else {
-            return Err(CommandParseError::new(
-                CommandParseErrorKind::InvalidBlockPos(raw),
-                cursor,
-            ));
-        };
-        let Some(y) = parse_block_coordinate(&y, origin.y) else {
-            return Err(CommandParseError::new(
-                CommandParseErrorKind::InvalidBlockPos(raw),
-                cursor,
-            ));
-        };
-        let Some(z) = parse_block_coordinate(&z, origin.z) else {
-            return Err(CommandParseError::new(
-                CommandParseErrorKind::InvalidBlockPos(raw),
-                cursor,
+                error_cursor,
             ));
         };
 
-        Ok(ParsedArgument::BlockPos(BlockPos::containing(x, y, z)))
+        Ok(ParsedArgument::BlockPos(BlockPos::containing(
+            x.resolve(origin.x),
+            y.resolve(origin.y),
+            z.resolve(origin.z),
+        )))
     }
 
     fn client_parser(&self) -> CommandArgumentClientParser {
@@ -240,38 +245,42 @@ impl CommandArgumentParser for RotationParser {
         reader: &mut CommandReader<'_>,
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
-        let cursor = reader.absolute_cursor();
-        let start = reader.cursor();
-        let yaw = reader.read_token()?;
+        let error_cursor = reader.absolute_cursor();
+        let argument_start = reader.cursor();
+
+        if !reader.can_read() {
+            return Err(coordinate_error(
+                reader,
+                argument_start,
+                error_cursor,
+                CommandParseErrorKind::InvalidRotation,
+            ));
+        }
+
+        let yaw = parse_rotation_coordinate(
+            reader,
+            argument_start,
+            error_cursor,
+            CommandParseErrorKind::InvalidRotation,
+        )?;
         expect_coordinate_separator(
             reader,
-            start,
-            cursor,
+            argument_start,
+            error_cursor,
             CommandParseErrorKind::InvalidRotation,
         )?;
-        let pitch = read_coordinate_token(
+        let pitch = parse_rotation_coordinate(
             reader,
-            start,
-            cursor,
+            argument_start,
+            error_cursor,
             CommandParseErrorKind::InvalidRotation,
         )?;
-        let raw = format!("{yaw} {pitch}");
-
         let (origin_yaw, origin_pitch) = context.rotation().unwrap_or((0.0, 0.0));
-        let Some(yaw) = parse_rotation_coordinate(&yaw, origin_yaw) else {
-            return Err(CommandParseError::new(
-                CommandParseErrorKind::InvalidRotation(raw),
-                cursor,
-            ));
-        };
-        let Some(pitch) = parse_rotation_coordinate(&pitch, origin_pitch) else {
-            return Err(CommandParseError::new(
-                CommandParseErrorKind::InvalidRotation(raw),
-                cursor,
-            ));
-        };
 
-        Ok(ParsedArgument::Rotation(normalize_rotation((yaw, pitch))))
+        Ok(ParsedArgument::Rotation(normalize_rotation((
+            yaw.resolve(origin_yaw),
+            pitch.resolve(origin_pitch),
+        ))))
     }
 
     fn client_parser(&self) -> CommandArgumentClientParser {
@@ -290,26 +299,11 @@ fn expect_coordinate_separator(
     error_kind: fn(String) -> CommandParseErrorKind,
 ) -> Result<(), CommandParseError> {
     reader
-        .expect_whitespace()
-        .map_err(|_| incomplete_coordinate_error(reader, argument_start, error_cursor, error_kind))
+        .expect_argument_separator()
+        .map_err(|_| coordinate_error(reader, argument_start, error_cursor, error_kind))
 }
 
-fn read_coordinate_token(
-    reader: &mut CommandReader<'_>,
-    argument_start: usize,
-    error_cursor: usize,
-    error_kind: fn(String) -> CommandParseErrorKind,
-) -> Result<String, CommandParseError> {
-    reader.read_token().map_err(|error| {
-        if reader.cursor() == argument_start {
-            error
-        } else {
-            incomplete_coordinate_error(reader, argument_start, error_cursor, error_kind)
-        }
-    })
-}
-
-fn incomplete_coordinate_error(
+fn coordinate_error(
     reader: &CommandReader<'_>,
     argument_start: usize,
     error_cursor: usize,
@@ -321,67 +315,244 @@ fn incomplete_coordinate_error(
     CommandParseError::new(error_kind(raw), error_cursor)
 }
 
-fn parse_block_coordinate(value: &str, origin: f64) -> Option<f64> {
-    if value.starts_with('^') {
-        return None;
-    }
+fn numeric_coordinate_error(
+    reader: &CommandReader<'_>,
+    argument_start: usize,
+    number_start: usize,
+    error_cursor: usize,
+    error_kind: fn(String) -> CommandParseErrorKind,
+) -> CommandParseError {
+    let end = reader
+        .cursor()
+        .max(next_coordinate_separator(reader, number_start));
+    let raw = reader.input()[argument_start..end].trim_end().to_owned();
+    CommandParseError::new(error_kind(raw), error_cursor)
+}
 
-    if let Some(offset) = value.strip_prefix('~') {
-        if offset.is_empty() {
-            Some(origin)
+fn next_coordinate_separator(reader: &CommandReader<'_>, start: usize) -> usize {
+    let Some((offset, _)) = reader.input()[start..]
+        .char_indices()
+        .find(|(_, ch)| *ch == ARGUMENT_SEPARATOR)
+    else {
+        return reader.input().len();
+    };
+
+    start + offset
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ParsedCoordinate<T> {
+    relative: bool,
+    value: T,
+}
+
+impl ParsedCoordinate<f64> {
+    fn resolve(self, origin: f64) -> f64 {
+        if self.relative {
+            origin + self.value
         } else {
-            Some(origin + offset.parse::<f64>().ok()?)
+            self.value
         }
-    } else {
-        Some(f64::from(value.parse::<i32>().ok()?))
     }
 }
 
-fn parse_vec3_coordinate<const IS_Y: bool>(value: &str, origin: f64) -> Option<f64> {
-    if let Some(offset) = value.strip_prefix('~') {
-        let offset = if offset.is_empty() {
-            0.0
+impl ParsedCoordinate<f32> {
+    fn resolve(self, origin: f32) -> f32 {
+        if self.relative {
+            origin + self.value
         } else {
-            offset.parse().ok()?
-        };
-        return Some(origin + offset);
+            self.value
+        }
+    }
+}
+
+fn parse_world_double_coordinate(
+    reader: &mut CommandReader<'_>,
+    center: bool,
+    argument_start: usize,
+    error_cursor: usize,
+    error_kind: fn(String) -> CommandParseErrorKind,
+) -> Result<ParsedCoordinate<f64>, CommandParseError> {
+    if reader.peek() == Some('^') || !reader.can_read() {
+        return Err(coordinate_error(
+            reader,
+            argument_start,
+            error_cursor,
+            error_kind,
+        ));
     }
 
-    let mut parsed = value.parse::<f64>().ok()?;
-    if !IS_Y && !value.contains('.') {
-        parsed += 0.5;
+    let relative = read_relative_prefix(reader);
+    let number_start = reader.cursor();
+    let value = if reader.can_read() && !reader.is_argument_separator() {
+        reader.read_f64().map_err(|_| {
+            numeric_coordinate_error(
+                reader,
+                argument_start,
+                number_start,
+                error_cursor,
+                error_kind,
+            )
+        })?
+    } else {
+        0.0
+    };
+    let number = &reader.input()[number_start..reader.cursor()];
+    let value = if !relative && center && !number.contains('.') {
+        value + 0.5
+    } else {
+        value
+    };
+
+    Ok(ParsedCoordinate { relative, value })
+}
+
+fn parse_world_block_coordinate(
+    reader: &mut CommandReader<'_>,
+    argument_start: usize,
+    error_cursor: usize,
+    error_kind: fn(String) -> CommandParseErrorKind,
+) -> Result<ParsedCoordinate<f64>, CommandParseError> {
+    if reader.peek() == Some('^') || !reader.can_read() {
+        return Err(coordinate_error(
+            reader,
+            argument_start,
+            error_cursor,
+            error_kind,
+        ));
     }
 
-    Some(parsed)
+    let relative = read_relative_prefix(reader);
+    let number_start = reader.cursor();
+    let value = if reader.can_read() && !reader.is_argument_separator() {
+        if relative {
+            reader.read_f64().map_err(|_| {
+                numeric_coordinate_error(
+                    reader,
+                    argument_start,
+                    number_start,
+                    error_cursor,
+                    error_kind,
+                )
+            })?
+        } else {
+            f64::from(reader.read_i32().map_err(|_| {
+                numeric_coordinate_error(
+                    reader,
+                    argument_start,
+                    number_start,
+                    error_cursor,
+                    error_kind,
+                )
+            })?)
+        }
+    } else {
+        0.0
+    };
+
+    Ok(ParsedCoordinate { relative, value })
 }
 
 fn parse_local_coordinates(
-    coordinates: (&str, &str, &str),
+    reader: &mut CommandReader<'_>,
     context: &dyn CommandInputContext,
-) -> Option<DVec3> {
-    let (left, up, forwards) = parse_local_coordinate_triplet(coordinates)?;
-    let source = anchor_position(context)?;
+    argument_start: usize,
+    error_cursor: usize,
+    error_kind: fn(String) -> CommandParseErrorKind,
+) -> Result<DVec3, CommandParseError> {
+    let left = parse_local_coordinate(reader, argument_start, error_cursor, error_kind)?;
+    expect_coordinate_separator(reader, argument_start, error_cursor, error_kind)?;
+    let up = parse_local_coordinate(reader, argument_start, error_cursor, error_kind)?;
+    expect_coordinate_separator(reader, argument_start, error_cursor, error_kind)?;
+    let forwards = parse_local_coordinate(reader, argument_start, error_cursor, error_kind)?;
+    let Some(source) = anchor_position(context) else {
+        return Err(coordinate_error(
+            reader,
+            argument_start,
+            error_cursor,
+            error_kind,
+        ));
+    };
     let rotation = context.rotation().unwrap_or((0.0, 0.0));
 
-    Some(local_coordinates_to_anchor_position(
+    Ok(local_coordinates_to_anchor_position(
         source, rotation, left, up, forwards,
     ))
 }
 
-fn parse_local_coordinate_triplet(coordinates: (&str, &str, &str)) -> Option<(f64, f64, f64)> {
-    let left = parse_local_coordinate(coordinates.0)?;
-    let up = parse_local_coordinate(coordinates.1)?;
-    let forwards = parse_local_coordinate(coordinates.2)?;
-    Some((left, up, forwards))
+fn parse_local_coordinate(
+    reader: &mut CommandReader<'_>,
+    argument_start: usize,
+    error_cursor: usize,
+    error_kind: fn(String) -> CommandParseErrorKind,
+) -> Result<f64, CommandParseError> {
+    if reader.peek() != Some('^') {
+        return Err(coordinate_error(
+            reader,
+            argument_start,
+            error_cursor,
+            error_kind,
+        ));
+    }
+
+    let _ = reader.read();
+    if !reader.can_read() || reader.is_argument_separator() {
+        return Ok(0.0);
+    }
+
+    let number_start = reader.cursor();
+    reader.read_f64().map_err(|_| {
+        numeric_coordinate_error(
+            reader,
+            argument_start,
+            number_start,
+            error_cursor,
+            error_kind,
+        )
+    })
 }
 
-fn parse_local_coordinate(value: &str) -> Option<f64> {
-    let offset = value.strip_prefix('^')?;
-    if offset.is_empty() {
-        Some(0.0)
-    } else {
-        offset.parse::<f64>().ok()
+fn parse_rotation_coordinate(
+    reader: &mut CommandReader<'_>,
+    argument_start: usize,
+    error_cursor: usize,
+    error_kind: fn(String) -> CommandParseErrorKind,
+) -> Result<ParsedCoordinate<f32>, CommandParseError> {
+    if reader.peek() == Some('^') || !reader.can_read() {
+        return Err(coordinate_error(
+            reader,
+            argument_start,
+            error_cursor,
+            error_kind,
+        ));
     }
+
+    let relative = read_relative_prefix(reader);
+    let number_start = reader.cursor();
+    let value = if reader.can_read() && !reader.is_argument_separator() {
+        reader.read_f32().map_err(|_| {
+            numeric_coordinate_error(
+                reader,
+                argument_start,
+                number_start,
+                error_cursor,
+                error_kind,
+            )
+        })?
+    } else {
+        0.0
+    };
+
+    Ok(ParsedCoordinate { relative, value })
+}
+
+fn read_relative_prefix(reader: &mut CommandReader<'_>) -> bool {
+    if reader.peek() != Some('~') {
+        return false;
+    }
+
+    let _ = reader.read();
+    true
 }
 
 fn local_coordinates_to_anchor_position(
@@ -429,22 +600,6 @@ fn heightmap_type_from_name(value: &str) -> Option<HeightmapType> {
         "motion_blocking_no_leaves" => Some(HeightmapType::MotionBlockingNoLeaves),
         "ocean_floor" => Some(HeightmapType::OceanFloor),
         _ => None,
-    }
-}
-
-fn parse_rotation_coordinate(value: &str, origin: f32) -> Option<f32> {
-    if value.starts_with('^') {
-        return None;
-    }
-
-    if let Some(offset) = value.strip_prefix('~') {
-        if offset.is_empty() {
-            Some(origin)
-        } else {
-            Some(origin + offset.parse::<f32>().ok()?)
-        }
-    } else {
-        value.parse::<f32>().ok()
     }
 }
 

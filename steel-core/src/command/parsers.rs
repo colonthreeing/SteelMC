@@ -85,7 +85,7 @@ mod tests {
             PermissionContextCatalogSource, PermissionContextKey, PermissionKey,
         },
     };
-    use steel_utils::{Identifier, types::GameType};
+    use steel_utils::{BlockPos, Identifier, types::GameType};
 
     struct TestContext;
 
@@ -2247,6 +2247,30 @@ mod tests {
     }
 
     #[test]
+    fn block_pos_parser_accepts_vanilla_empty_middle_coordinate() {
+        let mut reader = CommandReader::new("1  2");
+        let value = BlockPosParser
+            .parse(&mut reader, &PositionedContext)
+            .expect("block position parses");
+
+        assert!(matches!(value, ParsedArgument::BlockPos(pos) if pos == BlockPos::new(1, 0, 2)));
+    }
+
+    #[test]
+    fn block_pos_parser_uses_brigadier_number_scanner() {
+        let mut reader = CommandReader::new("1e3 2 3");
+        let error = BlockPosParser
+            .parse(&mut reader, &PositionedContext)
+            .expect_err("exponent syntax is not a Brigadier integer coordinate");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidBlockPos(value) if value == "1"
+        ));
+        assert_eq!(error.cursor(), 0);
+    }
+
+    #[test]
     fn heightmap_parser_accepts_vanilla_names_case_insensitively() {
         let mut reader = CommandReader::new("MOTION_BLOCKING_NO_LEAVES");
         let value = HeightmapParser
@@ -2282,6 +2306,58 @@ mod tests {
     }
 
     #[test]
+    fn vec3_parser_accepts_vanilla_empty_middle_coordinate() {
+        let mut reader = CommandReader::new("1  2");
+        let value = Vec3Parser
+            .parse(&mut reader, &PositionedContext)
+            .expect("vec3 parses");
+
+        assert!(matches!(value, ParsedArgument::Vec3(pos) if pos == DVec3::new(1.5, 0.0, 2.5)));
+    }
+
+    #[test]
+    fn vec3_parser_uses_brigadier_number_scanner() {
+        let mut reader = CommandReader::new("1e3 2 3");
+        let error = Vec3Parser
+            .parse(&mut reader, &PositionedContext)
+            .expect_err("exponent syntax is not a Brigadier double coordinate");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidVec3(value) if value == "1"
+        ));
+        assert_eq!(error.cursor(), 0);
+    }
+
+    #[test]
+    fn vec3_parser_rejects_leading_plus_coordinate() {
+        let mut reader = CommandReader::new("+1 2 3");
+        let error = Vec3Parser
+            .parse(&mut reader, &PositionedContext)
+            .expect_err("leading plus is not allowed by Brigadier's number scanner");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidVec3(value) if value == "+1"
+        ));
+        assert_eq!(error.cursor(), 0);
+    }
+
+    #[test]
+    fn vec3_parser_rejects_mixed_local_and_world_coordinates() {
+        let mut reader = CommandReader::new("^1 2 3");
+        let error = Vec3Parser
+            .parse(&mut reader, &PositionedContext)
+            .expect_err("local and world coordinates cannot be mixed");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidVec3(_)
+        ));
+        assert_eq!(error.cursor(), 0);
+    }
+
+    #[test]
     fn vec3_parser_reports_incomplete_position() {
         let mut reader = CommandReader::new("1 ");
         let error = Vec3Parser
@@ -2303,6 +2379,20 @@ mod tests {
             .expect("rotation parses");
 
         assert!(matches!(value, ParsedArgument::Rotation((-179.0, 179.0))));
+    }
+
+    #[test]
+    fn rotation_parser_uses_brigadier_number_scanner() {
+        let mut reader = CommandReader::new("1e3 0");
+        let error = RotationParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("exponent syntax is not a Brigadier rotation coordinate");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidRotation(value) if value == "1"
+        ));
+        assert_eq!(error.cursor(), 0);
     }
 
     #[test]
