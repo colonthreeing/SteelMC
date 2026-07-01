@@ -293,6 +293,25 @@ fn block_condition_parses_direct_and_redirect_forms() {
 }
 
 #[test]
+fn entity_condition_parses_direct_and_redirect_forms() {
+    let graph = graph();
+    let context = TestContext;
+
+    let direct = graph
+        .parse("execute if entity Steve", &context)
+        .expect("direct entity conditional parses");
+    assert_eq!(direct.path(), ["execute", "if", "entity", "entities"]);
+
+    let redirected = graph
+        .parse("execute unless entity Steve run seed", &context)
+        .expect("redirected entity conditional parses");
+    assert_eq!(
+        redirected.path(),
+        ["execute", "unless", "entity", "entities"]
+    );
+}
+
+#[test]
 fn data_block_condition_parses_direct_and_redirect_forms() {
     let graph = graph();
     let context = TestContext;
@@ -314,6 +333,28 @@ fn data_block_condition_parses_direct_and_redirect_forms() {
     assert_eq!(
         redirected.path(),
         ["execute", "unless", "data", "block", "pos", "path"]
+    );
+}
+
+#[test]
+fn data_entity_condition_parses_direct_and_redirect_forms() {
+    let graph = graph();
+    let context = TestContext;
+
+    let direct = graph
+        .parse("execute if data entity Steve Air", &context)
+        .expect("direct data entity conditional parses");
+    assert_eq!(
+        direct.path(),
+        ["execute", "if", "data", "entity", "source", "path"]
+    );
+
+    let redirected = graph
+        .parse("execute unless data entity Steve Air run seed", &context)
+        .expect("redirected data entity conditional parses");
+    assert_eq!(
+        redirected.path(),
+        ["execute", "unless", "data", "entity", "source", "path"]
     );
 }
 
@@ -354,6 +395,48 @@ fn data_condition_suggests_entity_accessor() {
         .collect::<Vec<_>>();
 
     assert!(suggestions.contains(&"entity"));
+}
+
+#[test]
+fn items_entity_condition_parses_direct_and_redirect_forms() {
+    init_test_registry();
+    let graph = graph();
+    let context = TestContext;
+
+    let direct = graph
+        .parse("execute if items entity Steve contents stone", &context)
+        .expect("direct items entity conditional parses");
+    assert_eq!(
+        direct.path(),
+        [
+            "execute",
+            "if",
+            "items",
+            "entity",
+            "entities",
+            "slots",
+            "item_predicate"
+        ]
+    );
+
+    let redirected = graph
+        .parse(
+            "execute unless items entity Steve contents #logs[count={min:2}] run seed",
+            &context,
+        )
+        .expect("redirected items entity conditional parses");
+    assert_eq!(
+        redirected.path(),
+        [
+            "execute",
+            "unless",
+            "items",
+            "entity",
+            "entities",
+            "slots",
+            "item_predicate"
+        ]
+    );
 }
 
 #[test]
@@ -548,6 +631,25 @@ fn store_storage_data_parses_redirect_form() {
         parsed.path(),
         [
             "execute", "store", "result", "storage", "target", "path", "int", "scale"
+        ]
+    );
+}
+
+#[test]
+fn store_entity_data_parses_redirect_form() {
+    let graph = graph();
+    let context = TestContext;
+
+    let parsed = graph
+        .parse(
+            "execute store result entity Steve Air int 1 run seed",
+            &context,
+        )
+        .expect("store entity data parses");
+    assert_eq!(
+        parsed.path(),
+        [
+            "execute", "store", "result", "entity", "target", "path", "int", "scale"
         ]
     );
 }
