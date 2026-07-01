@@ -708,7 +708,7 @@ fn execute_dimension_condition(
     arguments: &ParsedArguments,
     expected: bool,
 ) -> Result<CommandResult, CommandError> {
-    let matches = same_world(&context.world, &world(arguments)?);
+    let matches = same_world(&context.world, &world(context, arguments)?);
     if matches == expected {
         send_condition_pass(context);
         Ok(CommandResult::success())
@@ -722,7 +722,7 @@ fn fork_dimension_condition(
     arguments: &ParsedArguments,
     expected: bool,
 ) -> Result<Vec<CommandContext>, CommandError> {
-    let matches = same_world(&context.world, &world(arguments)?);
+    let matches = same_world(&context.world, &world(context, arguments)?);
     Ok(if matches == expected {
         vec![context.clone()]
     } else {

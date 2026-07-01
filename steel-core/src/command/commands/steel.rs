@@ -1,7 +1,5 @@
 //! Steel server commands: /steel tp <targets> <world>
 
-use std::sync::Arc;
-
 use text_components::TextComponent;
 
 use crate::command::context::CommandContext;
@@ -9,11 +7,12 @@ use crate::command::error::CommandError;
 use crate::command::graph::{
     CommandNodeBuilder, CommandResult, ParsedArguments, argument, literal,
 };
-use crate::command::parsers::{PlayerParser, WorldParser, resolve_required_player_targets};
+use crate::command::parsers::{
+    PlayerParser, WorldArgumentValue, WorldParser, resolve_required_player_targets,
+};
 use crate::command::CommandRegistrationSpec;
 use crate::entity::SharedEntity;
 use crate::portal::WorldChangeRequest;
-use crate::world::World;
 
 pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::steel();
 
@@ -34,8 +33,9 @@ fn teleport_to_world(
 ) -> Result<CommandResult, CommandError> {
     let targets = resolve_required_player_targets(arguments, "targets", context)?;
     let world = arguments
-        .get::<Arc<World>>("world")
-        .map_err(super::invalid_parsed_argument)?;
+        .get::<WorldArgumentValue>("world")
+        .map_err(super::invalid_parsed_argument)?
+        .resolve(context)?;
     let dim_name = &world.key;
     let count = targets.len();
 

@@ -1,9 +1,14 @@
 //! Domain and world command argument parsers.
 
+use std::{borrow::Cow, fmt, sync::Arc};
+
 use steel_protocol::packets::game::{ArgumentType, SuggestionEntry, SuggestionType};
 use steel_utils::Identifier;
+use text_components::{TextComponent, translation::TranslatedMessage};
 
 use crate::command::{
+    context::CommandContext,
+    error::CommandError,
     graph::{
         CommandArgumentClientParser, CommandArgumentParser, CommandParseError,
         CommandParseErrorKind, ParsedArgument, ParsedArguments,
@@ -11,6 +16,9 @@ use crate::command::{
     reader::CommandReader,
     requirement::CommandInputContext,
 };
+use crate::world::World;
+
+use super::parse_resource_identifier;
 
 /// Configured domain name argument parser.
 #[derive(Clone, Copy, Debug, Default)]
@@ -72,45 +80,86 @@ impl CommandArgumentParser for DomainParser {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WorldParser;
 
-impl CommandArgumentParser for WorldParser {
-    fn parse(
-        &self,
-        reader: &mut CommandReader<'_>,
-        context: &dyn CommandInputContext,
-    ) -> Result<ParsedArgument, CommandParseError> {
-        let cursor = reader.absolute_cursor();
-        let raw = reader.read_token()?;
-        let Some(server) = context.server() else {
-            return Err(CommandParseError::new(
-                CommandParseErrorKind::MissingCommandContext("server"),
-                cursor,
-            ));
-        };
+/// Parsed loaded-world argument.
+///
+/// Vanilla parses dimensions as identifiers and resolves them against the
+/// server when the command executes. Steel keeps that shape, while also
+/// supporting a relative world name resolved inside the current domain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorldArgumentValue {
+    /// Fully-qualified world key.
+    Key(Identifier),
+    /// World name relative to the executing context's current domain.
+    Relative(String),
+}
 
-        if let Some(world) = raw
-            .parse::<Identifier>()
-            .ok()
-            .and_then(|key| server.worlds.get(&key).cloned())
-        {
-            return Ok(ParsedArgument::World(world));
+impl WorldArgumentValue {
+    fn parse(raw: String, cursor: usize) -> Result<Self, CommandParseError> {
+        if raw.contains(':') {
+            let key = parse_resource_identifier(&raw).ok_or_else(|| {
+                CommandParseError::new(CommandParseErrorKind::InvalidWorld(raw.clone()), cursor)
+            })?;
+            return Ok(Self::Key(key));
         }
-
-        let Some(current_world) = context.world() else {
-            return Err(CommandParseError::new(
-                CommandParseErrorKind::MissingCommandContext("world"),
-                cursor,
-            ));
-        };
-
-        let key = Identifier::new(current_world.domain().to_owned(), raw.clone());
-        let Some(world) = server.worlds.get(&key).cloned() else {
+        if !Identifier::validate_path(&raw) {
             return Err(CommandParseError::new(
                 CommandParseErrorKind::InvalidWorld(raw),
                 cursor,
             ));
+        }
+        Ok(Self::Relative(raw))
+    }
+
+    /// Resolves this parsed argument against live server state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a command failure when the target world is not loaded.
+    pub fn resolve(&self, context: &CommandContext) -> Result<Arc<World>, CommandError> {
+        let key = match self {
+            Self::Key(key) => key.clone(),
+            Self::Relative(path) => {
+                Identifier::new(context.world.domain().to_owned(), path.clone())
+            }
         };
 
-        Ok(ParsedArgument::World(world))
+        context
+            .server
+            .worlds
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| invalid_world_error(&self.to_string()))
+    }
+}
+
+impl fmt::Display for WorldArgumentValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Key(key) => write!(f, "{key}"),
+            Self::Relative(path) => f.write_str(path),
+        }
+    }
+}
+
+fn invalid_world_error(value: &str) -> CommandError {
+    CommandError::failure(TextComponent::translated(TranslatedMessage {
+        key: Cow::Borrowed("argument.dimension.invalid"),
+        fallback: None,
+        args: Some(Box::new([TextComponent::from(value.to_owned())])),
+    }))
+}
+
+impl CommandArgumentParser for WorldParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        _context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        let cursor = reader.absolute_cursor();
+        let raw = reader.read_token()?;
+        Ok(ParsedArgument::World(WorldArgumentValue::parse(
+            raw, cursor,
+        )?))
     }
 
     fn client_parser(&self) -> CommandArgumentClientParser {

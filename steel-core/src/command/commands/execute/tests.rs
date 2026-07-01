@@ -166,6 +166,25 @@ fn loaded_condition_parses_direct_and_redirect_forms() {
 }
 
 #[test]
+fn dimension_condition_parses_direct_and_redirect_forms() {
+    let graph = graph();
+    let context = TestContext;
+
+    let direct = graph
+        .parse("execute if dimension overworld", &context)
+        .expect("direct dimension conditional parses");
+    assert_eq!(direct.path(), ["execute", "if", "dimension", "dimension"]);
+
+    let redirected = graph
+        .parse("execute unless dimension minecraft:the_nether run seed", &context)
+        .expect("redirected dimension conditional parses");
+    assert_eq!(
+        redirected.path(),
+        ["execute", "unless", "dimension", "dimension"]
+    );
+}
+
+#[test]
 fn stopwatch_condition_parses_direct_and_redirect_forms() {
     let graph = graph();
     let context = TestContext;

@@ -24,6 +24,7 @@ use crate::chunk::heightmap::HeightmapType;
 use crate::command::context::EntityAnchor;
 use crate::command::parsers::{
     EntityTargetArgumentValue, PermissionTargetArgumentValue, PlayerTargetArgumentValue,
+    WorldArgumentValue,
 };
 use crate::entity::SharedEntity;
 use crate::permission::{
@@ -31,7 +32,6 @@ use crate::permission::{
     PermissionSegment,
 };
 use crate::player::Player;
-use crate::world::World;
 
 /// A parsed command argument value.
 #[derive(Clone)]
@@ -95,7 +95,7 @@ pub enum ParsedArgument {
     /// Structure or structure tag argument.
     Structure(StructureArgumentValue),
     /// Loaded world argument.
-    World(Arc<World>),
+    World(WorldArgumentValue),
     /// 3D vector argument.
     Vec3(DVec3),
     /// Block position argument.
@@ -1461,7 +1461,7 @@ impl fmt::Debug for ParsedArgument {
             Self::BlockPredicate(value) => f.debug_tuple("BlockPredicate").field(value).finish(),
             Self::NbtPath(value) => f.debug_tuple("NbtPath").field(value).finish(),
             Self::Structure(value) => f.debug_tuple("Structure").field(value).finish(),
-            Self::World(value) => f.debug_tuple("World").field(&value.key).finish(),
+            Self::World(value) => f.debug_tuple("World").field(value).finish(),
             Self::Vec3(value) => f.debug_tuple("Vec3").field(value).finish(),
             Self::BlockPos(value) => f.debug_tuple("BlockPos").field(value).finish(),
             Self::Heightmap(value) => f.debug_tuple("Heightmap").field(value).finish(),
@@ -1969,14 +1969,14 @@ impl FromParsedArgument for NbtPath {
     }
 }
 
-impl FromParsedArgument for Arc<World> {
+impl FromParsedArgument for WorldArgumentValue {
     const TYPE_NAME: &'static str = "world";
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {
         let ParsedArgument::World(value) = value else {
             return None;
         };
-        Some(Arc::clone(value))
+        Some(value.clone())
     }
 }
 

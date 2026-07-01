@@ -43,7 +43,7 @@ pub(crate) use target::{
     resolve_required_permission_targets, resolve_required_player_targets,
 };
 pub use text::{ComponentParser, TimeParser};
-pub use world::{DomainParser, WorldParser};
+pub use world::{DomainParser, WorldArgumentValue, WorldParser};
 
 #[cfg(test)]
 mod tests {
@@ -71,7 +71,7 @@ mod tests {
                 NbtPathParser, ObjectiveParser, PermissionKeyParser,
                 PermissionRuleExpressionParser, PermissionTargetParser, PlayerParser,
                 RotationParser, ScoreHolderParser, StructureParser, TimeParser, Vec3Parser,
-                WorldParser,
+                WorldArgumentValue, WorldParser,
             },
             reader::CommandReader,
             requirement::{
@@ -1986,15 +1986,50 @@ mod tests {
     }
 
     #[test]
-    fn world_parser_requires_live_server_context() {
+    fn world_parser_parses_without_live_server_context() {
         let mut reader = CommandReader::new("minecraft:overworld");
+        let value = WorldParser
+            .parse(&mut reader, &TestContext)
+            .expect("qualified world parses without server context");
+
+        assert!(matches!(
+            value,
+            ParsedArgument::World(WorldArgumentValue::Key(ref key))
+                if key.to_string() == "minecraft:overworld"
+        ));
+
+        let mut reader = CommandReader::new(":overworld");
+        let value = WorldParser
+            .parse(&mut reader, &TestContext)
+            .expect("default namespace world parses without server context");
+
+        assert!(matches!(
+            value,
+            ParsedArgument::World(WorldArgumentValue::Key(ref key))
+                if key.to_string() == "minecraft:overworld"
+        ));
+
+        let mut reader = CommandReader::new("overworld");
+        let value = WorldParser
+            .parse(&mut reader, &TestContext)
+            .expect("relative world parses without server context");
+
+        assert!(matches!(
+            value,
+            ParsedArgument::World(WorldArgumentValue::Relative(ref path)) if path == "overworld"
+        ));
+    }
+
+    #[test]
+    fn world_parser_rejects_invalid_world_syntax_without_live_server() {
+        let mut reader = CommandReader::new("bad:world:extra");
         let error = WorldParser
             .parse(&mut reader, &TestContext)
-            .expect_err("world parser requires a server");
+            .expect_err("invalid world key rejects");
 
         assert!(matches!(
             error.kind(),
-            CommandParseErrorKind::MissingCommandContext("server")
+            CommandParseErrorKind::InvalidWorld(value) if value == "bad:world:extra"
         ));
     }
 

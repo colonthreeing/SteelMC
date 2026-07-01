@@ -30,8 +30,8 @@ use crate::command::graph::{
     ScoreHolderArgumentValue, ScoreboardObjectiveName, literal,
 };
 use crate::command::parsers::{
-    ScoreHolderWildcardExpansion, resolve_optional_entity_targets, resolve_required_entity_targets,
-    resolve_score_holders,
+    ScoreHolderWildcardExpansion, WorldArgumentValue, resolve_optional_entity_targets,
+    resolve_required_entity_targets, resolve_score_holders,
 };
 use crate::command::requirement::CommandInputContext;
 use crate::entity::SharedEntity;
@@ -333,10 +333,11 @@ fn rotation(arguments: &ParsedArguments) -> Result<(f32, f32), CommandError> {
         .map_err(super::invalid_parsed_argument)
 }
 
-fn world(arguments: &ParsedArguments) -> Result<Arc<World>, CommandError> {
-    arguments
-        .get::<Arc<World>>("dimension")
-        .map_err(super::invalid_parsed_argument)
+fn world(context: &CommandContext, arguments: &ParsedArguments) -> Result<Arc<World>, CommandError> {
+    let world = arguments
+        .get::<WorldArgumentValue>("dimension")
+        .map_err(super::invalid_parsed_argument)?;
+    world.resolve(context)
 }
 
 fn entity_type(arguments: &ParsedArguments) -> Result<EntityTypeRef, CommandError> {

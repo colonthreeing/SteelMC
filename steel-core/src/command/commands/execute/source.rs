@@ -252,7 +252,7 @@ fn set_world(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    *context = context.clone().with_world(world(arguments)?);
+    *context = context.clone().with_world(world(context, arguments)?);
     Ok(CommandResult::success())
 }
 
