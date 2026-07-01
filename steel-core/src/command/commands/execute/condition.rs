@@ -14,7 +14,7 @@ use crate::command::graph::{
     CommandRedirectTarget, CommandResult, DoubleRangeArgumentValue, IntRangeArgumentValue,
     LootPredicateArgumentValue, ParsedArguments, argument, literal,
 };
-use crate::command::loot::{CommandLootRandom, command_loot_entity_ref, command_loot_weather};
+use crate::command::loot::{command_loot_entity_ref, command_loot_weather};
 use crate::command::parsers::{
     BiomeParser, BlockPosParser, BlockPredicateParser, CommandFunctionParser, DoubleRangeParser,
     EntityParser, IntRangeParser, ItemPredicateParser, ItemSlotsParser, LootPredicateParser,
@@ -357,8 +357,7 @@ fn predicate_condition_matches(
         LootPredicateArgumentValue::Inline(condition) => condition,
     };
 
-    let mut random = context.world.random().lock();
-    let mut rng = CommandLootRandom::new(&mut random);
+    let mut rng = rand::rng();
     let mut loot_context = LootContext::new(&mut rng)
         .with_origin(context.position.x, context.position.y, context.position.z)
         .with_game_time(context.world.game_time())

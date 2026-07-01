@@ -21,7 +21,7 @@ use crate::{
     command::{
         entity_selector_advanced_permission_expr, entity_selector_permission_expr,
         graph::{CommandParseError, CommandParseErrorKind},
-        loot::{CommandLootRandom, command_loot_entity_ref, command_loot_weather},
+        loot::{command_loot_entity_ref, command_loot_weather},
         parsers::parse_resource_identifier,
         reader::{CommandReader, StringMode},
         requirement::CommandInputContext,
@@ -854,8 +854,7 @@ fn selector_predicate_filter_matches(
     let position = entity.position();
     let entity_ref = command_loot_entity_ref(entity);
     let weather = command_loot_weather(&world);
-    let mut random = world.random().lock();
-    let mut rng = CommandLootRandom::new(&mut random);
+    let mut rng = rand::rng();
     let mut context = LootContext::new(&mut rng)
         .with_origin(position.x, position.y, position.z)
         .with_game_time(world.game_time())
