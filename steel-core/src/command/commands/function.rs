@@ -14,8 +14,10 @@ use crate::command::{
         CommandExecutionStep, CommandFunctionArgumentValue, CommandNodeBuilder, ParsedArgumentError,
         ParsedArguments, argument, literal,
     },
-    parsers::{CommandFunctionParser, NbtCompoundParser},
+    parsers::{BlockPosParser, CommandFunctionParser, EntityParser, NbtCompoundParser, NbtPathParser},
 };
+
+use super::data::{StorageKeyParser, data_source_argument_compound};
 
 pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::minecraft();
 
@@ -28,8 +30,47 @@ pub(crate) fn command() -> CommandNodeBuilder {
             .then(
                 argument("arguments", NbtCompoundParser)
                     .executes_step_with_budget(execute_function),
-            ),
+            )
+            .then(literal("with").then_all(data_source_arguments())),
     )
+}
+
+fn data_source_arguments() -> [CommandNodeBuilder; 3] {
+    [
+        literal("entity").then(data_source_argument(
+            "source",
+            EntityParser::one(),
+            execute_function_with_data,
+        )),
+        literal("block").then(data_source_argument(
+            "sourcePos",
+            BlockPosParser,
+            execute_function_with_data,
+        )),
+        literal("storage").then(data_source_argument(
+            "source",
+            StorageKeyParser,
+            execute_function_with_data,
+        )),
+    ]
+}
+
+fn data_source_argument(
+    name: &'static str,
+    parser: impl crate::command::graph::CommandArgumentParser + 'static,
+    executor: impl Fn(
+        &mut CommandContext,
+        &ParsedArguments,
+        &mut crate::command::CommandExecutionBudget,
+    ) -> Result<CommandExecutionStep, CommandError>
+    + Send
+    + Sync
+    + Copy
+    + 'static,
+) -> CommandNodeBuilder {
+    argument(name, parser)
+        .executes_step_with_budget(executor)
+        .then(argument("path", NbtPathParser).executes_step_with_budget(executor))
 }
 
 fn execute_function(
@@ -41,14 +82,34 @@ fn execute_function(
         .get::<CommandFunctionArgumentValue>("name")
         .map_err(super::invalid_parsed_argument)?;
     let macro_arguments = function_macro_arguments(arguments)?;
+    schedule_functions(context, &target, macro_arguments)
+}
+
+fn execute_function_with_data(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+    _budget: &mut crate::command::CommandExecutionBudget,
+) -> Result<CommandExecutionStep, CommandError> {
+    let target = arguments
+        .get::<CommandFunctionArgumentValue>("name")
+        .map_err(super::invalid_parsed_argument)?;
+    let macro_arguments = data_source_argument_compound(context, arguments)?;
+    schedule_functions(context, &target, Some(macro_arguments))
+}
+
+fn schedule_functions(
+    context: &CommandContext,
+    target: &CommandFunctionArgumentValue,
+    macro_arguments: Option<NbtCompound>,
+) -> Result<CommandExecutionStep, CommandError> {
     let functions = {
         let registry = context.server.command_functions.read();
         registry
-            .resolve_argument(&target)
+            .resolve_argument(target)
             .map_err(|error| CommandError::failure(error.to_string()))?
     };
     if functions.is_empty() {
-        return Err(no_functions_error(&target));
+        return Err(no_functions_error(target));
     }
 
     send_scheduled_message(context, &functions);

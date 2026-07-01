@@ -1,13 +1,11 @@
-use steel_protocol::packets::game::{ArgumentType, SuggestionEntry, SuggestionType};
+use steel_protocol::packets::game::{ArgumentType, SuggestionEntry};
 
 use crate::command::graph::{
     CommandArgumentClientParser, CommandArgumentParser, CommandParseError, CommandParseErrorKind,
     ParsedArgument, ParsedArguments,
 };
-use crate::command::parsers::parse_resource_identifier;
 use crate::command::reader::CommandReader;
 use crate::command::requirement::CommandInputContext;
-use crate::command::suggestions::matches_suggestion_substr;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct AxesParser;
@@ -73,54 +71,4 @@ fn is_valid_axes(axes: &str) -> bool {
         }
     }
     true
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub(super) struct StorageKeyParser;
-
-impl CommandArgumentParser for StorageKeyParser {
-    fn parse(
-        &self,
-        reader: &mut CommandReader<'_>,
-        _context: &dyn CommandInputContext,
-    ) -> Result<ParsedArgument, CommandParseError> {
-        let cursor = reader.absolute_cursor();
-        let raw = reader.read_token()?;
-        let Some(key) = parse_resource_identifier(&raw) else {
-            return Err(CommandParseError::new(
-                CommandParseErrorKind::InvalidIdentifier(raw),
-                cursor,
-            ));
-        };
-
-        Ok(ParsedArgument::Identifier(key))
-    }
-
-    fn client_parser(&self) -> CommandArgumentClientParser {
-        CommandArgumentClientParser::new(ArgumentType::Identifier, Some(SuggestionType::AskServer))
-    }
-
-    fn parsed_type(&self) -> &'static str {
-        "identifier"
-    }
-
-    fn suggest(
-        &self,
-        prefix: &str,
-        _arguments: &ParsedArguments,
-        context: &dyn CommandInputContext,
-    ) -> Vec<SuggestionEntry> {
-        let Some(server) = context.server() else {
-            return Vec::new();
-        };
-
-        server
-            .command_storage
-            .keys()
-            .into_iter()
-            .map(|key| key.to_string())
-            .filter(|key| matches_suggestion_substr(prefix, key))
-            .map(SuggestionEntry::new)
-            .collect()
-    }
 }

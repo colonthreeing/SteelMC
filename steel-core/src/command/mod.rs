@@ -1675,12 +1675,14 @@ mod tests {
     use crate::permission::{
         PermissionCatalogSource, PermissionEntry, PermissionKey, PermissionSegment, PermissionSet,
     };
+    use glam::DVec3;
     use steel_registry::test_support::init_test_registry;
     use steel_utils::{Identifier, translations};
     use text_components::{TextComponent, content::Content};
 
     struct TestContext {
         permissions: PermissionSet,
+        position: Option<DVec3>,
     }
 
     impl RequirementContext for TestContext {
@@ -1693,11 +1695,16 @@ mod tests {
         }
     }
 
-    impl CommandInputContext for TestContext {}
+    impl CommandInputContext for TestContext {
+        fn position(&self) -> Option<DVec3> {
+            self.position
+        }
+    }
 
     fn player_context() -> TestContext {
         TestContext {
             permissions: PermissionSet::default(),
+            position: None,
         }
     }
 
@@ -1716,6 +1723,14 @@ mod tests {
     fn player_context_with_entries<const N: usize>(entries: [PermissionEntry; N]) -> TestContext {
         TestContext {
             permissions: PermissionSet::from_entries(entries),
+            position: None,
+        }
+    }
+
+    fn positioned_player_context_with(permission: &str) -> TestContext {
+        TestContext {
+            permissions: PermissionSet::from_entries([allow(permission)]),
+            position: Some(DVec3::ZERO),
         }
     }
 
@@ -2107,6 +2122,42 @@ mod tests {
             .expect("function command with direct macro arguments parses");
 
         assert_eq!(parsed.path(), ["function", "name", "arguments"]);
+
+        let storage = dispatcher
+            .graph
+            .parse(
+                "function test:macro with storage steel:data value",
+                &function_player,
+            )
+            .expect("function command with storage data arguments parses");
+        assert_eq!(
+            storage.path(),
+            ["function", "name", "with", "storage", "source", "path"]
+        );
+
+        let block = dispatcher
+            .graph
+            .parse(
+                "function test:macro with block 0 64 0 value",
+                &positioned_player_context_with("minecraft.command.function"),
+            )
+            .expect("function command with block data arguments parses");
+        assert_eq!(
+            block.path(),
+            ["function", "name", "with", "block", "sourcePos", "path"]
+        );
+
+        let entity = dispatcher
+            .graph
+            .parse(
+                "function test:macro with entity Steve value",
+                &function_player,
+            )
+            .expect("function command with entity data arguments parses");
+        assert_eq!(
+            entity.path(),
+            ["function", "name", "with", "entity", "source", "path"]
+        );
     }
 
     #[test]

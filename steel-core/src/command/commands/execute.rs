@@ -5,10 +5,9 @@
 //! Data component predicates without concrete Steel component storage are also
 //! omitted.
 
-use std::{borrow::Cow, sync::Arc};
+use std::sync::Arc;
 
 use glam::DVec3;
-use simdnbt::owned::NbtCompound;
 use steel_registry::entity_type::EntityTypeRef;
 use steel_utils::{
     BlockPos, Identifier,
@@ -16,7 +15,6 @@ use steel_utils::{
     translations,
 };
 use text_components::TextComponent;
-use text_components::translation::TranslatedMessage;
 
 use crate::chunk::heightmap::HeightmapType;
 use crate::command::CommandRegistrationSpec;
@@ -46,7 +44,10 @@ mod execute_parsers;
 #[path = "execute/source.rs"]
 mod source;
 
-use self::execute_parsers::{AxesParser, StorageKeyParser};
+use super::data::{
+    StorageKeyParser, block_data_invalid_error, block_entity_full_nbt, position_error,
+};
+use self::execute_parsers::AxesParser;
 
 pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::minecraft();
 
@@ -76,17 +77,6 @@ pub(crate) fn command() -> CommandNodeBuilder {
         .then(source::on_relations())
 }
 
-fn block_entity_full_nbt(block_entity: &dyn crate::block_entity::BlockEntity) -> NbtCompound {
-    let mut nbt = NbtCompound::new();
-    let entity_pos = block_entity.get_block_pos();
-    nbt.insert("id", block_entity.get_type().key.to_string());
-    nbt.insert("x", entity_pos.x());
-    nbt.insert("y", entity_pos.y());
-    nbt.insert("z", entity_pos.z());
-    block_entity.save_additional(&mut nbt);
-    nbt
-}
-
 fn loaded_named_block_position(
     context: &CommandContext,
     arguments: &ParsedArguments,
@@ -100,22 +90,6 @@ fn loaded_named_block_position(
         return Err(position_error("argument.pos.outofworld"));
     }
     Ok(pos)
-}
-
-fn position_error(key: &'static str) -> CommandError {
-    CommandError::failure(TextComponent::translated(TranslatedMessage {
-        key: Cow::Borrowed(key),
-        fallback: None,
-        args: None,
-    }))
-}
-
-fn block_data_invalid_error() -> CommandError {
-    CommandError::failure(TextComponent::translated(TranslatedMessage {
-        key: Cow::Borrowed("commands.data.block.invalid"),
-        fallback: None,
-        args: None,
-    }))
 }
 
 fn optional_entities(

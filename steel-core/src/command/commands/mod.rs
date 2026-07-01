@@ -8,6 +8,7 @@ use crate::command::{
     graph::{ItemPredicateMatchError, ParsedArgumentError},
 };
 
+mod data;
 mod permission_targets;
 
 type RegistrationFactory = fn() -> Result<CommandRegistration, CommandRegistrationError>;
