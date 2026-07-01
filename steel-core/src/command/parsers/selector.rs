@@ -3066,6 +3066,20 @@ mod tests {
     }
 
     #[test]
+    fn selector_rotation_ranges_wrap_like_vanilla() {
+        let selector = parse_selector_plan("@e[y_rotation=170..-170]".to_owned(), true)
+            .expect("wrapped rotation range parses");
+        let range = selector
+            .y_rotation
+            .expect("selector stores y rotation range");
+
+        assert!(range.matches_rotation(175.0));
+        assert!(range.matches_rotation(-175.0));
+        assert!(range.matches_rotation(185.0));
+        assert!(!range.matches_rotation(0.0));
+    }
+
+    #[test]
     fn selector_player_filters_limit_to_players() {
         let selector = parse_selector_plan("@a[gamemode=!spectator,level=3..]".to_owned(), true)
             .expect("selector parses");
