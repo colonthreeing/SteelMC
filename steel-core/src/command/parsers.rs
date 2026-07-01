@@ -656,6 +656,42 @@ mod tests {
     }
 
     #[test]
+    fn player_parser_reports_too_many_players_for_single_selector() {
+        let mut reader = CommandReader::new("@a");
+        let error = match PlayerParser::one().parse(&mut reader, &SelectorPermissionContext) {
+            Ok(_) => panic!("multi-player selector unexpectedly parsed as a single player"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind(), &CommandParseErrorKind::TooManyPlayers);
+    }
+
+    #[test]
+    fn entity_parser_reports_too_many_entities_for_single_selector() {
+        let mut reader = CommandReader::new("@e");
+        let error = match EntityParser::one().parse(&mut reader, &SelectorPermissionContext) {
+            Ok(_) => panic!("multi-entity selector unexpectedly parsed as a single entity"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind(), &CommandParseErrorKind::TooManyEntities);
+    }
+
+    #[test]
+    fn player_parser_rejects_entity_selector_for_player_argument() {
+        let mut reader = CommandReader::new("@e[limit=1]");
+        let error = match PlayerParser::one().parse(&mut reader, &SelectorPermissionContext) {
+            Ok(_) => panic!("entity selector unexpectedly parsed as a player argument"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error.kind(),
+            &CommandParseErrorKind::EntitiesNotAllowedForPlayerArgument
+        );
+    }
+
+    #[test]
     fn permission_target_parser_rejects_selector_without_permission() {
         let mut reader = CommandReader::new("@a");
         let error = match PermissionTargetParser.parse(&mut reader, &TestContext) {

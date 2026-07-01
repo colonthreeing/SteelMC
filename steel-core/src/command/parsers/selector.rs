@@ -466,15 +466,15 @@ impl EntitySelector {
     ) -> Result<(), CommandParseError> {
         if single && self.max_results > 1 {
             let kind = if players_only {
-                CommandParseErrorKind::InvalidPlayer(self.raw.clone())
+                CommandParseErrorKind::TooManyPlayers
             } else {
-                CommandParseErrorKind::InvalidEntity(self.raw.clone())
+                CommandParseErrorKind::TooManyEntities
             };
             return Err(CommandParseError::new(kind, cursor));
         }
         if players_only && self.includes_entities && !self.current_entity {
             return Err(CommandParseError::new(
-                CommandParseErrorKind::InvalidPlayer(self.raw.clone()),
+                CommandParseErrorKind::EntitiesNotAllowedForPlayerArgument,
                 cursor,
             ));
         }

@@ -162,8 +162,14 @@ pub enum CommandParseErrorKind {
     InvalidGameMode(String),
     /// A player argument was invalid.
     InvalidPlayer(String),
+    /// A single-player argument matched more than one player.
+    TooManyPlayers,
     /// An entity argument was invalid.
     InvalidEntity(String),
+    /// A single-entity argument matched more than one entity.
+    TooManyEntities,
+    /// A player argument received a selector that may include non-player entities.
+    EntitiesNotAllowedForPlayerArgument,
     /// Entity selector syntax is not allowed for this source.
     EntitySelectorsNotAllowed,
     /// Advanced entity selector options are not allowed for this source.
@@ -269,7 +275,10 @@ impl CommandParseErrorKind {
             | Self::DoubleTooHigh { .. }
             | Self::InvalidGameMode(_)
             | Self::InvalidPlayer(_)
+            | Self::TooManyPlayers
             | Self::InvalidEntity(_)
+            | Self::TooManyEntities
+            | Self::EntitiesNotAllowedForPlayerArgument
             | Self::EntitySelectorsNotAllowed
             | Self::AdvancedEntitySelectorsNotAllowed
             | Self::InvalidEntitySelector(_)

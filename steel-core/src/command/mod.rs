@@ -1068,8 +1068,27 @@ impl CommandDispatcher {
             CommandParseErrorKind::InvalidPlayer(_) => {
                 TextComponent::from(&translations::ARGUMENT_ENTITY_NOTFOUND_PLAYER)
             }
+            CommandParseErrorKind::TooManyPlayers => TextComponent::translated(TranslatedMessage {
+                key: Cow::Borrowed("argument.player.toomany"),
+                fallback: None,
+                args: None,
+            }),
             CommandParseErrorKind::InvalidEntity(_) => {
                 TextComponent::from(&translations::ARGUMENT_ENTITY_NOTFOUND_ENTITY)
+            }
+            CommandParseErrorKind::TooManyEntities => {
+                TextComponent::translated(TranslatedMessage {
+                    key: Cow::Borrowed("argument.entity.toomany"),
+                    fallback: None,
+                    args: None,
+                })
+            }
+            CommandParseErrorKind::EntitiesNotAllowedForPlayerArgument => {
+                TextComponent::translated(TranslatedMessage {
+                    key: Cow::Borrowed("argument.player.entities"),
+                    fallback: None,
+                    args: None,
+                })
             }
             CommandParseErrorKind::EntitySelectorsNotAllowed => {
                 TextComponent::plain("Selector syntax is not allowed for this command source")
@@ -3111,6 +3130,24 @@ mod tests {
                 &CommandParseErrorKind::InvalidBool("maybe".to_owned())
             )),
             translations::PARSING_BOOL_INVALID.0
+        );
+        assert_eq!(
+            translation_key(&CommandDispatcher::parse_error_message(
+                &CommandParseErrorKind::TooManyPlayers
+            )),
+            "argument.player.toomany"
+        );
+        assert_eq!(
+            translation_key(&CommandDispatcher::parse_error_message(
+                &CommandParseErrorKind::TooManyEntities
+            )),
+            "argument.entity.toomany"
+        );
+        assert_eq!(
+            translation_key(&CommandDispatcher::parse_error_message(
+                &CommandParseErrorKind::EntitiesNotAllowedForPlayerArgument
+            )),
+            "argument.player.entities"
         );
     }
 

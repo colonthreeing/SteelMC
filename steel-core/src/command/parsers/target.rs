@@ -91,9 +91,9 @@ impl PlayerTargetArgumentValue {
         context: &dyn CommandInputContext,
     ) -> Result<Vec<Arc<Player>>, CommandParseError> {
         let players = self.selector.find_players(context, self.cursor)?;
-        if self.single && players.len() != 1 {
+        if self.single && players.len() > 1 {
             return Err(CommandParseError::new(
-                CommandParseErrorKind::InvalidPlayer(self.selector.raw().to_owned()),
+                CommandParseErrorKind::TooManyPlayers,
                 self.cursor,
             ));
         }
@@ -174,9 +174,9 @@ impl EntityTargetArgumentValue {
         context: &dyn CommandInputContext,
     ) -> Result<Vec<SharedEntity>, CommandParseError> {
         let entities = self.selector.find_entities(context, self.cursor)?;
-        if self.single && entities.len() != 1 {
+        if self.single && entities.len() > 1 {
             return Err(CommandParseError::new(
-                CommandParseErrorKind::InvalidEntity(self.selector.raw().to_owned()),
+                CommandParseErrorKind::TooManyEntities,
                 self.cursor,
             ));
         }
