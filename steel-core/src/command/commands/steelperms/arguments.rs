@@ -2,22 +2,20 @@
 
 use steel_utils::Identifier;
 
+use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{ParsedArguments, PermissionTarget};
+use crate::command::parsers::resolve_required_permission_targets;
 use crate::permission::{
     PermissionContext, PermissionKey, PermissionMetadataExpression, PermissionRuleContext,
     PermissionRuleExpression, PermissionValue,
 };
 
-pub(super) fn targets(arguments: &ParsedArguments) -> Result<Vec<PermissionTarget>, CommandError> {
-    let targets = arguments
-        .get::<Vec<PermissionTarget>>("targets")
-        .map_err(super::super::invalid_parsed_argument)?;
-    if targets.is_empty() {
-        return Err(CommandError::failure("No players matched"));
-    }
-
-    Ok(targets)
+pub(super) fn targets(
+    context: &CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<Vec<PermissionTarget>, CommandError> {
+    resolve_required_permission_targets(arguments, "targets", context)
 }
 
 pub(super) fn group(arguments: &ParsedArguments) -> Result<String, CommandError> {

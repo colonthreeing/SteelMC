@@ -22,7 +22,9 @@ use uuid::Uuid;
 
 use crate::chunk::heightmap::HeightmapType;
 use crate::command::context::EntityAnchor;
-use crate::command::parsers::{EntityTargetArgumentValue, PlayerTargetArgumentValue};
+use crate::command::parsers::{
+    EntityTargetArgumentValue, PermissionTargetArgumentValue, PlayerTargetArgumentValue,
+};
 use crate::entity::SharedEntity;
 use crate::permission::{
     PermissionKey, PermissionKeyError, PermissionMetadataExpression, PermissionRuleExpression,
@@ -63,7 +65,7 @@ pub enum ParsedArgument {
     /// Runtime-resolved player target argument.
     PlayerTargets(PlayerTargetArgumentValue),
     /// Permission-management player target argument.
-    PermissionTargets(Vec<PermissionTarget>),
+    PermissionTargets(PermissionTargetArgumentValue),
     /// Living entity target argument.
     Entities(Vec<SharedEntity>),
     /// Runtime-resolved entity target argument.
@@ -1437,8 +1439,8 @@ impl fmt::Debug for ParsedArgument {
                 f.debug_tuple("PlayerTargets").field(&value.raw()).finish()
             }
             Self::PermissionTargets(value) => f
-                .debug_struct("PermissionTargets")
-                .field("count", &value.len())
+                .debug_tuple("PermissionTargets")
+                .field(&value.raw())
                 .finish(),
             Self::Entities(value) => f
                 .debug_struct("Entities")
@@ -1802,7 +1804,7 @@ impl FromParsedArgument for PlayerTargetArgumentValue {
     }
 }
 
-impl FromParsedArgument for Vec<PermissionTarget> {
+impl FromParsedArgument for PermissionTargetArgumentValue {
     const TYPE_NAME: &'static str = "permission_targets";
 
     fn from_parsed_argument(value: &ParsedArgument) -> Option<Self> {

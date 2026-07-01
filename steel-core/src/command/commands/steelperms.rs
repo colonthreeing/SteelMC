@@ -87,7 +87,7 @@ fn user_info(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
+    let targets = targets(context, arguments)?;
     let mut reported = 0;
     let mut offline_targets = Vec::new();
 
@@ -116,7 +116,7 @@ fn check_permission(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
+    let targets = targets(context, arguments)?;
     let permission = permission(arguments)?;
     let rule_context = permission_rule_context(arguments)?;
     let check_context = permission_context(arguments)?;
@@ -362,7 +362,7 @@ fn add_group(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
+    let targets = targets(context, arguments)?;
     let group = group(arguments)?;
     require_group_management(context, &group)?;
     let mut changed = 0;
@@ -407,7 +407,7 @@ fn remove_group(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
+    let targets = targets(context, arguments)?;
     let group = group(arguments)?;
     require_group_management(context, &group)?;
     let mut changed = 0;
@@ -468,7 +468,7 @@ fn set_permission(
     arguments: &ParsedArguments,
     state: PermissionState,
 ) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
+    let targets = targets(context, arguments)?;
     let permission = permission(arguments)?;
     let rule_context = permission_rule_context(arguments)?;
     require_permission_management(context, &permission)?;
@@ -511,7 +511,7 @@ fn unset_permission(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
+    let targets = targets(context, arguments)?;
     let permission = permission(arguments)?;
     let rule_context = permission_rule_context(arguments)?;
     require_permission_management(context, &permission)?;
@@ -554,7 +554,7 @@ fn set_metadata(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
+    let targets = targets(context, arguments)?;
     let key = metadata_key(arguments)?;
     let value = metadata_value(arguments)?;
     let rule_context = permission_rule_context(arguments)?;
@@ -598,7 +598,7 @@ fn unset_metadata(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
+    let targets = targets(context, arguments)?;
     let key = metadata_key(arguments)?;
     let rule_context = permission_rule_context(arguments)?;
     require_metadata_management(context, &key)?;
@@ -641,7 +641,7 @@ fn check_metadata(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = targets(arguments)?;
+    let targets = targets(context, arguments)?;
     let key = metadata_key(arguments)?;
     let rule_context = permission_rule_context(arguments)?;
     let check_context = permission_context(arguments)?;

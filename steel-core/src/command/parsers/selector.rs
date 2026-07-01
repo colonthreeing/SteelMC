@@ -878,22 +878,6 @@ fn score_filter_matches(
     })
 }
 
-pub(super) fn parse_player_selector(
-    reader: &mut CommandReader<'_>,
-    context: &dyn CommandInputContext,
-    single: bool,
-) -> Result<Vec<Arc<Player>>, CommandParseError> {
-    let (selector, cursor) = parse_player_selector_argument(reader, context, single)?;
-    let players = selector.find_players(context, cursor)?;
-    if single && players.len() != 1 {
-        return Err(CommandParseError::new(
-            CommandParseErrorKind::InvalidPlayer(selector.raw),
-            cursor,
-        ));
-    }
-    Ok(players)
-}
-
 pub(super) fn parse_player_selector_argument(
     reader: &mut CommandReader<'_>,
     context: &dyn CommandInputContext,

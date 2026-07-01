@@ -13,7 +13,7 @@ use crate::command::graph::{
     CommandArgumentClientParser, CommandArgumentParser, CommandNodeBuilder, CommandParseError,
     CommandResult, ParsedArgument, ParsedArguments, PermissionTarget, argument, literal,
 };
-use crate::command::parsers::PermissionTargetParser;
+use crate::command::parsers::{PermissionTargetParser, resolve_required_permission_targets};
 use crate::command::reader::CommandReader;
 use crate::command::requirement::CommandInputContext;
 use crate::command::sender::CommandSender;
@@ -35,12 +35,7 @@ fn op_targets(
     context: &mut CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
-    let targets = arguments
-        .get::<Vec<PermissionTarget>>("targets")
-        .map_err(super::invalid_parsed_argument)?;
-    if targets.is_empty() {
-        return Err(CommandError::failure("No player was found"));
-    }
+    let targets = resolve_required_permission_targets(arguments, "targets", context)?;
 
     let mut changed_count = 0;
     let mut offline_targets = Vec::new();

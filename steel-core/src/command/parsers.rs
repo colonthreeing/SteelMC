@@ -34,12 +34,13 @@ pub use scoreboard::{DoubleRangeParser, IntRangeParser, ObjectiveParser, ScoreHo
 pub(crate) use scoreboard::{ScoreHolderWildcardExpansion, resolve_score_holders};
 pub use slot::ItemSlotsParser;
 pub use target::{
-    EntityParser, EntityTargetArgumentValue, PermissionTargetParser, PlayerParser,
-    PlayerTargetArgumentValue,
+    EntityParser, EntityTargetArgumentValue, PermissionTargetArgumentValue, PermissionTargetParser,
+    PlayerParser, PlayerTargetArgumentValue,
 };
 pub(crate) use target::{
-    resolve_optional_entity_targets, resolve_optional_player_targets,
-    resolve_required_entity_targets, resolve_required_player_targets,
+    resolve_optional_entity_targets, resolve_optional_permission_targets,
+    resolve_optional_player_targets, resolve_required_entity_targets,
+    resolve_required_permission_targets, resolve_required_player_targets,
 };
 pub use text::{ComponentParser, TimeParser};
 pub use world::{DomainParser, WorldParser};
@@ -642,6 +643,32 @@ mod tests {
             error.kind(),
             &CommandParseErrorKind::EntitySelectorsNotAllowed
         );
+    }
+
+    #[test]
+    fn permission_target_parser_defers_direct_resolution_without_server() {
+        let mut reader = CommandReader::new("Steve");
+        let value = PermissionTargetParser
+            .parse(&mut reader, &TestContext)
+            .expect("direct target parses without live server");
+
+        assert!(matches!(
+            value,
+            ParsedArgument::PermissionTargets(ref target) if target.raw() == "Steve"
+        ));
+    }
+
+    #[test]
+    fn permission_target_parser_defers_selector_resolution_without_server() {
+        let mut reader = CommandReader::new("@a");
+        let value = PermissionTargetParser
+            .parse(&mut reader, &SelectorOnlyPermissionContext)
+            .expect("selector target parses without live server");
+
+        assert!(matches!(
+            value,
+            ParsedArgument::PermissionTargets(ref target) if target.raw() == "@a"
+        ));
     }
 
     #[test]

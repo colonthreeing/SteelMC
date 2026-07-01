@@ -6,9 +6,11 @@ use steel_protocol::packets::game::{ArgumentType, SuggestionEntry, SuggestionTyp
 
 use crate::command::graph::{
     CommandArgumentClientParser, CommandArgumentParser, CommandParseError, CommandParseErrorKind,
-    ParsedArgument, ParsedArguments, PermissionTarget,
+    ParsedArgument, ParsedArguments,
 };
-use crate::command::parsers::{PermissionGroupParser, PermissionRuleExpressionParser};
+use crate::command::parsers::{
+    PermissionGroupParser, PermissionRuleExpressionParser, resolve_optional_permission_targets,
+};
 use crate::command::reader::{CommandReader, StringMode};
 use crate::command::requirement::CommandInputContext;
 use crate::permission::{
@@ -58,10 +60,14 @@ impl CommandArgumentParser for PermissionOverrideParser {
         arguments: &ParsedArguments,
         context: &dyn CommandInputContext,
     ) -> Vec<SuggestionEntry> {
-        let Ok(targets) = arguments.get::<Vec<PermissionTarget>>(self.targets_argument) else {
+        let Some(server) = context.server() else {
             return Vec::new();
         };
-        let Some(server) = context.server() else {
+        let Ok(targets) = resolve_optional_permission_targets(
+            arguments,
+            self.targets_argument,
+            context,
+        ) else {
             return Vec::new();
         };
 
@@ -116,10 +122,14 @@ impl CommandArgumentParser for PermissionAssignedGroupParser {
         arguments: &ParsedArguments,
         context: &dyn CommandInputContext,
     ) -> Vec<SuggestionEntry> {
-        let Ok(targets) = arguments.get::<Vec<PermissionTarget>>(self.targets_argument) else {
+        let Some(server) = context.server() else {
             return Vec::new();
         };
-        let Some(server) = context.server() else {
+        let Ok(targets) = resolve_optional_permission_targets(
+            arguments,
+            self.targets_argument,
+            context,
+        ) else {
             return Vec::new();
         };
 
@@ -492,10 +502,14 @@ impl CommandArgumentParser for PermissionMetadataOverrideParser {
         arguments: &ParsedArguments,
         context: &dyn CommandInputContext,
     ) -> Vec<SuggestionEntry> {
-        let Ok(targets) = arguments.get::<Vec<PermissionTarget>>(self.targets_argument) else {
+        let Some(server) = context.server() else {
             return Vec::new();
         };
-        let Some(server) = context.server() else {
+        let Ok(targets) = resolve_optional_permission_targets(
+            arguments,
+            self.targets_argument,
+            context,
+        ) else {
             return Vec::new();
         };
 

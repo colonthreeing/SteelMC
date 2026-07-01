@@ -19,14 +19,15 @@ use crate::{
             CommandParseErrorKind, ParsedArgument, ParsedArguments, PermissionTarget,
         },
         parsers::selector::{
-            EntitySelector, parse_entity_selector_argument, parse_player_selector,
-            parse_player_selector_argument, selector_argument_suggestions,
+            EntitySelector, parse_entity_selector_argument, parse_player_selector_argument,
+            selector_argument_suggestions,
         },
         reader::CommandReader,
         requirement::CommandInputContext,
     },
     entity::{Entity, SharedEntity},
     player::Player,
+    server::Server,
 };
 
 /// Parsed player target argument that resolves against the runtime command context.
@@ -259,6 +260,95 @@ impl CommandArgumentParser for PlayerParser {
     }
 }
 
+/// Parsed permission-management target argument that resolves against the runtime command context.
+#[derive(Clone, Debug)]
+pub struct PermissionTargetArgumentValue {
+    source: PermissionTargetSource,
+}
+
+#[derive(Clone, Debug)]
+enum PermissionTargetSource {
+    Direct {
+        raw: String,
+        input: String,
+        cursor: usize,
+    },
+    Selector(PlayerTargetArgumentValue),
+}
+
+impl PermissionTargetArgumentValue {
+    fn direct(raw: String, input: String, cursor: usize) -> Self {
+        Self {
+            source: PermissionTargetSource::Direct { raw, input, cursor },
+        }
+    }
+
+    fn selector(selector: PlayerTargetArgumentValue) -> Self {
+        Self {
+            source: PermissionTargetSource::Selector(selector),
+        }
+    }
+
+    /// Returns the original target text.
+    #[must_use]
+    pub fn raw(&self) -> &str {
+        match &self.source {
+            PermissionTargetSource::Direct { raw, .. } => raw,
+            PermissionTargetSource::Selector(selector) => selector.raw(),
+        }
+    }
+
+    /// Resolves this target against a runtime command context.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured command error when live server context is missing or selector
+    /// resolution fails.
+    pub fn resolve_optional(
+        &self,
+        context: &dyn CommandInputContext,
+    ) -> Result<Vec<PermissionTarget>, CommandError> {
+        match &self.source {
+            PermissionTargetSource::Direct { raw, input, cursor } => {
+                let Some(server) = context.server() else {
+                    return Err(CommandDispatcher::parse_error_to_command_error(
+                        input,
+                        CommandParseError::new(
+                            CommandParseErrorKind::MissingCommandContext("server"),
+                            *cursor,
+                        ),
+                    ));
+                };
+                Ok(resolve_direct_permission_target(raw, server))
+            }
+            PermissionTargetSource::Selector(selector) => Ok(selector
+                .resolve_optional(context)?
+                .iter()
+                .map(|player| PermissionTarget::online(player.as_ref()))
+                .collect()),
+        }
+    }
+
+    /// Resolves this target and errors when no player matched.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured command error when resolution fails or no target matched.
+    pub fn resolve_required(
+        &self,
+        context: &dyn CommandInputContext,
+    ) -> Result<Vec<PermissionTarget>, CommandError> {
+        match &self.source {
+            PermissionTargetSource::Direct { .. } => self.resolve_optional(context),
+            PermissionTargetSource::Selector(selector) => Ok(selector
+                .resolve_required(context)?
+                .iter()
+                .map(|player| PermissionTarget::online(player.as_ref()))
+                .collect()),
+        }
+    }
+}
+
 /// Player target parser for permission-management commands.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PermissionTargetParser;
@@ -269,48 +359,21 @@ impl CommandArgumentParser for PermissionTargetParser {
         reader: &mut CommandReader<'_>,
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
+        let input = reader.input().to_owned();
         let cursor = reader.absolute_cursor();
         if reader.peek() == Some('@') {
-            let players = parse_player_selector(reader, context, false)?;
-            let targets = players
-                .iter()
-                .map(|player| PermissionTarget::online(player))
-                .collect();
-            return Ok(ParsedArgument::PermissionTargets(targets));
+            let (selector, cursor) = parse_player_selector_argument(reader, context, false)?;
+            return Ok(ParsedArgument::PermissionTargets(
+                PermissionTargetArgumentValue::selector(PlayerTargetArgumentValue::new(
+                    selector, cursor, input, false,
+                )),
+            ));
         }
 
         let value = reader.read_token()?;
-        let Some(server) = context.server() else {
-            return Err(CommandParseError::new(
-                CommandParseErrorKind::MissingCommandContext("server"),
-                cursor,
-            ));
-        };
-
-        let players = server.get_players();
-        let uuid = Uuid::parse_str(&value).ok();
-        let targets = if let Some(player) = players.into_iter().find(|player| {
-            player.gameprofile.name.eq_ignore_ascii_case(&value)
-                || uuid.is_some_and(|uuid| player.uuid() == uuid)
-        }) {
-            vec![PermissionTarget::online(&player)]
-        } else {
-            let known_players = server.known_players();
-            let known = uuid
-                .and_then(|uuid| known_players.by_uuid(uuid))
-                .or_else(|| known_players.by_name(&value));
-            known.map_or_else(
-                || vec![PermissionTarget::unresolved(value)],
-                |known| {
-                    vec![PermissionTarget::offline(
-                        known.uuid(),
-                        known.last_known_name().to_owned(),
-                    )]
-                },
-            )
-        };
-
-        Ok(ParsedArgument::PermissionTargets(targets))
+        Ok(ParsedArgument::PermissionTargets(
+            PermissionTargetArgumentValue::direct(value, input, cursor),
+        ))
     }
 
     fn client_parser(&self) -> CommandArgumentClientParser {
@@ -458,6 +521,28 @@ pub(crate) fn resolve_optional_player_targets(
         .map_err(invalid_parsed_argument)
 }
 
+pub(crate) fn resolve_required_permission_targets(
+    arguments: &ParsedArguments,
+    name: &str,
+    context: &dyn CommandInputContext,
+) -> Result<Vec<PermissionTarget>, CommandError> {
+    let targets = arguments
+        .get::<PermissionTargetArgumentValue>(name)
+        .map_err(invalid_parsed_argument)?;
+    targets.resolve_required(context)
+}
+
+pub(crate) fn resolve_optional_permission_targets(
+    arguments: &ParsedArguments,
+    name: &str,
+    context: &dyn CommandInputContext,
+) -> Result<Vec<PermissionTarget>, CommandError> {
+    let targets = arguments
+        .get::<PermissionTargetArgumentValue>(name)
+        .map_err(invalid_parsed_argument)?;
+    targets.resolve_optional(context)
+}
+
 pub(crate) fn resolve_required_entity_targets(
     arguments: &ParsedArguments,
     name: &str,
@@ -491,6 +576,30 @@ pub(crate) fn resolve_optional_entity_targets(
 
 fn invalid_parsed_argument(error: crate::command::graph::ParsedArgumentError) -> CommandError {
     CommandError::InvalidConsumption(Some(format!("{error:?}")))
+}
+
+fn resolve_direct_permission_target(raw: &str, server: &Server) -> Vec<PermissionTarget> {
+    let uuid = Uuid::parse_str(raw).ok();
+    if let Some(player) = server.get_players().into_iter().find(|player| {
+        player.gameprofile.name.eq_ignore_ascii_case(raw)
+            || uuid.is_some_and(|uuid| player.uuid() == uuid)
+    }) {
+        return vec![PermissionTarget::online(&player)];
+    }
+
+    let known_players = server.known_players();
+    let known = uuid
+        .and_then(|uuid| known_players.by_uuid(uuid))
+        .or_else(|| known_players.by_name(raw));
+    known.map_or_else(
+        || vec![PermissionTarget::unresolved(raw.to_owned())],
+        |known| {
+            vec![PermissionTarget::offline(
+                known.uuid(),
+                known.last_known_name().to_owned(),
+            )]
+        },
+    )
 }
 
 fn no_players_found() -> CommandError {
