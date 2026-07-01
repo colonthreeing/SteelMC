@@ -505,6 +505,7 @@ impl CommandDispatcher {
                 function_context.clone(),
                 function_frame.clone(),
                 CommandResultCallback::empty(),
+                FunctionInstantiationFailureContext::ExecuteCondition,
                 true,
                 true,
             )));
@@ -633,6 +634,7 @@ impl CommandDispatcher {
                                 function_context.clone(),
                                 active_frame.clone(),
                                 return_callback,
+                                FunctionInstantiationFailureContext::FunctionCommand,
                                 true,
                                 true,
                             )));
@@ -656,6 +658,7 @@ impl CommandDispatcher {
                                 function_context.clone(),
                                 active_frame.clone(),
                                 return_callback,
+                                FunctionInstantiationFailureContext::FunctionCommand,
                                 false,
                                 false,
                             )));
@@ -686,6 +689,7 @@ impl CommandDispatcher {
                                 function_context.clone(),
                                 active_frame.clone(),
                                 return_callback,
+                                FunctionInstantiationFailureContext::FunctionCommand,
                                 false,
                                 false,
                             )));
@@ -1198,6 +1202,7 @@ struct QueuedFunctionCall {
     context: CommandContext,
     frame: QueuedFrame,
     return_callback: CommandResultCallback,
+    instantiation_failure_context: FunctionInstantiationFailureContext,
     return_parent_frame: bool,
     propagates_return: bool,
 }
@@ -1209,6 +1214,7 @@ impl QueuedFunctionCall {
         context: CommandContext,
         frame: QueuedFrame,
         return_callback: CommandResultCallback,
+        instantiation_failure_context: FunctionInstantiationFailureContext,
         return_parent_frame: bool,
         propagates_return: bool,
     ) -> Self {
@@ -1218,6 +1224,7 @@ impl QueuedFunctionCall {
             context,
             frame,
             return_callback,
+            instantiation_failure_context,
             return_parent_frame,
             propagates_return,
         }
@@ -1231,7 +1238,13 @@ impl QueuedFunctionCall {
         let instantiated = self
             .function
             .instantiate(self.arguments.as_ref().as_ref(), dispatcher, &self.context)
-            .map_err(|error| CommandError::failure(error.to_string()))?;
+            .map_err(|error| {
+                command_function_instantiation_error(
+                    self.instantiation_failure_context,
+                    self.function.id(),
+                    TextComponent::from(error.to_string()),
+                )
+            })?;
         let child_frame = if self.return_parent_frame {
             QueuedFrame::with_return_callback(
                 self.frame.depth.saturating_add(1),
@@ -1258,6 +1271,21 @@ impl QueuedFunctionCall {
             )));
         }
         Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FunctionInstantiationFailureContext {
+    FunctionCommand,
+    ExecuteCondition,
+}
+
+impl FunctionInstantiationFailureContext {
+    const fn translation_key(self) -> &'static str {
+        match self {
+            Self::FunctionCommand => "commands.function.instantiationFailure",
+            Self::ExecuteCondition => "commands.execute.function.instantiationFailure",
+        }
     }
 }
 
@@ -1391,6 +1419,21 @@ fn function_result_message(function_id: &Identifier, result: i32) -> TextCompone
             TextComponent::from(result.to_string()),
         ])),
     })
+}
+
+fn command_function_instantiation_error(
+    context: FunctionInstantiationFailureContext,
+    function_id: &Identifier,
+    reason: TextComponent,
+) -> CommandError {
+    CommandError::failure(TextComponent::translated(TranslatedMessage {
+        key: Cow::Borrowed(context.translation_key()),
+        fallback: None,
+        args: Some(Box::new([
+            TextComponent::from(function_id.to_string()),
+            reason,
+        ])),
+    }))
 }
 
 impl ActiveCommand<'_> {
@@ -1762,6 +1805,13 @@ mod tests {
         &message.key
     }
 
+    fn command_failed_component(error: CommandError) -> Box<TextComponent> {
+        let CommandError::CommandFailed(component) = error else {
+            panic!("error should be a command failure");
+        };
+        component
+    }
+
     #[test]
     fn command_execution_budget_rejects_after_limit() {
         let mut budget = CommandExecutionBudget::new(1);
@@ -1823,6 +1873,48 @@ mod tests {
         assert_eq!(message.key.as_ref(), "commands.function.result");
         assert_eq!(text_content(&args[0]), "test:gate");
         assert_eq!(text_content(&args[1]), "37");
+    }
+
+    #[test]
+    fn function_instantiation_error_uses_function_translation_key() {
+        let error = super::command_function_instantiation_error(
+            super::FunctionInstantiationFailureContext::FunctionCommand,
+            &Identifier::new_static("test", "macro"),
+            TextComponent::from("missing arguments"),
+        );
+        let component = command_failed_component(error);
+        let Content::Translate(message) = &component.content else {
+            panic!("function instantiation error should be translated");
+        };
+        let args = message.args.as_ref().expect("function error has args");
+
+        assert_eq!(
+            message.key.as_ref(),
+            "commands.function.instantiationFailure"
+        );
+        assert_eq!(text_content(&args[0]), "test:macro");
+        assert_eq!(text_content(&args[1]), "missing arguments");
+    }
+
+    #[test]
+    fn function_condition_instantiation_error_uses_execute_translation_key() {
+        let error = super::command_function_instantiation_error(
+            super::FunctionInstantiationFailureContext::ExecuteCondition,
+            &Identifier::new_static("test", "macro"),
+            TextComponent::from("missing arguments"),
+        );
+        let component = command_failed_component(error);
+        let Content::Translate(message) = &component.content else {
+            panic!("function condition instantiation error should be translated");
+        };
+        let args = message.args.as_ref().expect("function error has args");
+
+        assert_eq!(
+            message.key.as_ref(),
+            "commands.execute.function.instantiationFailure"
+        );
+        assert_eq!(text_content(&args[0]), "test:macro");
+        assert_eq!(text_content(&args[1]), "missing arguments");
     }
 
     #[test]
