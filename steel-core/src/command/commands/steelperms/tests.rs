@@ -816,6 +816,71 @@
     }
 
     #[test]
+    fn group_config_chained_context_permission_edits_use_structured_rules() {
+        let mut config = PermissionGroupsConfig::default();
+        let permission = key("steel.region.build");
+        let lobby = PermissionRuleContext::domain("lobby");
+        let spawn_region = custom_context("region", "spawn");
+        let context = PermissionRuleContext::all([lobby.clone(), spawn_region.clone()])
+            .expect("context chain is valid");
+
+        assert_eq!(
+            set_group_config_permission(
+                &mut config,
+                "default",
+                &permission,
+                &context,
+                PermissionState::Allow,
+            ),
+            Ok(true)
+        );
+
+        let default = config.groups.get("default").expect("default group exists");
+        assert_eq!(default.rules.len(), 1);
+        assert_eq!(default.rules[0].key, "steel.region.build");
+        assert_eq!(default.rules[0].state, PermissionRuleStateConfig::Allow);
+        assert_eq!(
+            default.rules[0].context,
+            Some(PermissionRuleContextConfig {
+                domain: Some("lobby".to_owned()),
+                world: None,
+                custom: vec![PermissionRuleCustomContextConfig {
+                    key: "region".to_owned(),
+                    value: "spawn".to_owned(),
+                }],
+            })
+        );
+        assert_eq!(
+            group_config_permission_states(default, &permission, &context),
+            vec![PermissionState::Allow]
+        );
+
+        assert_eq!(
+            set_group_config_permission(
+                &mut config,
+                "default",
+                &permission,
+                &context,
+                PermissionState::Deny,
+            ),
+            Ok(true)
+        );
+        let default = config.groups.get("default").expect("default group exists");
+        assert_eq!(default.rules.len(), 1);
+        assert_eq!(
+            group_config_permission_states(default, &permission, &context),
+            vec![PermissionState::Deny]
+        );
+
+        assert_eq!(
+            unset_group_config_permission(&mut config, "default", &permission, &context),
+            Ok(true)
+        );
+        let default = config.groups.get("default").expect("default group exists");
+        assert!(default.rules.is_empty());
+    }
+
+    #[test]
     fn group_config_metadata_edits_use_value_rules() {
         let mut config = PermissionGroupsConfig::default();
         let homes = metadata_key("plugin:homes");
@@ -900,6 +965,54 @@
             group_config_metadata_value(default, &homes, &spawn_region),
             Some(&PermissionValue::Integer(10))
         );
+    }
+
+    #[test]
+    fn group_config_chained_context_metadata_edits_use_value_rules() {
+        let mut config = PermissionGroupsConfig::default();
+        let homes = metadata_key("plugin:homes");
+        let lobby = PermissionRuleContext::domain("lobby");
+        let spawn_region = custom_context("region", "spawn");
+        let context = PermissionRuleContext::all([lobby.clone(), spawn_region.clone()])
+            .expect("context chain is valid");
+
+        assert_eq!(
+            set_group_config_metadata(
+                &mut config,
+                "default",
+                &homes,
+                &PermissionValue::Integer(10),
+                &context,
+            ),
+            Ok(true)
+        );
+
+        let default = config.groups.get("default").expect("default group exists");
+        assert_eq!(default.values.len(), 1);
+        assert_eq!(default.values[0].key, "plugin:homes");
+        assert_eq!(default.values[0].value, PermissionValue::Integer(10));
+        assert_eq!(
+            default.values[0].context,
+            Some(PermissionRuleContextConfig {
+                domain: Some("lobby".to_owned()),
+                world: None,
+                custom: vec![PermissionRuleCustomContextConfig {
+                    key: "region".to_owned(),
+                    value: "spawn".to_owned(),
+                }],
+            })
+        );
+        assert_eq!(
+            group_config_metadata_value(default, &homes, &context),
+            Some(&PermissionValue::Integer(10))
+        );
+
+        assert_eq!(
+            unset_group_config_metadata(&mut config, "default", &homes, &context),
+            Ok(true)
+        );
+        let default = config.groups.get("default").expect("default group exists");
+        assert!(default.values.is_empty());
     }
 
     #[test]
