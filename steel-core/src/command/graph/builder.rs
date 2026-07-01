@@ -367,6 +367,18 @@ impl CommandNodeBuilder {
         Ok(resolved.with_root_access_requirement(root_permission, alternate_root_permissions))
     }
 
+    pub(crate) fn register_explicit_permission_catalog_entries(
+        &self,
+        catalog: &mut PermissionCatalog,
+    ) {
+        for permission in &self.catalog_permissions {
+            catalog.insert(permission.clone(), PermissionCatalogSource::Command);
+        }
+        for child in &self.children {
+            child.register_explicit_permission_catalog_entries(catalog);
+        }
+    }
+
     fn resolve_subcommand_permissions_inner(
         self,
         root_permission: &PermissionKey,

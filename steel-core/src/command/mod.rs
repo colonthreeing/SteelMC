@@ -422,6 +422,9 @@ impl CommandDispatcher {
                 .clone()
                 .resolve_subcommand_permissions(&permission_base, &mut command_catalog)?
         } else {
+            registration
+                .root
+                .register_explicit_permission_catalog_entries(&mut command_catalog);
             registration.root.clone()
         };
         let root_for_aliases = (!registration.aliases.is_empty()).then(|| root.clone());
@@ -2428,6 +2431,57 @@ mod tests {
         let player = player_context();
         assert!(dispatcher.graph.has_root("Visible", &player));
         assert!(dispatcher.graph.parse("Visible", &player).is_ok());
+    }
+
+    #[test]
+    fn public_commands_register_explicit_permission_catalog_entries() {
+        let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
+        let admin_permission =
+            PermissionKey::parse("steel.command.public.admin").expect("permission parses");
+        let mut dispatcher = CommandDispatcher::new_empty();
+        let registration = CommandRegistration::new(
+            literal("public")
+                .then(literal("open").executes(|_, _| Ok(CommandResult::success())))
+                .then(
+                    literal("admin")
+                        .requires_permission(admin_permission.clone())
+                        .executes(|_, _| Ok(CommandResult::success())),
+                ),
+            minecraft,
+        )
+        .public();
+
+        dispatcher
+            .register_command(registration)
+            .expect("public command registers");
+
+        assert_eq!(
+            dispatcher
+                .permission_catalog
+                .suggestions("steel.command.public"),
+            vec!["steel.command.public.admin".to_owned()]
+        );
+        assert!(
+            dispatcher
+                .graph
+                .parse("public open", &player_context())
+                .is_ok()
+        );
+        assert!(
+            dispatcher
+                .graph
+                .parse("public admin", &player_context())
+                .is_err()
+        );
+        assert!(
+            dispatcher
+                .graph
+                .parse(
+                    "public admin",
+                    &player_context_with("steel.command.public.admin"),
+                )
+                .is_ok()
+        );
     }
 
     #[test]
