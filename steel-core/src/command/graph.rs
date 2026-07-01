@@ -926,7 +926,7 @@ impl ParseResults {
     }
 
     pub(crate) fn invokes_result_callback_on_error(&self) -> bool {
-        true
+        !matches!(self.action, ParsedCommandAction::Redirect(_))
     }
 
     fn check_dynamic_permissions(

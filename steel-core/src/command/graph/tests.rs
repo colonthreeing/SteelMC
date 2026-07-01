@@ -6,6 +6,7 @@ use std::sync::{
 use crate::command::commands;
 use crate::command::parsers::{ComponentParser, GameModeParser, PermissionKeyParser};
 use crate::command::{
+    error::CommandError,
     graph::{
         AnchorParser, BoolParser, CommandArgumentClientParser, CommandArgumentParser, CommandGraph,
         CommandGraphAmbiguity, CommandGraphError, CommandNodeBuilder, CommandNodeNameError,
@@ -864,7 +865,7 @@ fn redirect_node_captures_remaining_command_tail() {
 }
 
 #[test]
-fn redirects_invoke_result_callbacks_on_errors() {
+fn redirect_modifier_errors_do_not_invoke_result_callbacks() {
     let graph = graph_with_say_and_root(execute_root_with(
         literal("if").redirects(CommandRedirectTarget::Current, |_, _| {
             Ok(CommandResult::success())
@@ -874,6 +875,18 @@ fn redirects_invoke_result_callbacks_on_errors() {
     let result = graph
         .parse("execute if run say hello", &player_context())
         .expect("redirect parses");
+
+    assert!(!result.invokes_result_callback_on_error());
+}
+
+#[test]
+fn executable_errors_invoke_result_callbacks() {
+    let graph =
+        graph_with_root(literal("fail").executes(|_, _| Err(CommandError::failure("failed"))));
+
+    let result = graph
+        .parse("fail", &player_context())
+        .expect("command parses");
 
     assert!(result.invokes_result_callback_on_error());
 }
