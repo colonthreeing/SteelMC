@@ -94,8 +94,12 @@ pub enum CommandParseErrorKind {
     InvalidBool(String),
     /// An entity anchor argument was invalid.
     InvalidAnchor(String),
+    /// An integer argument was expected.
+    ExpectedInteger,
     /// An integer argument was invalid.
     InvalidInteger(String),
+    /// A long integer argument was expected.
+    ExpectedLong,
     /// A long integer argument was invalid.
     InvalidLong(String),
     /// An integer argument was below its minimum.
@@ -126,6 +130,8 @@ pub enum CommandParseErrorKind {
         /// Maximum accepted value.
         max: i64,
     },
+    /// A float argument was expected.
+    ExpectedFloat,
     /// A float argument was invalid.
     InvalidFloat(String),
     /// A float argument was below its minimum.
@@ -142,6 +148,8 @@ pub enum CommandParseErrorKind {
         /// Maximum accepted value.
         max: f32,
     },
+    /// A double argument was expected.
+    ExpectedDouble,
     /// A double argument was invalid.
     InvalidDouble(String),
     /// A double argument was below its minimum.
@@ -261,15 +269,19 @@ impl CommandParseErrorKind {
             Self::TrailingData => 7,
             Self::InvalidBool(_)
             | Self::InvalidAnchor(_)
+            | Self::ExpectedInteger
             | Self::InvalidInteger(_)
+            | Self::ExpectedLong
             | Self::InvalidLong(_)
             | Self::IntegerTooLow { .. }
             | Self::IntegerTooHigh { .. }
             | Self::LongTooLow { .. }
             | Self::LongTooHigh { .. }
+            | Self::ExpectedFloat
             | Self::InvalidFloat(_)
             | Self::FloatTooLow { .. }
             | Self::FloatTooHigh { .. }
+            | Self::ExpectedDouble
             | Self::InvalidDouble(_)
             | Self::DoubleTooLow { .. }
             | Self::DoubleTooHigh { .. }

@@ -782,6 +782,25 @@ fn parses_long_argument() {
 }
 
 #[test]
+fn integer_parser_uses_brigadier_number_scanner() {
+    let graph = graph_with_root(literal("count").then(
+        argument("value", IntegerParser::new()).executes(|_, _| Ok(CommandResult::success())),
+    ));
+
+    let exponent_error = graph
+        .parse("count 1e3", &player_context())
+        .expect_err("exponent is trailing data after Brigadier integer scanning");
+    assert_eq!(exponent_error.kind(), &CommandParseErrorKind::TrailingData);
+    assert_eq!(exponent_error.cursor(), "count 1".len());
+
+    let plus_error = graph
+        .parse("count +1", &player_context())
+        .expect_err("leading plus is not a Brigadier number character");
+    assert_eq!(plus_error.kind(), &CommandParseErrorKind::ExpectedInteger);
+    assert_eq!(plus_error.cursor(), "count ".len());
+}
+
+#[test]
 fn leading_whitespace_is_not_skipped_at_root() {
     let graph = graph_with_root(literal("list").executes(|_, _| Ok(CommandResult::success())));
 
@@ -819,6 +838,21 @@ fn graph_separator_consumes_exactly_one_space() {
 
     assert_eq!(error.kind(), &CommandParseErrorKind::UnknownCommand);
     assert_eq!(error.cursor(), "root ".len());
+}
+
+#[test]
+fn float_parser_uses_brigadier_number_scanner() {
+    let graph =
+        graph_with_root(literal("speed").then(
+            argument("value", FloatParser::new()).executes(|_, _| Ok(CommandResult::success())),
+        ));
+
+    let error = graph
+        .parse("speed 1e3", &player_context())
+        .expect_err("exponent is trailing data after Brigadier float scanning");
+
+    assert_eq!(error.kind(), &CommandParseErrorKind::TrailingData);
+    assert_eq!(error.cursor(), "speed 1".len());
 }
 
 #[test]
@@ -1053,12 +1087,9 @@ fn branch_errors_prefer_farthest_cursor() {
 
     let error = graph
         .parse("root bar nope", &player_context())
-        .expect_err("invalid integer should fail");
+        .expect_err("missing integer should fail");
 
-    assert_eq!(
-        error.kind(),
-        &CommandParseErrorKind::InvalidInteger("nope".to_owned())
-    );
+    assert_eq!(error.kind(), &CommandParseErrorKind::ExpectedInteger);
     assert_eq!(error.cursor(), 9);
 }
 

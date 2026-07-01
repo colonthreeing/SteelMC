@@ -1008,9 +1008,11 @@ impl CommandDispatcher {
             CommandParseErrorKind::InvalidAnchor(value) => translations::ARGUMENT_ANCHOR_INVALID
                 .message([TextComponent::from(value.clone())])
                 .into(),
+            CommandParseErrorKind::ExpectedInteger => TextComponent::plain("Expected integer"),
             CommandParseErrorKind::InvalidInteger(value) => translations::PARSING_INT_INVALID
                 .message([TextComponent::from(value.clone())])
                 .into(),
+            CommandParseErrorKind::ExpectedLong => TextComponent::plain("Expected long"),
             CommandParseErrorKind::InvalidLong(value) => {
                 TextComponent::plain(format!("Invalid long integer '{value}'"))
             }
@@ -1036,6 +1038,7 @@ impl CommandDispatcher {
             CommandParseErrorKind::LongTooHigh { value, max } => TextComponent::plain(format!(
                 "Long integer {value} must not be greater than {max}"
             )),
+            CommandParseErrorKind::ExpectedFloat => TextComponent::plain("Expected float"),
             CommandParseErrorKind::InvalidFloat(value) => translations::PARSING_FLOAT_INVALID
                 .message([TextComponent::from(value.clone())])
                 .into(),
@@ -1051,6 +1054,7 @@ impl CommandDispatcher {
                     TextComponent::from(value.to_string()),
                 ])
                 .into(),
+            CommandParseErrorKind::ExpectedDouble => TextComponent::plain("Expected double"),
             CommandParseErrorKind::InvalidDouble(value) => {
                 TextComponent::plain(format!("Invalid double '{value}'"))
             }
@@ -3148,6 +3152,34 @@ mod tests {
                 &CommandParseErrorKind::EntitiesNotAllowedForPlayerArgument
             )),
             "argument.player.entities"
+        );
+    }
+
+    #[test]
+    fn parse_error_mapping_uses_brigadier_expected_number_messages() {
+        assert_eq!(
+            text_content(&CommandDispatcher::parse_error_message(
+                &CommandParseErrorKind::ExpectedInteger
+            )),
+            "Expected integer"
+        );
+        assert_eq!(
+            text_content(&CommandDispatcher::parse_error_message(
+                &CommandParseErrorKind::ExpectedLong
+            )),
+            "Expected long"
+        );
+        assert_eq!(
+            text_content(&CommandDispatcher::parse_error_message(
+                &CommandParseErrorKind::ExpectedFloat
+            )),
+            "Expected float"
+        );
+        assert_eq!(
+            text_content(&CommandDispatcher::parse_error_message(
+                &CommandParseErrorKind::ExpectedDouble
+            )),
+            "Expected double"
         );
     }
 

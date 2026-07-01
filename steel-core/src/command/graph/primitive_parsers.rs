@@ -245,10 +245,7 @@ impl CommandArgumentParser for IntegerParser {
         _context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let raw = reader.read_string(StringMode::SingleWord)?;
-        let value = raw.parse::<i32>().map_err(|_| {
-            CommandParseError::new(CommandParseErrorKind::InvalidInteger(raw.clone()), cursor)
-        })?;
+        let value = reader.read_i32()?;
 
         if let Some(min) = self.min
             && value < min
@@ -321,10 +318,7 @@ impl CommandArgumentParser for LongParser {
         _context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let raw = reader.read_string(StringMode::SingleWord)?;
-        let value = raw.parse::<i64>().map_err(|_| {
-            CommandParseError::new(CommandParseErrorKind::InvalidLong(raw.clone()), cursor)
-        })?;
+        let value = reader.read_i64()?;
 
         if let Some(min) = self.min
             && value < min
@@ -397,10 +391,7 @@ impl CommandArgumentParser for FloatParser {
         _context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let raw = reader.read_string(StringMode::SingleWord)?;
-        let value = raw.parse::<f32>().map_err(|_| {
-            CommandParseError::new(CommandParseErrorKind::InvalidFloat(raw), cursor)
-        })?;
+        let value = reader.read_f32()?;
 
         if let Some(min) = self.min
             && value < min
@@ -473,10 +464,7 @@ impl CommandArgumentParser for DoubleParser {
         _context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let raw = reader.read_string(StringMode::SingleWord)?;
-        let value = raw.parse::<f64>().map_err(|_| {
-            CommandParseError::new(CommandParseErrorKind::InvalidDouble(raw), cursor)
-        })?;
+        let value = reader.read_f64()?;
 
         if let Some(min) = self.min
             && value < min

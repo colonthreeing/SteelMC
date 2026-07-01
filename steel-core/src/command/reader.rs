@@ -176,6 +176,78 @@ impl<'a> CommandReader<'a> {
         }
     }
 
+    /// Reads a 32-bit signed integer with Brigadier's numeric scanner.
+    ///
+    /// # Errors
+    ///
+    /// Returns a parse error when no integer is present or the scanned number is invalid.
+    pub fn read_i32(&mut self) -> Result<i32, CommandParseError> {
+        let cursor = self.absolute_cursor();
+        let raw = self.read_number_string(CommandParseErrorKind::ExpectedInteger)?;
+        raw.parse::<i32>().map_err(|_| {
+            self.cursor = cursor - self.cursor_offset;
+            CommandParseError::new(CommandParseErrorKind::InvalidInteger(raw), cursor)
+        })
+    }
+
+    /// Reads a 64-bit signed integer with Brigadier's numeric scanner.
+    ///
+    /// # Errors
+    ///
+    /// Returns a parse error when no long integer is present or the scanned number is invalid.
+    pub fn read_i64(&mut self) -> Result<i64, CommandParseError> {
+        let cursor = self.absolute_cursor();
+        let raw = self.read_number_string(CommandParseErrorKind::ExpectedLong)?;
+        raw.parse::<i64>().map_err(|_| {
+            self.cursor = cursor - self.cursor_offset;
+            CommandParseError::new(CommandParseErrorKind::InvalidLong(raw), cursor)
+        })
+    }
+
+    /// Reads a 32-bit float with Brigadier's numeric scanner.
+    ///
+    /// # Errors
+    ///
+    /// Returns a parse error when no float is present or the scanned number is invalid.
+    pub fn read_f32(&mut self) -> Result<f32, CommandParseError> {
+        let cursor = self.absolute_cursor();
+        let raw = self.read_number_string(CommandParseErrorKind::ExpectedFloat)?;
+        raw.parse::<f32>().map_err(|_| {
+            self.cursor = cursor - self.cursor_offset;
+            CommandParseError::new(CommandParseErrorKind::InvalidFloat(raw), cursor)
+        })
+    }
+
+    /// Reads a 64-bit float with Brigadier's numeric scanner.
+    ///
+    /// # Errors
+    ///
+    /// Returns a parse error when no double is present or the scanned number is invalid.
+    pub fn read_f64(&mut self) -> Result<f64, CommandParseError> {
+        let cursor = self.absolute_cursor();
+        let raw = self.read_number_string(CommandParseErrorKind::ExpectedDouble)?;
+        raw.parse::<f64>().map_err(|_| {
+            self.cursor = cursor - self.cursor_offset;
+            CommandParseError::new(CommandParseErrorKind::InvalidDouble(raw), cursor)
+        })
+    }
+
+    fn read_number_string(
+        &mut self,
+        expected: CommandParseErrorKind,
+    ) -> Result<String, CommandParseError> {
+        let start = self.cursor;
+        while self.peek().is_some_and(is_allowed_number) {
+            self.read();
+        }
+
+        if self.cursor == start {
+            return Err(CommandParseError::new(expected, self.absolute_cursor()));
+        }
+
+        Ok(self.input[start..self.cursor].to_owned())
+    }
+
     /// Reads one whitespace-delimited token.
     ///
     /// Use this for custom server-side argument parsers whose token syntax is
@@ -274,6 +346,10 @@ fn is_allowed_in_unquoted_string(ch: char) -> bool {
     matches!(ch, '0'..='9' | 'A'..='Z' | 'a'..='z' | '_' | '-' | '.' | '+')
 }
 
+fn is_allowed_number(ch: char) -> bool {
+    matches!(ch, '0'..='9' | '-' | '.')
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CommandReader, StringMode};
@@ -332,6 +408,44 @@ mod tests {
             .expect_err("tab is not the graph separator");
         assert_eq!(error.kind(), &CommandParseErrorKind::ExpectedWhitespace);
         assert_eq!(error.cursor(), 0);
+    }
+
+    #[test]
+    fn numeric_scanners_use_brigadier_number_characters() {
+        let mut reader = CommandReader::new("1e3");
+        assert_eq!(reader.read_i32().expect("integer parses"), 1);
+        assert_eq!(reader.remaining(), "e3");
+
+        let mut reader = CommandReader::new("1e3");
+        assert_eq!(reader.read_f64().expect("double parses"), 1.0);
+        assert_eq!(reader.remaining(), "e3");
+    }
+
+    #[test]
+    fn numeric_scanners_reject_leading_plus_without_consuming() {
+        let mut reader = CommandReader::new("+1");
+        let error = reader
+            .read_i32()
+            .expect_err("leading plus is not a Brigadier number character");
+
+        assert_eq!(error.kind(), &CommandParseErrorKind::ExpectedInteger);
+        assert_eq!(error.cursor(), 0);
+        assert_eq!(reader.remaining(), "+1");
+    }
+
+    #[test]
+    fn numeric_scanners_reset_after_invalid_scanned_number() {
+        let mut reader = CommandReader::new("--1");
+        let error = reader
+            .read_i32()
+            .expect_err("invalid scanned integer should fail");
+
+        assert_eq!(
+            error.kind(),
+            &CommandParseErrorKind::InvalidInteger("--1".to_owned())
+        );
+        assert_eq!(error.cursor(), 0);
+        assert_eq!(reader.remaining(), "--1");
     }
 
     #[test]
