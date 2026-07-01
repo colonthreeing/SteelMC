@@ -8,7 +8,10 @@ use super::{
     DynamicPermission, ParseResults, ParsedArgument, ParsedArguments, ParsedCommandAction,
     ParsedRedirect, SuggestionResult, dynamic_permissions_allow,
 };
-use crate::command::{reader::CommandReader, requirement::CommandInputContext};
+use crate::command::{
+    reader::{ARGUMENT_SEPARATOR, CommandReader},
+    requirement::CommandInputContext,
+};
 
 pub(super) fn parse_children(
     input: &str,
@@ -112,14 +115,14 @@ fn parse_after_node(
             });
     }
 
-    if !reader.peek().is_some_and(char::is_whitespace) {
+    if !reader.is_argument_separator() {
         return Err(CommandParseError::new(
             CommandParseErrorKind::TrailingData,
             reader.absolute_cursor(),
         ));
     }
 
-    reader.expect_whitespace()?;
+    reader.expect_argument_separator()?;
     if !reader.can_read() {
         return node
             .executable(input, arguments, path, dynamic_permissions)
@@ -347,7 +350,7 @@ fn next_token<'a>(reader: &CommandReader<'a>) -> &'a str {
     let remaining = reader.remaining();
     let end = remaining
         .char_indices()
-        .find_map(|(index, ch)| ch.is_whitespace().then_some(index))
+        .find_map(|(index, ch)| (ch == ARGUMENT_SEPARATOR).then_some(index))
         .unwrap_or(remaining.len());
     &remaining[..end]
 }
@@ -403,7 +406,7 @@ fn suggestion_token(reader: &CommandReader<'_>) -> SuggestionToken {
     let remaining = reader.remaining();
     let prefix = remaining
         .chars()
-        .take_while(|ch| !ch.is_whitespace())
+        .take_while(|ch| *ch != ARGUMENT_SEPARATOR)
         .collect::<String>();
     let length = prefix.encode_utf16().count() as i32;
     let is_at_end = remaining[prefix.len()..].is_empty();
@@ -598,11 +601,11 @@ impl CommandNode {
             return None;
         }
 
-        if !reader.peek().is_some_and(char::is_whitespace) {
+        if !reader.is_argument_separator() {
             return None;
         }
 
-        reader.skip_whitespace();
+        reader.expect_argument_separator().ok()?;
         if let Some(redirect) = &self.redirect {
             return match redirect.target {
                 CommandRedirectTarget::Current => current_root_children.and_then(|children| {

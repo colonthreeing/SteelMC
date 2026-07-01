@@ -88,7 +88,7 @@ pub trait CommandArgumentParser: Send + Sync {
     fn is_valid_input(&self, input: &str) -> bool {
         let mut reader = CommandReader::new(input);
         self.parse(&mut reader, &ParserValidationContext).is_ok()
-            && (!reader.can_read() || reader.peek().is_some_and(char::is_whitespace))
+            && (!reader.can_read() || reader.is_argument_separator())
     }
 
     /// Returns suggestions for the current argument token.

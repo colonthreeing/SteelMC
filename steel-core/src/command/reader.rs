@@ -2,6 +2,9 @@
 
 use crate::command::graph::{CommandParseError, CommandParseErrorKind};
 
+/// Brigadier command node separator.
+pub const ARGUMENT_SEPARATOR: char = ' ';
+
 /// The string parsing mode used by Brigadier string arguments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StringMode {
@@ -108,7 +111,32 @@ impl<'a> CommandReader<'a> {
         }
     }
 
+    /// Returns whether the next character is Brigadier's command node separator.
+    #[must_use]
+    pub fn is_argument_separator(&self) -> bool {
+        self.peek() == Some(ARGUMENT_SEPARATOR)
+    }
+
+    /// Requires and consumes exactly one Brigadier command node separator.
+    ///
+    /// # Errors
+    ///
+    /// Returns a parse error when the current character is not the separator.
+    pub fn expect_argument_separator(&mut self) -> Result<(), CommandParseError> {
+        if !self.is_argument_separator() {
+            return Err(CommandParseError::new(
+                CommandParseErrorKind::ExpectedWhitespace,
+                self.absolute_cursor(),
+            ));
+        }
+
+        self.read();
+        Ok(())
+    }
+
     /// Requires at least one whitespace character, then skips the full whitespace run.
+    ///
+    /// Use this for parser-internal whitespace, not graph node separation.
     ///
     /// # Errors
     ///
@@ -168,7 +196,7 @@ impl<'a> CommandReader<'a> {
         if remaining
             .chars()
             .next()
-            .is_some_and(|ch| !ch.is_whitespace())
+            .is_some_and(|ch| ch != ARGUMENT_SEPARATOR)
         {
             return false;
         }
@@ -289,9 +317,31 @@ mod tests {
     }
 
     #[test]
+    fn argument_separator_consumes_one_ascii_space() {
+        let mut reader = CommandReader::new("  tail");
+
+        reader
+            .expect_argument_separator()
+            .expect("space is the graph separator");
+
+        assert_eq!(reader.remaining(), " tail");
+
+        let mut reader = CommandReader::new("\ttail");
+        let error = reader
+            .expect_argument_separator()
+            .expect_err("tab is not the graph separator");
+        assert_eq!(error.kind(), &CommandParseErrorKind::ExpectedWhitespace);
+        assert_eq!(error.cursor(), 0);
+    }
+
+    #[test]
     fn literal_requires_boundary() {
         let mut reader = CommandReader::new("root:tail");
 
+        assert!(!reader.read_literal("root"));
+        assert_eq!(reader.cursor(), 0);
+
+        let mut reader = CommandReader::new("root\ttail");
         assert!(!reader.read_literal("root"));
         assert_eq!(reader.cursor(), 0);
 

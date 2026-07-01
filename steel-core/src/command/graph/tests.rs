@@ -794,6 +794,34 @@ fn leading_whitespace_is_not_skipped_at_root() {
 }
 
 #[test]
+fn graph_separator_is_ascii_space_only() {
+    let graph = graph_with_root(
+        literal("root").then(literal("child").executes(|_, _| Ok(CommandResult::success()))),
+    );
+
+    let error = graph
+        .parse("root\tchild", &player_context())
+        .expect_err("tab is not a Brigadier node separator");
+
+    assert_eq!(error.kind(), &CommandParseErrorKind::UnknownCommand);
+    assert_eq!(error.cursor(), 0);
+}
+
+#[test]
+fn graph_separator_consumes_exactly_one_space() {
+    let graph = graph_with_root(
+        literal("root").then(literal("child").executes(|_, _| Ok(CommandResult::success()))),
+    );
+
+    let error = graph
+        .parse("root  child", &player_context())
+        .expect_err("only one Brigadier node separator is consumed");
+
+    assert_eq!(error.kind(), &CommandParseErrorKind::UnknownCommand);
+    assert_eq!(error.cursor(), "root ".len());
+}
+
+#[test]
 fn parses_named_arguments_for_executors() {
     let graph = graph_with_root(
         literal("flag")
@@ -899,6 +927,22 @@ fn redirect_node_captures_remaining_command_tail() {
     assert_eq!(redirect.target, CommandRedirectTarget::All);
     assert_eq!(redirect.command, "say hello");
     assert_eq!(redirect.current_root, "execute");
+}
+
+#[test]
+fn redirect_tail_separator_consumes_exactly_one_space() {
+    let graph = graph_with_say_and_root(literal("execute").then(
+        literal("run").redirects(CommandRedirectTarget::All, |_, _| {
+            Ok(CommandResult::success())
+        }),
+    ));
+
+    let error = graph
+        .parse("execute run  say hello", &player_context())
+        .expect_err("redirect tail must start immediately after one separator");
+
+    assert_eq!(error.kind(), &CommandParseErrorKind::UnknownCommand);
+    assert_eq!(error.cursor(), "execute run ".len());
 }
 
 #[test]
@@ -1150,6 +1194,13 @@ fn trailing_space_suggests_children() {
     assert_eq!(suggestion_texts(&result), vec!["uuids".to_owned()]);
     assert_eq!(result.start, 5);
     assert_eq!(result.length, 0);
+}
+
+#[test]
+fn repeated_graph_separator_does_not_suggest_children() {
+    let graph = graph_with_root(literal("list").then(literal("uuids")));
+
+    assert!(graph.suggest("list  ", &player_context()).is_none());
 }
 
 #[test]
