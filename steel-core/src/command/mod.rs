@@ -671,13 +671,13 @@ impl CommandDispatcher {
                     let original_callback = active.context().result_callback();
                     let function_context = function_execution_context(active.context());
                     let function_arguments = Arc::new(arguments);
+                    let accumulates_results =
+                        should_accumulate_function_results(functions.len(), &original_callback);
                     let mut actions = Vec::with_capacity(
                         functions
                             .len()
                             .saturating_add(usize::from(return_parent_frame))
-                            .saturating_add(usize::from(
-                                functions.len() > 1 && !return_parent_frame,
-                            )),
+                            .saturating_add(usize::from(accumulates_results)),
                     );
                     if return_parent_frame {
                         let function_return_callback =
@@ -701,7 +701,7 @@ impl CommandDispatcher {
                             )));
                         }
                         actions.push(QueuedAction::Fallthrough(active_frame));
-                    } else if functions.len() > 1 {
+                    } else if accumulates_results {
                         let accumulator =
                             Arc::new(SyncMutex::new(FunctionReturnAccumulator::new()));
                         let function_return_callback =
@@ -1486,6 +1486,13 @@ fn accumulating_function_callback(
     })
 }
 
+fn should_accumulate_function_results(
+    function_count: usize,
+    callback: &CommandResultCallback,
+) -> bool {
+    function_count > 1 && !callback.is_empty()
+}
+
 fn decorated_function_callback(
     sender: CommandSender,
     output_suppressed: bool,
@@ -2095,6 +2102,22 @@ mod tests {
         decorated.on_result(result);
 
         assert_eq!(*seen.lock(), vec![result]);
+    }
+
+    #[test]
+    fn function_result_accumulation_matches_vanilla_callback_rule() {
+        assert!(!super::should_accumulate_function_results(
+            1,
+            &CommandResultCallback::new(|_| {})
+        ));
+        assert!(!super::should_accumulate_function_results(
+            2,
+            &CommandResultCallback::empty()
+        ));
+        assert!(super::should_accumulate_function_results(
+            2,
+            &CommandResultCallback::new(|_| {})
+        ));
     }
 
     #[test]

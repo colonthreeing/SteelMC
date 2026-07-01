@@ -45,6 +45,10 @@ impl CommandResultCallback {
         Self { callback: None }
     }
 
+    pub(crate) const fn is_empty(&self) -> bool {
+        self.callback.is_none()
+    }
+
     /// Returns a callback that invokes `self`, then `next`.
     #[must_use]
     pub fn chain(self, next: Self) -> Self {
@@ -402,6 +406,21 @@ mod tests {
                     }
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn command_result_callback_reports_empty_state() {
+        assert!(CommandResultCallback::empty().is_empty());
+        assert!(
+            !CommandResultCallback::new(|_| {}).is_empty(),
+            "non-empty callback should be visible to command execution"
+        );
+        assert!(
+            !CommandResultCallback::empty()
+                .chain(CommandResultCallback::new(|_| {}))
+                .is_empty(),
+            "chaining an empty callback with a real callback should remain non-empty"
         );
     }
 
