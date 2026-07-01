@@ -24,6 +24,7 @@ pub use item_predicate::ItemPredicateParser;
 pub use item_stack::ItemStackParser;
 pub use loot_predicate::LootPredicateParser;
 pub use nbt::{NbtCompoundParser, NbtPathParser};
+pub(crate) use permission::permission_rule_expression_suggestions;
 pub use permission::{PermissionGroupParser, PermissionKeyParser, PermissionRuleExpressionParser};
 pub use position::{BlockPosParser, HeightmapParser, RotationParser, Vec3Parser};
 pub(crate) use resource::parse_resource_identifier;

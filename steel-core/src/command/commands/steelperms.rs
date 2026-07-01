@@ -30,11 +30,14 @@ mod parsers;
 mod tree;
 
 use self::access::{
-    require_group_management, require_metadata_management, require_permission_management,
+    can_manage_group, manageable_assigned_groups, manageable_group_metadata_rules,
+    manageable_group_permission_keys, manageable_group_permission_rules,
+    manageable_metadata_entries, manageable_permission_entries, require_group_management,
+    require_metadata_management, require_permission_management,
 };
 #[cfg(test)]
 use self::access::{
-    assigned_group_suggestions, can_manage_group, can_manage_metadata, can_manage_permission,
+    assigned_group_suggestions, can_manage_metadata, can_manage_permission,
     direct_metadata_override_suggestions, direct_permission_override_suggestions,
     group_metadata_suggestions, group_permission_suggestions, metadata_catalog_suggestions,
     metadata_management_key,
@@ -72,7 +75,8 @@ use self::config::{
 };
 #[cfg(test)]
 use self::parsers::{
-    PermissionAssignedGroupParser, PermissionGroupNameParser, PermissionMetadataExpressionParser,
+    PermissionAssignedGroupParser, PermissionGroupNameParser, PermissionManagedRuleExpressionParser,
+    PermissionMetadataExpressionParser,
 };
 
 pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::steel().aliases(&["sp"]);
@@ -93,7 +97,7 @@ fn user_info(
 
     for target in targets {
         if let Some((_, state)) = permission_targets::online_state(&context.server, &target) {
-            send_user_info(&context.sender, &target, &state);
+            send_visible_user_info(&context.sender, &target, &state, context);
             reported += 1;
         } else {
             offline_targets.push(target);
@@ -106,6 +110,7 @@ fn user_info(
             Arc::clone(&context.server),
             context.sender.clone(),
             offline_targets,
+            context.clone(),
         );
     }
 
@@ -164,11 +169,23 @@ fn group_list(
     _arguments: &ParsedArguments,
 ) -> Result<CommandResult, CommandError> {
     let config = context.server.permission_groups.config_snapshot();
-    let groups = context.server.permission_groups.group_names();
+    let default_groups = config
+        .default_groups
+        .iter()
+        .filter(|group| can_manage_group(context, group))
+        .cloned()
+        .collect::<Vec<_>>();
+    let groups = context
+        .server
+        .permission_groups
+        .group_names()
+        .into_iter()
+        .filter(|group| can_manage_group(context, group))
+        .collect::<Vec<_>>();
     context.sender.send_message(&TextComponent::plain(format!(
         "Permission groups: defaults [{}], groups [{}]",
-        group_list_text(&config.default_groups),
-        groups.join(", ")
+        group_list_text(&default_groups),
+        group_list_text(&groups)
     )));
 
     Ok(command_result(groups.len()))
@@ -212,10 +229,19 @@ fn group_info(
     context.sender.send_message(&TextComponent::plain(format!(
         "Group '{group}': priority {}, allow [{}], deny [{}], contextual [{}], metadata [{}]",
         group_config.priority,
-        permission_key_list_text(&group_config.allow),
-        permission_key_list_text(&group_config.deny),
-        group_rule_list_text(&group_config.rules),
-        group_metadata_list_text(&group_config.values)
+        permission_key_list_text(&manageable_group_permission_keys(
+            &group_config.allow,
+            context
+        )),
+        permission_key_list_text(&manageable_group_permission_keys(&group_config.deny, context)),
+        group_rule_list_text(&manageable_group_permission_rules(
+            &group_config.rules,
+            context
+        )),
+        group_metadata_list_text(&manageable_group_metadata_rules(
+            &group_config.values,
+            context
+        ))
     )));
 
     Ok(CommandResult::success())
@@ -684,11 +710,30 @@ fn check_metadata(
     Ok(command_result(reported))
 }
 
-fn spawn_user_info(server: Arc<Server>, sender: CommandSender, targets: Vec<PermissionTarget>) {
+fn send_visible_user_info(
+    sender: &CommandSender,
+    target: &PermissionTarget,
+    state: &permission_targets::PermissionTargetState,
+    visibility: &CommandContext,
+) {
+    let groups = manageable_assigned_groups(&state.groups, visibility);
+    let overrides = manageable_permission_entries(state.overrides.entries(), visibility);
+    let metadata = manageable_metadata_entries(state.value_overrides.entries(), visibility);
+    send_user_info(sender, target, &groups, &overrides, &metadata);
+}
+
+fn spawn_user_info(
+    server: Arc<Server>,
+    sender: CommandSender,
+    targets: Vec<PermissionTarget>,
+    visibility: CommandContext,
+) {
     tokio::spawn(async move {
         for target in targets {
             match permission_targets::load_state(&server, target).await {
-                Ok(loaded) => send_user_info(&sender, loaded.target(), loaded.state()),
+                Ok(loaded) => {
+                    send_visible_user_info(&sender, loaded.target(), loaded.state(), &visibility)
+                }
                 Err(error) => send_background_error(&sender, "steelperms user info", error),
             }
         }

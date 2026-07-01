@@ -8,10 +8,10 @@ use steel_utils::Identifier;
 use crate::command::error::CommandError;
 use crate::command::requirement::{PermissionExpr, RequirementContext};
 use crate::permission::{
-    PermissionGroupConfig, PermissionKey, PermissionKeyError, PermissionMetadataCatalog,
-    PermissionMetadataExpression, PermissionRuleConfig, PermissionRuleContext,
-    PermissionRuleExpression, PermissionSegment, PermissionSet, PermissionValueSet,
-    parse_permission_value_key,
+    PermissionEntry, PermissionGroupConfig, PermissionKey, PermissionKeyError,
+    PermissionMetadataCatalog, PermissionMetadataExpression, PermissionRuleConfig,
+    PermissionRuleContext, PermissionRuleExpression, PermissionSegment, PermissionSet,
+    PermissionValueEntry, PermissionValueRuleConfig, PermissionValueSet, parse_permission_value_key,
 };
 
 pub(super) fn direct_permission_override_suggestions(
@@ -71,6 +71,81 @@ pub(super) fn group_permission_suggestions(
     }
 
     permissions.into_iter().map(SuggestionEntry::new).collect()
+}
+
+pub(super) fn manageable_assigned_groups(
+    groups: &[String],
+    context: &dyn RequirementContext,
+) -> Vec<String> {
+    groups
+        .iter()
+        .filter(|group| can_manage_group(context, group))
+        .cloned()
+        .collect()
+}
+
+pub(super) fn manageable_permission_entries(
+    entries: &[PermissionEntry],
+    context: &dyn RequirementContext,
+) -> Vec<PermissionEntry> {
+    entries
+        .iter()
+        .filter(|entry| can_manage_permission(context, entry.key()))
+        .cloned()
+        .collect()
+}
+
+pub(super) fn manageable_metadata_entries(
+    entries: &[PermissionValueEntry],
+    context: &dyn RequirementContext,
+) -> Vec<PermissionValueEntry> {
+    entries
+        .iter()
+        .filter(|entry| can_manage_metadata(context, entry.key()))
+        .cloned()
+        .collect()
+}
+
+pub(super) fn manageable_group_permission_keys(
+    permissions: &[String],
+    context: &dyn RequirementContext,
+) -> Vec<String> {
+    permissions
+        .iter()
+        .filter(|permission| {
+            PermissionKey::parse((*permission).clone())
+                .is_ok_and(|permission| can_manage_permission(context, &permission))
+        })
+        .cloned()
+        .collect()
+}
+
+pub(super) fn manageable_group_permission_rules(
+    rules: &[PermissionRuleConfig],
+    context: &dyn RequirementContext,
+) -> Vec<PermissionRuleConfig> {
+    rules
+        .iter()
+        .filter(|rule| {
+            PermissionKey::parse(rule.key.clone())
+                .is_ok_and(|permission| can_manage_permission(context, &permission))
+        })
+        .cloned()
+        .collect()
+}
+
+pub(super) fn manageable_group_metadata_rules(
+    values: &[PermissionValueRuleConfig],
+    context: &dyn RequirementContext,
+) -> Vec<PermissionValueRuleConfig> {
+    values
+        .iter()
+        .filter(|value| {
+            parse_permission_value_key(value.key.clone())
+                .is_ok_and(|key| can_manage_metadata(context, &key))
+        })
+        .cloned()
+        .collect()
 }
 
 pub(super) fn group_metadata_suggestions(
@@ -251,11 +326,12 @@ pub(super) fn can_manage_group(context: &dyn RequirementContext, group: &str) ->
 pub(super) fn assigned_group_suggestions(
     prefix: &str,
     groups: impl IntoIterator<Item = Vec<String>>,
+    context: &dyn RequirementContext,
 ) -> Vec<SuggestionEntry> {
     let mut assigned_groups = BTreeSet::new();
     for groups in groups {
         for group in groups {
-            if group.starts_with(prefix) {
+            if group.starts_with(prefix) && can_manage_group(context, &group) {
                 assigned_groups.insert(group);
             }
         }

@@ -6,15 +6,13 @@ use crate::command::graph::{
     BoolParser, CommandNodeBuilder, CommandResult, IntegerParser, LongParser, ParsedArguments,
     StringParser, argument, literal,
 };
-use crate::command::parsers::{
-    PermissionGroupParser, PermissionRuleExpressionParser, PermissionTargetParser,
-};
+use crate::command::parsers::PermissionTargetParser;
 use crate::command::reader::StringMode;
 
 use super::parsers::{
     PermissionAssignedGroupParser, PermissionGroupMetadataParser, PermissionGroupNameParser,
-    PermissionGroupRuleParser, PermissionMetadataExpressionParser, PermissionMetadataOverrideParser,
-    PermissionOverrideParser,
+    PermissionGroupRuleParser, PermissionManagedGroupParser, PermissionManagedRuleExpressionParser,
+    PermissionMetadataExpressionParser, PermissionMetadataOverrideParser, PermissionOverrideParser,
 };
 use super::{
     add_default_group, add_group, allow_group_permission, allow_permission, check_metadata,
@@ -50,7 +48,7 @@ fn user_command() -> CommandNodeBuilder {
             literal("group").then_all([
                 literal("add")
                     .requires_additional_subcommand_permission()
-                    .then(argument("group", PermissionGroupParser).executes(add_group)),
+                    .then(argument("group", PermissionManagedGroupParser).executes(add_group)),
                 literal("remove")
                     .requires_additional_subcommand_permission()
                     .then(
@@ -99,10 +97,10 @@ fn groups_command() -> CommandNodeBuilder {
         literal("default").then_all([
             literal("add")
                 .requires_additional_subcommand_permission()
-                .then(argument("group", PermissionGroupParser).executes(add_default_group)),
+                .then(argument("group", PermissionManagedGroupParser).executes(add_default_group)),
             literal("remove")
                 .requires_additional_subcommand_permission()
-                .then(argument("group", PermissionGroupParser).executes(remove_default_group)),
+                .then(argument("group", PermissionManagedGroupParser).executes(remove_default_group)),
         ]),
     ])
 }
@@ -110,7 +108,7 @@ fn groups_command() -> CommandNodeBuilder {
 fn permission_key_argument(
     executor: fn(&mut CommandContext, &ParsedArguments) -> Result<CommandResult, CommandError>,
 ) -> CommandNodeBuilder {
-    argument("permission", PermissionRuleExpressionParser).executes(executor)
+    argument("permission", PermissionManagedRuleExpressionParser).executes(executor)
 }
 
 fn permission_override_argument(

@@ -1,11 +1,14 @@
     use super::{
         PermissionAssignedGroupParser, PermissionGroupEditError, PermissionGroupNameParser,
-        PermissionMetadataExpressionParser,
+        PermissionManagedRuleExpressionParser, PermissionMetadataExpressionParser,
         add_default_group_config, assigned_group_suggestions, can_manage_group,
         can_manage_metadata, can_manage_permission, delete_group_config,
         direct_metadata_override_suggestions, direct_permission_override_suggestions,
         group_config_metadata_value, group_config_permission_states, group_metadata_suggestions,
-        group_permission_suggestions, metadata_catalog_suggestions, metadata_management_key,
+        group_permission_suggestions, manageable_assigned_groups,
+        manageable_group_metadata_rules, manageable_group_permission_keys,
+        manageable_group_permission_rules, manageable_metadata_entries,
+        manageable_permission_entries, metadata_catalog_suggestions, metadata_management_key,
         metadata_resolution_text, permission_check_result_text, permission_context,
         permission_resolution_source_text, permission_rule_context, permission_rule_context_suffix,
         remove_default_group_config, set_group_config_metadata, set_group_config_permission,
@@ -25,7 +28,8 @@
         PermissionResolutionSource, PermissionRuleConfig, PermissionRuleContext,
         PermissionRuleContextConfig, PermissionRuleCustomContextConfig, PermissionRuleExpression,
         PermissionRuleStateConfig, PermissionSet, PermissionState, PermissionValue,
-        PermissionValueEntry, PermissionValueRuleConfig, PermissionValueSet,
+        PermissionValueEntry, PermissionValueRuleConfig, PermissionValueSet, PermissionCatalog,
+        PermissionCatalogSource,
         parse_permission_value_key,
     };
     use steel_protocol::packets::game::{
@@ -35,6 +39,7 @@
 
     struct TestContext {
         permissions: PermissionSet,
+        permission_catalog: PermissionCatalog,
         metadata_catalog: PermissionMetadataCatalog,
         context_catalog: PermissionContextCatalog,
     }
@@ -43,6 +48,7 @@
         fn empty() -> Self {
             Self {
                 permissions: PermissionSet::new(),
+                permission_catalog: PermissionCatalog::new(),
                 metadata_catalog: PermissionMetadataCatalog::new(),
                 context_catalog: PermissionContextCatalog::new(),
             }
@@ -53,6 +59,7 @@
                 permissions: PermissionSet::from_entries(
                     permissions.map(|permission| PermissionEntry::allow(key(permission))),
                 ),
+                permission_catalog: PermissionCatalog::new(),
                 metadata_catalog: PermissionMetadataCatalog::new(),
                 context_catalog: PermissionContextCatalog::new(),
             }
@@ -70,6 +77,10 @@
     }
 
     impl CommandInputContext for TestContext {
+        fn permission_catalog(&self) -> Option<&PermissionCatalog> {
+            Some(&self.permission_catalog)
+        }
+
         fn permission_metadata_catalog(&self) -> Option<&PermissionMetadataCatalog> {
             Some(&self.metadata_catalog)
         }
@@ -457,8 +468,9 @@
                     vec!["vip".to_owned(), "legacy".to_owned()],
                     vec!["vip".to_owned(), "veteran".to_owned()],
                 ],
+                &TestContext::with_permissions(["steel.permission.group.vip"]),
             )),
-            vec!["veteran".to_owned(), "vip".to_owned()]
+            vec!["vip".to_owned()]
         );
     }
 
@@ -498,6 +510,135 @@
         );
         assert!(can_manage_metadata(&context, &homes));
         assert!(!can_manage_metadata(&context, &other));
+    }
+
+    #[test]
+    fn user_info_visibility_only_includes_manageable_entries() {
+        let context = TestContext::with_permissions([
+            "steel.permission.group.vip",
+            "steel.permission.manage.steel.*",
+            "steel.permission.metadata.plugin.*",
+        ]);
+        let groups = vec!["vip".to_owned(), "admin".to_owned()];
+        let permissions = vec![
+            PermissionEntry::allow(key("steel.fly")),
+            PermissionEntry::deny(key("minecraft.command.op")),
+        ];
+        let metadata = vec![
+            PermissionValueEntry::new(metadata_key("plugin:homes"), PermissionValue::Integer(10)),
+            PermissionValueEntry::new(metadata_key("other:homes"), PermissionValue::Integer(20)),
+        ];
+
+        assert_eq!(
+            manageable_assigned_groups(&groups, &context),
+            vec!["vip".to_owned()]
+        );
+        assert_eq!(
+            manageable_permission_entries(&permissions, &context)
+                .into_iter()
+                .map(|entry| entry.key().as_str().to_owned())
+                .collect::<Vec<_>>(),
+            vec!["steel.fly"]
+        );
+        assert_eq!(
+            manageable_metadata_entries(&metadata, &context)
+                .into_iter()
+                .map(|entry| entry.key().to_string())
+                .collect::<Vec<_>>(),
+            vec!["plugin:homes"]
+        );
+    }
+
+    #[test]
+    fn group_info_visibility_only_includes_manageable_rules() {
+        let context = TestContext::with_permissions([
+            "steel.permission.manage.steel.*",
+            "steel.permission.metadata.plugin.*",
+        ]);
+        let allow = vec![
+            "steel.fly".to_owned(),
+            "minecraft.command.op".to_owned(),
+        ];
+        let rules = vec![
+            PermissionRuleConfig {
+                key: "steel.chat".to_owned(),
+                state: PermissionRuleStateConfig::Allow,
+                context: None,
+            },
+            PermissionRuleConfig {
+                key: "minecraft.command.op".to_owned(),
+                state: PermissionRuleStateConfig::Deny,
+                context: None,
+            },
+        ];
+        let values = vec![
+            PermissionValueRuleConfig {
+                key: "plugin:homes".to_owned(),
+                value: PermissionValue::Integer(10),
+                context: None,
+            },
+            PermissionValueRuleConfig {
+                key: "other:homes".to_owned(),
+                value: PermissionValue::Integer(20),
+                context: None,
+            },
+        ];
+
+        assert_eq!(
+            manageable_group_permission_keys(&allow, &context),
+            vec!["steel.fly".to_owned()]
+        );
+        assert_eq!(
+            manageable_group_permission_rules(&rules, &context)
+                .into_iter()
+                .map(|rule| rule.key)
+                .collect::<Vec<_>>(),
+            vec!["steel.chat"]
+        );
+        assert_eq!(
+            manageable_group_metadata_rules(&values, &context)
+                .into_iter()
+                .map(|value| value.key)
+                .collect::<Vec<_>>(),
+            vec!["plugin:homes"]
+        );
+    }
+
+    #[test]
+    fn managed_permission_expression_suggestions_only_include_manageable_keys() {
+        let mut context = TestContext::with_permissions(["steel.permission.manage.steel.*"]);
+        context
+            .permission_catalog
+            .insert(key("minecraft.command.op"), PermissionCatalogSource::Config);
+        context
+            .permission_catalog
+            .insert(key("steel.fly"), PermissionCatalogSource::Config);
+
+        assert_eq!(
+            suggestion_texts(PermissionManagedRuleExpressionParser.suggest(
+                "",
+                &ParsedArguments::default(),
+                &context,
+            )),
+            vec!["steel.fly"]
+        );
+        assert_eq!(
+            suggestion_texts(PermissionManagedRuleExpressionParser.suggest(
+                "steel.fly{",
+                &ParsedArguments::default(),
+                &context,
+            )),
+            vec!["steel.fly{domain=", "steel.fly{world="]
+        );
+        assert!(
+            PermissionManagedRuleExpressionParser
+                .suggest(
+                    "minecraft.command.op{",
+                    &ParsedArguments::default(),
+                    &context,
+                )
+                .is_empty()
+        );
     }
 
     #[test]

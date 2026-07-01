@@ -13,16 +13,16 @@ use crate::permission::{
 };
 
 use super::config::{PermissionGroupEditError, permission_state_from_rule_config};
-use super::permission_targets;
-
 pub(super) fn send_user_info(
     sender: &CommandSender,
     target: &PermissionTarget,
-    state: &permission_targets::PermissionTargetState,
+    groups: &[String],
+    overrides: &[PermissionEntry],
+    metadata: &[PermissionValueEntry],
 ) {
-    let groups = group_list_text(&state.groups);
-    let overrides = permission_entries_text(state.overrides.entries());
-    let metadata = metadata_entries_text(state.value_overrides.entries());
+    let groups = group_list_text(groups);
+    let overrides = permission_entries_text(overrides);
+    let metadata = metadata_entries_text(metadata);
 
     sender.send_message(&TextComponent::plain(format!(
         "{}: groups [{}], direct permissions [{}], metadata [{}]",

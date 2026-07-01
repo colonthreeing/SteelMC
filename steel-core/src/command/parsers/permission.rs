@@ -114,7 +114,7 @@ impl CommandArgumentParser for PermissionRuleExpressionParser {
     }
 }
 
-fn permission_rule_expression_suggestions(
+pub(crate) fn permission_rule_expression_suggestions(
     prefix: &str,
     context: &dyn CommandInputContext,
 ) -> Vec<String> {

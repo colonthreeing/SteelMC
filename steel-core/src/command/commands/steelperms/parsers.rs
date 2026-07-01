@@ -9,7 +9,8 @@ use crate::command::graph::{
     ParsedArgument, ParsedArguments,
 };
 use crate::command::parsers::{
-    PermissionGroupParser, PermissionRuleExpressionParser, resolve_optional_permission_targets,
+    PermissionGroupParser, PermissionRuleExpressionParser, permission_rule_expression_suggestions,
+    resolve_optional_permission_targets,
 };
 use crate::command::reader::{CommandReader, StringMode};
 use crate::command::requirement::CommandInputContext;
@@ -20,9 +21,9 @@ use crate::permission::{
 };
 
 use super::access::{
-    assigned_group_suggestions, can_manage_metadata, direct_metadata_override_suggestions,
-    direct_permission_override_suggestions, group_metadata_suggestions, group_permission_suggestions,
-    metadata_catalog_suggestions,
+    assigned_group_suggestions, can_manage_group, can_manage_metadata, can_manage_permission,
+    direct_metadata_override_suggestions, direct_permission_override_suggestions,
+    group_metadata_suggestions, group_permission_suggestions, metadata_catalog_suggestions,
 };
 use super::permission_targets;
 
@@ -137,7 +138,48 @@ impl CommandArgumentParser for PermissionAssignedGroupParser {
             .into_iter()
             .filter_map(|target| permission_targets::cached_state(server, &target))
             .map(|state| state.groups);
-        assigned_group_suggestions(prefix, groups)
+        assigned_group_suggestions(prefix, groups, context)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct PermissionManagedGroupParser;
+
+impl CommandArgumentParser for PermissionManagedGroupParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        PermissionGroupParser.parse(reader, context)
+    }
+
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        PermissionGroupParser.client_parser()
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        PermissionGroupParser.parsed_type()
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        _arguments: &ParsedArguments,
+        context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        let Some(server) = context.server() else {
+            return Vec::new();
+        };
+
+        server
+            .permission_groups
+            .group_names()
+            .into_iter()
+            .filter(|group| group.starts_with(prefix))
+            .filter(|group| can_manage_group(context, group))
+            .map(SuggestionEntry::new)
+            .collect()
     }
 }
 
@@ -185,7 +227,61 @@ impl CommandArgumentParser for PermissionGroupNameParser {
             .group_names()
             .into_iter()
             .filter(|group| group.starts_with(prefix))
+            .filter(|group| can_manage_group(context, group))
             .map(SuggestionEntry::new)
+            .collect()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct PermissionManagedRuleExpressionParser;
+
+impl CommandArgumentParser for PermissionManagedRuleExpressionParser {
+    fn parse(
+        &self,
+        reader: &mut CommandReader<'_>,
+        context: &dyn CommandInputContext,
+    ) -> Result<ParsedArgument, CommandParseError> {
+        PermissionRuleExpressionParser.parse(reader, context)
+    }
+
+    fn client_parser(&self) -> CommandArgumentClientParser {
+        PermissionRuleExpressionParser.client_parser()
+    }
+
+    fn parsed_type(&self) -> &'static str {
+        PermissionRuleExpressionParser.parsed_type()
+    }
+
+    fn suggest(
+        &self,
+        prefix: &str,
+        _arguments: &ParsedArguments,
+        context: &dyn CommandInputContext,
+    ) -> Vec<SuggestionEntry> {
+        if let Some((permission_key, _)) = prefix.split_once('{') {
+            let Ok(permission_key) = crate::permission::PermissionKey::parse(permission_key)
+            else {
+                return Vec::new();
+            };
+            if !can_manage_permission(context, &permission_key) {
+                return Vec::new();
+            }
+            return permission_rule_expression_suggestions(prefix, context)
+                .into_iter()
+                .map(SuggestionEntry::new)
+                .collect();
+        }
+
+        permission_rule_expression_suggestions(prefix, context)
+            .into_iter()
+            .filter_map(|suggestion| {
+                let Ok(permission) = crate::permission::PermissionKey::parse(suggestion.clone())
+                else {
+                    return None;
+                };
+                can_manage_permission(context, &permission).then(|| SuggestionEntry::new(suggestion))
+            })
             .collect()
     }
 }
