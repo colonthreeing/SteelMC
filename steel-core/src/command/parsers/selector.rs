@@ -489,6 +489,9 @@ impl EntitySelector {
             for player in players {
                 if self.matches_entity(player.as_ref(), position, aabb, server, cursor)? {
                     filtered.push(player);
+                    if self.stops_filtering_after_match_count(filtered.len()) {
+                        break;
+                    }
                 }
             }
             players = filtered;
@@ -546,6 +549,9 @@ impl EntitySelector {
             for entity in entities {
                 if self.matches_entity(entity.as_ref(), position, aabb, server, cursor)? {
                     filtered.push(entity);
+                    if self.stops_filtering_after_match_count(filtered.len()) {
+                        break;
+                    }
                 }
             }
             entities = filtered;
@@ -693,6 +699,10 @@ impl EntitySelector {
             }
         }
         Ok(true)
+    }
+
+    fn stops_filtering_after_match_count(&self, count: usize) -> bool {
+        matches!(self.order, SelectorOrder::Arbitrary) && count >= self.max_results
     }
 
     fn sort_and_limit_players(&self, position: DVec3, players: &mut Vec<Arc<Player>>) {
@@ -2432,6 +2442,18 @@ mod tests {
         assert!(selector.includes_entities);
         assert!(selector.world_limited);
         assert!(selector.distance.is_some());
+    }
+
+    #[test]
+    fn selector_arbitrary_order_stops_filtering_at_result_limit() {
+        let arbitrary =
+            parse_selector_plan("@e[limit=2]".to_owned(), true).expect("selector parses");
+        let sorted = parse_selector_plan("@e[limit=2,sort=nearest]".to_owned(), true)
+            .expect("selector parses");
+
+        assert!(!arbitrary.stops_filtering_after_match_count(1));
+        assert!(arbitrary.stops_filtering_after_match_count(2));
+        assert!(!sorted.stops_filtering_after_match_count(2));
     }
 
     #[test]
