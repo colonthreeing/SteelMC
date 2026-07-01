@@ -1181,6 +1181,9 @@ impl CommandDispatcher {
             CommandParseErrorKind::InvalidPermissionGroup(value) => {
                 TextComponent::plain(format!("Invalid permission group '{value}'"))
             }
+            CommandParseErrorKind::DynamicPermissionResolution(value) => {
+                TextComponent::plain(format!("Invalid dynamic permission: {value}"))
+            }
             CommandParseErrorKind::MissingCommandContext(name) => {
                 TextComponent::plain(format!("Missing command context '{name}'"))
             }

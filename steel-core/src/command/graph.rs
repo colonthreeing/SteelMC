@@ -236,6 +236,8 @@ pub enum CommandParseErrorKind {
     InvalidPermissionMetadataKey(String),
     /// A permission group argument was invalid.
     InvalidPermissionGroup(String),
+    /// Dynamic permission resolution failed after an argument parsed.
+    DynamicPermissionResolution(String),
     /// A parser required live command context that was not available.
     MissingCommandContext(&'static str),
     /// An argument parser returned success without advancing the reader.
@@ -304,6 +306,7 @@ impl CommandParseErrorKind {
             | Self::InvalidPermissionMetadataExpression(_)
             | Self::InvalidPermissionMetadataKey(_)
             | Self::InvalidPermissionGroup(_)
+            | Self::DynamicPermissionResolution(_)
             | Self::MissingCommandContext(_)
             | Self::ArgumentParserDidNotConsumeInput { .. }
             | Self::UnclosedQuote

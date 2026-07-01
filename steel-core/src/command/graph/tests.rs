@@ -10,9 +10,10 @@ use crate::command::{
     graph::{
         AnchorParser, BoolParser, CommandArgumentClientParser, CommandArgumentParser, CommandGraph,
         CommandGraphAmbiguity, CommandGraphError, CommandNodeBuilder, CommandNodeNameError,
-        CommandParseError, CommandParseErrorKind, CommandRedirectTarget, CommandResult,
-        DoubleParser, FloatParser, IntegerParser, LongParser, ParsedArgument, ParsedCommandAction,
-        ParsedRedirectModifier, StringParser, SuggestionResult, argument, literal,
+        CommandParseError, CommandParseErrorKind, CommandPermissionArgument, CommandRedirectTarget,
+        CommandResult, DoubleParser, FloatParser, IntegerParser, LongParser, ParsedArgument,
+        ParsedCommandAction, ParsedRedirectModifier, StringParser, SuggestionResult, argument,
+        literal,
     },
     reader::{CommandReader, StringMode},
     requirement::{
@@ -59,7 +60,17 @@ impl CommandArgumentParser for EmptySuccessParser {
     }
 }
 
-impl crate::command::graph::CommandPermissionArgument for bool {
+impl CommandPermissionArgument for String {
+    fn permission_segment(&self) -> Result<PermissionSegment, PermissionKeyError> {
+        PermissionSegment::parse(self)
+    }
+
+    fn catalog_permission_segments() -> &'static [&'static str] {
+        &["valid"]
+    }
+}
+
+impl CommandPermissionArgument for bool {
     fn permission_segment(&self) -> Result<PermissionSegment, PermissionKeyError> {
         PermissionSegment::parse(if *self { "true" } else { "false" })
     }
@@ -417,6 +428,32 @@ fn dynamic_argument_permission_requires_finite_catalog_segments() {
             argument: "enabled".to_owned(),
         }
     );
+}
+
+#[test]
+fn dynamic_permission_resolution_errors_are_parse_errors() {
+    let root_permission =
+        PermissionKey::parse("minecraft.command.root").expect("permission key parses");
+    let mut catalog = PermissionCatalog::new();
+    let root = literal("root")
+        .then(
+            argument("segment", StringParser::new(StringMode::SingleWord))
+                .requires_argument_permission::<String>("segment")
+                .executes(|_, _| Ok(CommandResult::success())),
+        )
+        .resolve_subcommand_permissions(&root_permission, &mut catalog)
+        .expect("dynamic permission resolves");
+    let graph = graph_with_root(root);
+
+    let error = graph
+        .parse("root bad.segment", &player_context_with(root_permission))
+        .expect_err("invalid dynamic permission segment should be a parse error");
+
+    assert!(matches!(
+        error.kind(),
+        CommandParseErrorKind::DynamicPermissionResolution(message)
+            if message.contains("permission segment")
+    ));
 }
 
 #[test]

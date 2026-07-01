@@ -39,10 +39,20 @@ pub(super) fn parse_children(
             Ok(()) => {
                 child_path.push(child.display_name().to_owned());
                 child_dynamic_permissions.extend(child.dynamic_permissions.iter().cloned());
-                if !dynamic_permissions_allow(&child_dynamic_permissions, &child_arguments, context)
-                    .unwrap_or(false)
-                {
-                    continue;
+                match dynamic_permissions_allow(
+                    &child_dynamic_permissions,
+                    &child_arguments,
+                    context,
+                ) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(error) => {
+                        keep_best_error(
+                            &mut best_error,
+                            dynamic_permission_parse_error(error, child_reader.absolute_cursor()),
+                        );
+                        continue;
+                    }
                 }
                 usable_child_seen = true;
                 let child_root_children = current_root_children.or_else(|| {
@@ -230,6 +240,27 @@ fn keep_best_error(best_error: &mut Option<CommandParseError>, error: CommandPar
     }
 }
 
+fn dynamic_permission_parse_error(
+    error: impl std::fmt::Display,
+    cursor: usize,
+) -> CommandParseError {
+    CommandParseError::new(
+        CommandParseErrorKind::DynamicPermissionResolution(error.to_string()),
+        cursor,
+    )
+}
+
+fn dynamic_permissions_allowed(
+    permissions: &[DynamicPermission],
+    arguments: &ParsedArguments,
+    context: &dyn CommandInputContext,
+) -> bool {
+    matches!(
+        dynamic_permissions_allow(permissions, arguments, context),
+        Ok(true)
+    )
+}
+
 pub(super) fn suggest_children(
     reader: &CommandReader<'_>,
     children: &[CommandNode],
@@ -239,7 +270,7 @@ pub(super) fn suggest_children(
     roots: &[CommandNode],
     current_root_children: Option<&[CommandNode]>,
 ) -> Option<SuggestionResult> {
-    if !dynamic_permissions_allow(&dynamic_permissions, &arguments, context).unwrap_or(false) {
+    if !dynamic_permissions_allowed(&dynamic_permissions, &arguments, context) {
         return None;
     }
 
@@ -363,7 +394,7 @@ fn filter_argument_suggestions_by_dynamic_permissions(
 
             let mut arguments = arguments.clone();
             arguments.insert(argument_name, value);
-            dynamic_permissions_allow(dynamic_permissions, &arguments, context).unwrap_or(false)
+            dynamic_permissions_allowed(dynamic_permissions, &arguments, context)
         })
         .collect()
 }
@@ -536,7 +567,7 @@ impl CommandNode {
         }
 
         dynamic_permissions.extend(self.dynamic_permissions.iter().cloned());
-        if !dynamic_permissions_allow(&dynamic_permissions, &arguments, context).unwrap_or(false) {
+        if !dynamic_permissions_allowed(&dynamic_permissions, &arguments, context) {
             return direct_suggestions;
         }
 
