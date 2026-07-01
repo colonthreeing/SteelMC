@@ -490,10 +490,7 @@ impl CommandDispatcher {
             return Ok(CommandFunctionConditionResult::NoFunctions);
         }
 
-        let function_context = context
-            .clone()
-            .without_result_callbacks()
-            .with_suppressed_output();
+        let function_context = function_execution_context(context);
         let mut queue = VecDeque::new();
         let function_frame = QueuedFrame::new(1, 1);
         for function in functions {
@@ -599,11 +596,7 @@ impl CommandDispatcher {
                     let output_suppressed = active.context().is_output_suppressed();
                     let original_sender = active.context().sender.clone();
                     let original_callback = active.context().result_callback();
-                    let function_context = active
-                        .context()
-                        .clone()
-                        .without_result_callbacks()
-                        .with_suppressed_output();
+                    let function_context = function_execution_context(active.context());
                     let mut actions = Vec::with_capacity(
                         functions
                             .len()
@@ -1097,6 +1090,17 @@ impl CommandDispatcher {
                 (result.suggestions, result.start, result.length)
             })
     }
+}
+
+fn function_execution_context(context: &CommandContext) -> CommandContext {
+    // Vanilla suppresses output and grants a gamemaster permission level for
+    // functions. Steel keeps the suppression/callback behavior but deliberately
+    // preserves the captured caller permission authority; admins should get
+    // command access through configured permission groups such as `op`.
+    context
+        .clone()
+        .without_result_callbacks()
+        .with_suppressed_output()
 }
 
 enum ActiveCommand<'a> {
