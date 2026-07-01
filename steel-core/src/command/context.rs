@@ -227,6 +227,10 @@ impl CommandContext {
         self.result_callback = current.chain(callback);
     }
 
+    pub(crate) fn result_callback(&self) -> CommandResultCallback {
+        self.result_callback.clone()
+    }
+
     /// Returns this context without result callbacks.
     #[must_use]
     pub fn without_result_callbacks(mut self) -> Self {
