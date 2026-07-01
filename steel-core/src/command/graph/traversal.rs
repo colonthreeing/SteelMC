@@ -18,6 +18,8 @@ pub(super) fn parse_children(
     path: Vec<String>,
     dynamic_permissions: Vec<DynamicPermission>,
     context: &dyn CommandInputContext,
+    roots: &[CommandNode],
+    current_root_children: Option<&[CommandNode]>,
 ) -> Result<ParseResults, CommandParseError> {
     let mut best_error = None;
     let mut usable_child_seen = false;
@@ -43,6 +45,10 @@ pub(super) fn parse_children(
                     continue;
                 }
                 usable_child_seen = true;
+                let child_root_children = current_root_children.or_else(|| {
+                    matches!(&child.kind, CommandNodeKind::Literal(_))
+                        .then_some(child.children.as_slice())
+                });
                 match parse_after_node(
                     input,
                     child,
@@ -51,6 +57,8 @@ pub(super) fn parse_children(
                     child_path,
                     child_dynamic_permissions,
                     context,
+                    roots,
+                    child_root_children,
                 ) {
                     Ok(result) => return Ok(result),
                     Err(error) => keep_best_error(&mut best_error, error),
@@ -80,6 +88,8 @@ fn parse_after_node(
     path: Vec<String>,
     dynamic_permissions: Vec<DynamicPermission>,
     context: &dyn CommandInputContext,
+    roots: &[CommandNode],
+    current_root_children: Option<&[CommandNode]>,
 ) -> Result<ParseResults, CommandParseError> {
     if !reader.can_read() {
         return node
@@ -112,6 +122,15 @@ fn parse_after_node(
     }
 
     if node.redirect.is_some() {
+        validate_redirect_tail(
+            input,
+            reader,
+            node,
+            &path,
+            context,
+            roots,
+            current_root_children,
+        )?;
         return node.redirectable(
             input,
             arguments,
@@ -136,7 +155,70 @@ fn parse_after_node(
         path,
         dynamic_permissions,
         context,
+        roots,
+        current_root_children,
     )
+}
+
+fn validate_redirect_tail(
+    input: &str,
+    reader: &CommandReader<'_>,
+    node: &CommandNode,
+    path: &[String],
+    context: &dyn CommandInputContext,
+    roots: &[CommandNode],
+    current_root_children: Option<&[CommandNode]>,
+) -> Result<(), CommandParseError> {
+    let Some(redirect) = &node.redirect else {
+        return Ok(());
+    };
+
+    // Brigadier validates redirected command tails during parse. Keep the
+    // original redirect action, but reject tails that the target graph cannot use.
+    let mut redirect_reader =
+        CommandReader::with_offset(reader.remaining(), reader.absolute_cursor());
+    match redirect.target {
+        CommandRedirectTarget::All => {
+            parse_children(
+                input,
+                &mut redirect_reader,
+                roots,
+                ParsedArguments::default(),
+                Vec::new(),
+                Vec::new(),
+                context,
+                roots,
+                None,
+            )?;
+        }
+        CommandRedirectTarget::Current => {
+            let Some(current_root) = path.first() else {
+                return Err(CommandParseError::new(
+                    CommandParseErrorKind::IncompleteCommand,
+                    reader.absolute_cursor(),
+                ));
+            };
+            let Some(current_root_children) = current_root_children else {
+                return Err(CommandParseError::new(
+                    CommandParseErrorKind::IncompleteCommand,
+                    reader.absolute_cursor(),
+                ));
+            };
+            parse_children(
+                input,
+                &mut redirect_reader,
+                current_root_children,
+                ParsedArguments::default(),
+                vec![current_root.clone()],
+                Vec::new(),
+                context,
+                roots,
+                Some(current_root_children),
+            )?;
+        }
+    }
+
+    Ok(())
 }
 
 fn keep_best_error(best_error: &mut Option<CommandParseError>, error: CommandParseError) {

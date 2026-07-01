@@ -2452,6 +2452,39 @@ mod tests {
     }
 
     #[test]
+    fn execute_run_requires_redirected_command_permission() {
+        init_test_registry();
+
+        let dispatcher = CommandDispatcher::new().expect("built-in commands register");
+        let execute_only = player_context_with("minecraft.command.execute");
+
+        assert!(
+            dispatcher
+                .graph
+                .parse("execute run gamemode creative", &execute_only)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn execute_run_uses_original_source_permissions_for_redirected_command() {
+        init_test_registry();
+
+        let dispatcher = CommandDispatcher::new().expect("built-in commands register");
+        let execute_and_creative = player_context_with_all([
+            "minecraft.command.execute",
+            "minecraft.command.gamemode.creative",
+        ]);
+
+        assert!(
+            dispatcher
+                .graph
+                .parse("execute run gamemode creative", &execute_and_creative)
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn derived_subcommand_permissions_use_root_permission_override() {
         let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
         let permission =

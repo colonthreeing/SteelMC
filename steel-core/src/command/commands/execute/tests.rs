@@ -11,8 +11,8 @@ use text_components::content::Content;
 
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandGraph, ItemPredicateArgumentValue, ItemPredicateTarget, ItemSlotRangeArgumentValue,
-    ParsedArgument, ParsedArguments,
+    CommandGraph, CommandResult, ItemPredicateArgumentValue, ItemPredicateTarget,
+    ItemSlotRangeArgumentValue, ParsedArgument, ParsedArguments, literal,
 };
 use crate::command::requirement::{
     CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext,
@@ -65,6 +65,8 @@ fn graph() -> CommandGraph {
     CommandGraph::new()
         .with_root(super::command())
         .expect("execute command registers")
+        .with_root(literal("seed").executes(|_, _| Ok(CommandResult::success())))
+        .expect("seed command registers")
 }
 
 fn stone_predicate() -> ItemPredicateArgumentValue {

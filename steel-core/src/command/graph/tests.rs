@@ -112,6 +112,31 @@ fn graph_with_root(root: CommandNodeBuilder) -> CommandGraph {
         .expect("test command root registers")
 }
 
+fn graph_with_say_and_root(root: CommandNodeBuilder) -> CommandGraph {
+    CommandGraph::new()
+        .with_root(say_command())
+        .expect("say root registers")
+        .with_root(root)
+        .expect("test command root registers")
+}
+
+fn say_command() -> CommandNodeBuilder {
+    literal("say").then(
+        argument("message", StringParser::new(StringMode::GreedyPhrase))
+            .executes(|_, _| Ok(CommandResult::success())),
+    )
+}
+
+fn execute_root_with(child: CommandNodeBuilder) -> CommandNodeBuilder {
+    literal("execute")
+        .then(
+            literal("run").redirects(CommandRedirectTarget::All, |_, _| {
+                Ok(CommandResult::success())
+            }),
+        )
+        .then(child)
+}
+
 fn graph_registration_error(root: CommandNodeBuilder) -> CommandGraphError {
     match CommandGraph::new().with_root(root) {
         Ok(_) => panic!("test command root should be rejected"),
@@ -819,7 +844,7 @@ fn quoted_string_argument_keeps_spaces() {
 
 #[test]
 fn redirect_node_captures_remaining_command_tail() {
-    let graph = graph_with_root(literal("execute").then(
+    let graph = graph_with_say_and_root(literal("execute").then(
         literal("run").redirects(CommandRedirectTarget::All, |_, _| {
             Ok(CommandResult::success())
         }),
@@ -840,7 +865,7 @@ fn redirect_node_captures_remaining_command_tail() {
 
 #[test]
 fn redirects_invoke_result_callbacks_on_errors() {
-    let graph = graph_with_root(literal("execute").then(
+    let graph = graph_with_say_and_root(execute_root_with(
         literal("if").redirects(CommandRedirectTarget::Current, |_, _| {
             Ok(CommandResult::success())
         }),
@@ -855,7 +880,7 @@ fn redirects_invoke_result_callbacks_on_errors() {
 
 #[test]
 fn fork_redirect_node_captures_remaining_command_tail() {
-    let graph = graph_with_root(literal("execute").then(
+    let graph = graph_with_say_and_root(execute_root_with(
         literal("as").forks(CommandRedirectTarget::Current, |context, _| {
             Ok(vec![context.clone()])
         }),
@@ -1198,7 +1223,7 @@ fn redirect_to_all_suggests_dispatcher_roots() {
 #[test]
 fn returning_redirect_marks_remaining_command_tail() {
     let graph = CommandGraph::new()
-        .with_root(literal("seed"))
+        .with_root(literal("seed").executes(|_, _| Ok(CommandResult::success())))
         .expect("seed root registers")
         .with_root(literal("return").then(
             literal("run").redirects_returning(CommandRedirectTarget::All, |_, _| {

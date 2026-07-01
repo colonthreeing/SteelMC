@@ -1082,6 +1082,8 @@ impl CommandGraph {
             Vec::new(),
             Vec::new(),
             context,
+            &self.roots,
+            None,
         )
     }
 }
