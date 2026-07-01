@@ -905,22 +905,6 @@ pub(super) fn parse_player_selector_argument(
     Ok((selector, cursor))
 }
 
-pub(super) fn parse_entity_selector(
-    reader: &mut CommandReader<'_>,
-    context: &dyn CommandInputContext,
-    single: bool,
-) -> Result<Vec<SharedEntity>, CommandParseError> {
-    let (selector, cursor) = parse_entity_selector_argument(reader, context, single)?;
-    let entities = selector.find_entities(context, cursor)?;
-    if single && entities.len() != 1 {
-        return Err(CommandParseError::new(
-            CommandParseErrorKind::InvalidEntity(selector.raw),
-            cursor,
-        ));
-    }
-    Ok(entities)
-}
-
 pub(super) fn parse_entity_selector_argument(
     reader: &mut CommandReader<'_>,
     context: &dyn CommandInputContext,

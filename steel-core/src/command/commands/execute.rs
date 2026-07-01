@@ -27,7 +27,9 @@ use crate::command::graph::{
     ItemSlotRangeArgumentValue, LootPredicateArgumentValue, ParsedArguments,
     ScoreHolderArgumentValue, ScoreboardObjectiveName, literal,
 };
-use crate::command::parsers::resolve_entity_targets;
+use crate::command::parsers::{
+    ScoreHolderWildcardExpansion, resolve_entity_targets, resolve_score_holders,
+};
 use crate::command::requirement::CommandInputContext;
 use crate::entity::SharedEntity;
 use crate::scoreboard::{ScoreHolder, ScoreboardObjective};
@@ -212,26 +214,26 @@ fn scoreboard_objective(
 }
 
 fn score_holders(
+    context: &dyn CommandInputContext,
     arguments: &ParsedArguments,
     name: &str,
-) -> Result<ScoreHolderArgumentValue, CommandError> {
-    arguments
+) -> Result<Vec<ScoreHolder>, CommandError> {
+    let value = arguments
         .get::<ScoreHolderArgumentValue>(name)
-        .map_err(super::invalid_parsed_argument)
+        .map_err(super::invalid_parsed_argument)?;
+    resolve_score_holders(value, context, ScoreHolderWildcardExpansion::Empty)
 }
 
 fn single_score_holder(
+    context: &dyn CommandInputContext,
     arguments: &ParsedArguments,
     name: &str,
 ) -> Result<ScoreHolder, CommandError> {
-    let holders = score_holders(arguments, name)?;
-    let Some(holders) = holders.holders() else {
+    let mut holders = score_holders(context, arguments, name)?;
+    if holders.len() != 1 {
         return Err(no_score_holders());
-    };
-    let [holder] = holders else {
-        return Err(no_score_holders());
-    };
-    Ok(holder.to_owned())
+    }
+    Ok(holders.remove(0))
 }
 
 fn score_holders_or_tracked(
@@ -239,19 +241,18 @@ fn score_holders_or_tracked(
     arguments: &ParsedArguments,
     name: &str,
 ) -> Result<Vec<ScoreHolder>, CommandError> {
-    match score_holders(arguments, name)? {
-        ScoreHolderArgumentValue::Holders(holders) if holders.is_empty() => {
-            Err(no_score_holders())
-        }
-        ScoreHolderArgumentValue::Holders(holders) => Ok(holders),
-        ScoreHolderArgumentValue::Wildcard => {
-            let holders = context.server.scoreboard.tracked_holders();
-            if holders.is_empty() {
-                Err(no_score_holders())
-            } else {
-                Ok(holders)
-            }
-        }
+    let value = arguments
+        .get::<ScoreHolderArgumentValue>(name)
+        .map_err(super::invalid_parsed_argument)?;
+    let holders = resolve_score_holders(
+        value,
+        context,
+        ScoreHolderWildcardExpansion::TrackedHolders,
+    )?;
+    if holders.is_empty() {
+        Err(no_score_holders())
+    } else {
+        Ok(holders)
     }
 }
 

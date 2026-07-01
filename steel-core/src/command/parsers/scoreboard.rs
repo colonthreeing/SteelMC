@@ -7,12 +7,16 @@ use uuid::Uuid;
 
 use crate::{
     command::{
+        error::CommandError,
         graph::{
             CommandArgumentClientParser, CommandArgumentParser, CommandParseError,
             CommandParseErrorKind, DoubleRangeArgumentValue, IntRangeArgumentValue, ParsedArgument,
             ParsedArguments, ScoreHolderArgumentValue,
         },
-        parsers::selector::{parse_entity_selector, selector_argument_suggestions},
+        parsers::{
+            EntityTargetArgumentValue,
+            selector::{parse_entity_selector_argument, selector_argument_suggestions},
+        },
         reader::{CommandReader, StringMode},
         requirement::CommandInputContext,
     },
@@ -46,21 +50,32 @@ impl CommandArgumentParser for ScoreHolderParser {
         reader: &mut CommandReader<'_>,
         context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
-        let cursor = reader.absolute_cursor();
-        let raw = reader.read_token()?;
-        if raw == "*" {
+        if reader.peek() == Some('@') {
+            let input = reader.input().to_owned();
+            let (selector, cursor) =
+                parse_entity_selector_argument(reader, context, !self.multiple)?;
             return Ok(ParsedArgument::ScoreHolders(
-                ScoreHolderArgumentValue::Wildcard,
+                ScoreHolderArgumentValue::Selector(EntityTargetArgumentValue::new(
+                    selector,
+                    cursor,
+                    input,
+                    !self.multiple,
+                )),
             ));
         }
 
-        if raw.starts_with('@') {
-            return parse_entity_score_holders(&raw, cursor, self.multiple, context);
-        }
+        let raw = reader.read_token()?;
+        let value = if raw == "*" {
+            return Ok(ParsedArgument::ScoreHolders(
+                ScoreHolderArgumentValue::Wildcard,
+            ));
+        } else if let Ok(uuid) = Uuid::parse_str(&raw) {
+            ScoreHolderArgumentValue::Uuid { uuid, raw }
+        } else {
+            ScoreHolderArgumentValue::Name(raw)
+        };
 
-        Ok(ParsedArgument::ScoreHolders(
-            ScoreHolderArgumentValue::Holders(vec![resolve_name_score_holder(&raw, context)]),
-        ))
+        Ok(ParsedArgument::ScoreHolders(value))
     }
 
     fn client_parser(&self) -> CommandArgumentClientParser {
@@ -214,45 +229,83 @@ impl CommandArgumentParser for DoubleRangeParser {
     }
 }
 
-fn parse_entity_score_holders(
-    raw: &str,
-    cursor: usize,
-    multiple: bool,
-    context: &dyn CommandInputContext,
-) -> Result<ParsedArgument, CommandParseError> {
-    let mut reader = CommandReader::with_offset(raw, cursor);
-    let entities = parse_entity_selector(&mut reader, context, !multiple)?;
+/// Wildcard behavior for resolving score-holder arguments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ScoreHolderWildcardExpansion {
+    /// Wildcard expands to an empty collection.
+    Empty,
+    /// Wildcard expands to all scoreboard-tracked holders.
+    TrackedHolders,
+}
 
-    Ok(ParsedArgument::ScoreHolders(
-        ScoreHolderArgumentValue::Holders(
-            entities
-                .into_iter()
-                .map(|entity| ScoreHolder::new(entity.scoreboard_name()))
-                .collect(),
-        ),
-    ))
+pub(crate) fn resolve_score_holders(
+    value: ScoreHolderArgumentValue,
+    context: &dyn CommandInputContext,
+    wildcard: ScoreHolderWildcardExpansion,
+) -> Result<Vec<ScoreHolder>, CommandError> {
+    Ok(match value {
+        ScoreHolderArgumentValue::Name(raw) => vec![resolve_name_score_holder(&raw, context)],
+        ScoreHolderArgumentValue::Uuid { uuid, raw } => {
+            resolve_uuid_score_holders(uuid, &raw, context)
+        }
+        ScoreHolderArgumentValue::Selector(selector) => selector
+            .resolve(context)?
+            .into_iter()
+            .map(|entity| ScoreHolder::new(entity.scoreboard_name()))
+            .collect(),
+        ScoreHolderArgumentValue::Wildcard => match wildcard {
+            ScoreHolderWildcardExpansion::Empty => Vec::new(),
+            ScoreHolderWildcardExpansion::TrackedHolders => context
+                .server()
+                .map_or_else(Vec::new, |server| server.scoreboard.tracked_holders()),
+        },
+    })
 }
 
 fn resolve_name_score_holder(raw: &str, context: &dyn CommandInputContext) -> ScoreHolder {
-    let Some(uuid) = Uuid::parse_str(raw).ok() else {
+    if raw.starts_with('#') {
         return ScoreHolder::new(raw.to_owned());
-    };
+    }
+    context
+        .server()
+        .and_then(|server| {
+            server
+                .get_players()
+                .into_iter()
+                .find(|player| player.gameprofile.name.eq_ignore_ascii_case(raw))
+        })
+        .map_or_else(
+            || ScoreHolder::new(raw.to_owned()),
+            |player| ScoreHolder::new(player.scoreboard_name()),
+        )
+}
+
+fn resolve_uuid_score_holders(
+    uuid: Uuid,
+    raw: &str,
+    context: &dyn CommandInputContext,
+) -> Vec<ScoreHolder> {
     let Some(server) = context.server() else {
-        return ScoreHolder::new(raw.to_owned());
+        return vec![ScoreHolder::new(raw.to_owned())];
     };
-
-    for player in server.get_players() {
-        if player.uuid() == uuid {
-            return ScoreHolder::new(player.scoreboard_name());
-        }
-    }
-    for world in server.worlds.values() {
-        if let Some(entity) = world.get_entity_by_uuid(&uuid) {
-            return ScoreHolder::new(entity.scoreboard_name());
-        }
+    let holders = server
+        .worlds
+        .values()
+        .filter_map(|world| world.get_entity_by_uuid(&uuid))
+        .map(|entity| ScoreHolder::new(entity.scoreboard_name()))
+        .collect::<Vec<_>>();
+    if !holders.is_empty() {
+        return holders;
     }
 
-    ScoreHolder::new(raw.to_owned())
+    server
+        .get_players()
+        .into_iter()
+        .find(|player| player.uuid() == uuid)
+        .map_or_else(
+            || vec![ScoreHolder::new(raw.to_owned())],
+            |player| vec![ScoreHolder::new(player.scoreboard_name())],
+        )
 }
 
 fn parse_int_range(raw: &str, cursor: usize) -> Result<IntRangeArgumentValue, CommandParseError> {

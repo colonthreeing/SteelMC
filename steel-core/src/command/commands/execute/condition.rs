@@ -522,9 +522,9 @@ fn score_comparison_matches(
     arguments: &ParsedArguments,
     comparison: ScoreComparison,
 ) -> Result<bool, CommandError> {
-    let target = single_score_holder(arguments, "target")?;
+    let target = single_score_holder(context, arguments, "target")?;
     let target_objective = scoreboard_objective(context, arguments, "targetObjective")?;
-    let source = single_score_holder(arguments, "source")?;
+    let source = single_score_holder(context, arguments, "source")?;
     let source_objective = scoreboard_objective(context, arguments, "sourceObjective")?;
 
     Ok(compare_scores(
@@ -580,7 +580,7 @@ fn score_range_matches(
     context: &CommandContext,
     arguments: &ParsedArguments,
 ) -> Result<bool, CommandError> {
-    let target = single_score_holder(arguments, "target")?;
+    let target = single_score_holder(context, arguments, "target")?;
     let objective = scoreboard_objective(context, arguments, "targetObjective")?;
     let range = int_range(arguments)?;
 

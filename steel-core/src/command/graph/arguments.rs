@@ -29,7 +29,6 @@ use crate::permission::{
     PermissionSegment,
 };
 use crate::player::Player;
-use crate::scoreboard::ScoreHolder;
 use crate::world::World;
 
 /// A parsed command argument value.
@@ -271,24 +270,24 @@ pub struct PermissionTarget {
 }
 
 /// Score holder command argument value.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum ScoreHolderArgumentValue {
-    /// Explicit score holders.
-    Holders(Vec<ScoreHolder>),
+    /// A direct holder name, resolved against online players at execution time.
+    Name(String),
+    /// A UUID holder, resolved against live entities at execution time.
+    Uuid {
+        /// Parsed UUID.
+        uuid: Uuid,
+        /// Original token, used as the fallback holder name.
+        raw: String,
+    },
+    /// Entity selector resolved to scoreboard holders at execution time.
+    Selector(EntityTargetArgumentValue),
     /// Wildcard holder expansion.
     Wildcard,
 }
 
 impl ScoreHolderArgumentValue {
-    /// Returns explicit holders.
-    #[must_use]
-    pub fn holders(&self) -> Option<&[ScoreHolder]> {
-        match self {
-            Self::Holders(holders) => Some(holders),
-            Self::Wildcard => None,
-        }
-    }
-
     /// Returns whether this argument is a wildcard.
     #[must_use]
     pub const fn is_wildcard(&self) -> bool {

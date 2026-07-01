@@ -31,6 +31,7 @@ pub use resource::{
     BiomeParser, EnchantmentParser, EntitySummonParser, ItemParser, StructureParser,
 };
 pub use scoreboard::{DoubleRangeParser, IntRangeParser, ObjectiveParser, ScoreHolderParser};
+pub(crate) use scoreboard::{ScoreHolderWildcardExpansion, resolve_score_holders};
 pub use slot::ItemSlotsParser;
 pub use target::{
     EntityParser, EntityTargetArgumentValue, PermissionTargetParser, PlayerParser,
@@ -245,7 +246,7 @@ mod tests {
             .parse(&mut reader, &TestContext)
             .expect("score holder parses");
         assert!(
-            matches!(value, ParsedArgument::ScoreHolders(crate::command::graph::ScoreHolderArgumentValue::Holders(holders)) if holders[0].name() == "#hidden")
+            matches!(value, ParsedArgument::ScoreHolders(crate::command::graph::ScoreHolderArgumentValue::Name(name)) if name == "#hidden")
         );
 
         let mut reader = CommandReader::new("*");
@@ -284,6 +285,21 @@ mod tests {
         assert!(!single.iter().any(|text| text == "@a"));
         assert!(!single.iter().any(|text| text == "@e"));
         assert!(single.iter().any(|text| text == "@n"));
+    }
+
+    #[test]
+    fn score_holder_parser_keeps_selectors_deferred() {
+        let mut reader = CommandReader::new("@a");
+        let value = ScoreHolderParser::multiple()
+            .parse(&mut reader, &SelectorPermissionContext)
+            .expect("score holder selector parses without a live server");
+
+        assert!(matches!(
+            value,
+            ParsedArgument::ScoreHolders(
+                crate::command::graph::ScoreHolderArgumentValue::Selector(_)
+            )
+        ));
     }
 
     #[test]

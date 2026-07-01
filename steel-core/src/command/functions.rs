@@ -530,7 +530,7 @@ mod tests {
                 CommandFunctionArgumentValue, CommandParseErrorKind, CommandResult, argument,
                 literal,
             },
-            parsers::EntityParser,
+            parsers::{EntityParser, ScoreHolderParser},
             requirement::{
                 CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext,
             },
@@ -573,6 +573,14 @@ mod tests {
             PermissionSegment::parse("test").expect("namespace parses"),
         )
         .public();
+        let score_targeted_registration = CommandRegistration::new(
+            literal("scoretarget").then(
+                argument("holders", ScoreHolderParser::multiple())
+                    .executes(|_, _| Ok(CommandResult::success())),
+            ),
+            PermissionSegment::parse("test").expect("namespace parses"),
+        )
+        .public();
 
         dispatcher
             .register_command(registration)
@@ -580,6 +588,9 @@ mod tests {
         dispatcher
             .register_command(targeted_registration)
             .expect("targeted command registers");
+        dispatcher
+            .register_command(score_targeted_registration)
+            .expect("score-targeted command registers");
         dispatcher
     }
 
@@ -744,6 +755,20 @@ mod tests {
         function
             .validate_commands(&dispatcher, &TestContext)
             .expect("selector target validation should not require live server resolution");
+    }
+
+    #[test]
+    fn function_validation_keeps_score_holder_selectors_deferred() {
+        let dispatcher = validation_dispatcher();
+        let function = CommandFunction::from_source(
+            Identifier::new_static("test", "load"),
+            "scoretarget @a\n",
+        )
+        .expect("function source parses");
+
+        function
+            .validate_commands(&dispatcher, &TestContext)
+            .expect("score-holder selector validation should not require live server resolution");
     }
 
     #[test]

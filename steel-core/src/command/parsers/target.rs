@@ -91,7 +91,12 @@ pub struct EntityTargetArgumentValue {
 }
 
 impl EntityTargetArgumentValue {
-    fn new(selector: EntitySelector, cursor: usize, input: String, single: bool) -> Self {
+    pub(in crate::command::parsers) fn new(
+        selector: EntitySelector,
+        cursor: usize,
+        input: String,
+        single: bool,
+    ) -> Self {
         Self {
             selector,
             cursor,
