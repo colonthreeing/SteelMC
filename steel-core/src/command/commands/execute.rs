@@ -1,7 +1,8 @@
 //! Handler for the "execute" command.
 //!
-//! Function conditions are not registered here yet because Steel still needs a
-//! command-function runtime that preserves vanilla callback/result semantics.
+//! Function conditions currently run non-macro command functions. Function
+//! macros remain rejected by the command-function loader until macro
+//! instantiation has a runtime.
 //! Data component predicates without concrete Steel component storage are also
 //! omitted.
 

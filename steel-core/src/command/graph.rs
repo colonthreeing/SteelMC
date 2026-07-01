@@ -519,16 +519,8 @@ impl From<PermissionKeyError> for DynamicPermissionError {
 pub struct CommandResult {
     /// Integer value returned by the command.
     return_value: i32,
-    control: CommandResultControl,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum CommandResultControl {
-    #[default]
-    Continue,
-    Return {
-        success: bool,
-    },
+    callback_success: bool,
+    returns_from_frame: bool,
 }
 
 impl CommandResult {
@@ -543,7 +535,18 @@ impl CommandResult {
     pub const fn from_return_value(value: i32) -> Self {
         Self {
             return_value: value,
-            control: CommandResultControl::Continue,
+            callback_success: true,
+            returns_from_frame: false,
+        }
+    }
+
+    /// Creates a non-returning result that reports callback failure.
+    #[must_use]
+    pub const fn callback_failure(value: i32) -> Self {
+        Self {
+            return_value: value,
+            callback_success: false,
+            returns_from_frame: false,
         }
     }
 
@@ -552,7 +555,8 @@ impl CommandResult {
     pub const fn return_success(value: i32) -> Self {
         Self {
             return_value: value,
-            control: CommandResultControl::Return { success: true },
+            callback_success: true,
+            returns_from_frame: true,
         }
     }
 
@@ -561,7 +565,8 @@ impl CommandResult {
     pub const fn return_failure() -> Self {
         Self {
             return_value: 0,
-            control: CommandResultControl::Return { success: false },
+            callback_success: false,
+            returns_from_frame: true,
         }
     }
 
@@ -584,18 +589,16 @@ impl CommandResult {
     }
 
     pub(crate) const fn returns_from_frame(self) -> bool {
-        matches!(self.control, CommandResultControl::Return { .. })
+        self.returns_from_frame
     }
 
     pub(crate) const fn callback_success(self) -> bool {
-        match self.control {
-            CommandResultControl::Continue => true,
-            CommandResultControl::Return { success } => success,
-        }
+        self.callback_success
     }
 
     pub(crate) const fn as_return_success(mut self) -> Self {
-        self.control = CommandResultControl::Return { success: true };
+        self.callback_success = true;
+        self.returns_from_frame = true;
         self
     }
 }

@@ -556,7 +556,7 @@ impl CommandDispatcher {
             };
             let step = match step {
                 Ok(step) => step,
-                Err(_error) if active.is_forked() => {
+                Err(_error) if active.continues_after_command_error() => {
                     let Some(next) = queue.pop_front() else {
                         return Ok(dispatch_outcome(
                             total_success_count,
@@ -1037,6 +1037,10 @@ impl ActiveCommand<'_> {
             self.fork_stage()
         }
     }
+
+    fn continues_after_command_error(&self) -> bool {
+        self.is_forked() || self.frame_depth() > 0
+    }
 }
 
 fn discard_command_frame(queue: &mut VecDeque<QueuedCommand>, frame_depth: usize) {
@@ -1242,6 +1246,16 @@ mod tests {
 
         assert!(!callback.success);
         assert_eq!(callback.result, 0);
+    }
+
+    #[test]
+    fn callback_failure_does_not_return_from_command_frame() {
+        let result = CommandResult::callback_failure(0);
+        let callback = super::command_callback_result(result);
+
+        assert!(!callback.success);
+        assert_eq!(callback.result, 0);
+        assert!(!result.returns_from_frame());
     }
 
     #[test]
