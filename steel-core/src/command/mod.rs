@@ -1044,7 +1044,12 @@ impl ActiveCommand<'_> {
 }
 
 fn discard_command_frame(queue: &mut VecDeque<QueuedCommand>, frame_depth: usize) {
-    queue.retain(|queued| queued.frame_depth < frame_depth);
+    while queue
+        .front()
+        .is_some_and(|queued| queued.frame_depth >= frame_depth)
+    {
+        queue.pop_front();
+    }
 }
 
 fn queued_fork_stage_contexts(
