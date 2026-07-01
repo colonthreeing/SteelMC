@@ -716,18 +716,17 @@ impl CommandDispatcher {
                             fork_limit,
                         )?;
                     }
-                    let mut actions = Vec::with_capacity(contexts.len());
-                    for context in contexts {
-                        actions.push(QueuedAction::Command(QueuedCommand::new(
-                            next_command.clone(),
-                            context,
+                    queue_next_actions(
+                        &mut queue,
+                        redirect_actions(
+                            next_command,
+                            contexts,
                             next_forked,
                             next_fork_stage,
                             next_returning,
-                            next_frame.clone(),
-                        )));
-                    }
-                    queue_next_actions(&mut queue, actions);
+                            next_frame,
+                        ),
+                    );
                     let Some(next) = next_queued_command(&mut queue, budget, &mut frame_return)?
                     else {
                         return Ok(dispatch_outcome(
@@ -1320,6 +1319,33 @@ fn queue_next_actions(
     }
 }
 
+fn redirect_actions(
+    command: String,
+    contexts: Vec<CommandContext>,
+    forked: bool,
+    fork_stage: usize,
+    returning: bool,
+    frame: QueuedFrame,
+) -> Vec<QueuedAction> {
+    if contexts.is_empty() && returning {
+        return vec![QueuedAction::Fallthrough(frame)];
+    }
+
+    contexts
+        .into_iter()
+        .map(|context| {
+            QueuedAction::Command(QueuedCommand::new(
+                command.clone(),
+                context,
+                forked,
+                fork_stage,
+                returning,
+                frame.clone(),
+            ))
+        })
+        .collect()
+}
+
 fn return_from_frame(
     queue: &mut VecDeque<QueuedAction>,
     frame: &QueuedFrame,
@@ -1630,6 +1656,38 @@ mod tests {
             .map(super::QueuedAction::frame_depth)
             .collect::<Vec<_>>();
         assert_eq!(depths, [1, 2, 0]);
+    }
+
+    #[test]
+    fn returning_redirect_without_contexts_queues_fallthrough() {
+        let actions = super::redirect_actions(
+            "seed".to_owned(),
+            Vec::new(),
+            false,
+            0,
+            true,
+            super::QueuedFrame::for_depth(2),
+        );
+
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(
+            actions.first(),
+            Some(super::QueuedAction::Fallthrough(frame)) if frame.depth == 2
+        ));
+    }
+
+    #[test]
+    fn non_returning_redirect_without_contexts_queues_nothing() {
+        let actions = super::redirect_actions(
+            "seed".to_owned(),
+            Vec::new(),
+            false,
+            0,
+            false,
+            super::QueuedFrame::for_depth(2),
+        );
+
+        assert!(actions.is_empty());
     }
 
     #[test]
