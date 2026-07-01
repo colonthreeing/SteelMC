@@ -1346,36 +1346,47 @@ fn entity_type_suggestions(
     }
 
     let mut suggestions = Vec::new();
-    if state.mode.allows_positive() {
-        push_entity_type_tag_suggestions(
-            &mut suggestions,
-            expression_prefix,
-            value_prefix,
-            "",
-            state,
-        );
-    }
-    if state.mode.allows_negative() {
-        push_entity_type_tag_suggestions(
-            &mut suggestions,
-            expression_prefix,
-            value_prefix,
-            "!",
-            state,
-        );
-    }
+    push_entity_type_tag_suggestions(&mut suggestions, expression_prefix, value_prefix, "", state);
+    push_entity_type_tag_suggestions(
+        &mut suggestions,
+        expression_prefix,
+        value_prefix,
+        "!",
+        state,
+    );
     if value_prefix.starts_with('#') || value_prefix.starts_with("!#") {
         return suggestions;
     }
 
-    let (inversion, resource_prefix) = value_prefix
-        .strip_prefix('!')
-        .map_or(("", value_prefix), |prefix| ("!", prefix));
-    if inversion.is_empty() && !state.mode.allows_positive()
-        || inversion == "!" && !state.mode.allows_negative()
-    {
-        return suggestions;
+    if state.mode.allows_positive() {
+        push_entity_type_id_suggestions(&mut suggestions, expression_prefix, value_prefix, "");
     }
+    if state.mode.allows_negative() {
+        push_entity_type_id_suggestions(&mut suggestions, expression_prefix, value_prefix, "!");
+    }
+
+    suggestions
+}
+
+fn push_entity_type_id_suggestions(
+    suggestions: &mut Vec<String>,
+    expression_prefix: &str,
+    value_prefix: &str,
+    inversion: &str,
+) {
+    let resource_prefix = if inversion.is_empty() {
+        if value_prefix.starts_with('!') || value_prefix.starts_with('#') {
+            return;
+        }
+        value_prefix
+    } else if let Some(prefix) = value_prefix.strip_prefix(inversion) {
+        prefix
+    } else if inversion.starts_with(value_prefix) {
+        ""
+    } else {
+        return;
+    };
+
     let stripped_prefix = resource_prefix
         .strip_prefix("minecraft:")
         .unwrap_or(resource_prefix);
@@ -1390,7 +1401,6 @@ fn entity_type_suggestions(
             })
             .map(|key| format!("{expression_prefix}{inversion}{key}")),
     );
-    suggestions
 }
 
 fn push_entity_type_tag_suggestions(
@@ -2897,11 +2907,30 @@ mod tests {
 
         let after_negative =
             selector_argument_suggestions("@e[type=!minecraft:pig,type=", false, false, &context);
-        assert!(after_negative.iter().all(|suggestion| {
-            suggestion
-                .strip_prefix("@e[type=!minecraft:pig,type=")
-                .is_some_and(|value| value.starts_with('!'))
-        }));
+        let after_negative_values = after_negative
+            .iter()
+            .filter_map(|suggestion| suggestion.strip_prefix("@e[type=!minecraft:pig,type="))
+            .collect::<Vec<_>>();
+        assert!(
+            after_negative_values
+                .iter()
+                .any(|value| value.starts_with('#'))
+        );
+        assert!(
+            after_negative_values
+                .iter()
+                .any(|value| value.starts_with("!#"))
+        );
+        assert!(
+            after_negative_values
+                .iter()
+                .any(|value| { value.starts_with('!') && !value.starts_with("!#") })
+        );
+        assert!(
+            after_negative_values
+                .iter()
+                .all(|value| value.starts_with('!') || value.starts_with('#'))
+        );
 
         let after_tag = selector_argument_suggestions(
             "@e[type=!#minecraft:skeletons,type=!#",
@@ -2919,6 +2948,31 @@ mod tests {
             after_positive_tag
                 .iter()
                 .any(|suggestion| suggestion == "@e[type=#minecraft:skeletons,type=")
+        );
+        let after_positive_tag_values = selector_argument_suggestions(
+            "@e[type=#minecraft:skeletons,type=",
+            false,
+            false,
+            &context,
+        );
+        let after_positive_tag_values = after_positive_tag_values
+            .iter()
+            .filter_map(|suggestion| suggestion.strip_prefix("@e[type=#minecraft:skeletons,type="))
+            .collect::<Vec<_>>();
+        assert!(
+            after_positive_tag_values
+                .iter()
+                .any(|value| { value.starts_with('#') && *value != "#minecraft:skeletons" })
+        );
+        assert!(
+            after_positive_tag_values
+                .iter()
+                .any(|value| { value.starts_with("!#") && *value != "!#minecraft:skeletons" })
+        );
+        assert!(
+            !after_positive_tag_values
+                .iter()
+                .any(|value| *value == "#minecraft:skeletons" || *value == "!#minecraft:skeletons")
         );
     }
 
