@@ -328,8 +328,7 @@ fn function_condition_result(
     let dispatcher = context.server.command_dispatcher.read().clone();
     match dispatcher.run_functions_for_condition(&functions, context, budget)? {
         CommandFunctionConditionResult::NoFunctions => Ok(None),
-        CommandFunctionConditionResult::Returned(result) => Ok(Some(result.result)),
-        CommandFunctionConditionResult::Fallthrough => Ok(Some(0)),
+        CommandFunctionConditionResult::Callback(result) => Ok(Some(result.result)),
     }
 }
 

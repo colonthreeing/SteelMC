@@ -496,31 +496,37 @@ impl CommandDispatcher {
             .with_suppressed_output();
         let mut queue = VecDeque::new();
         for function in functions {
-            for command in function.commands() {
-                queue.push_back(QueuedCommand::function_frame(
-                    command.clone(),
-                    function_context.clone(),
-                ));
-            }
+            queue.push_back(QueuedAction::FunctionCall(QueuedFunctionCall::new(
+                function.clone(),
+                function_context.clone(),
+                1,
+                1,
+                true,
+            )));
         }
+        queue.push_back(QueuedAction::Fallthrough(QueuedFrame::new(1, 1)));
 
-        let Some(first) = queue.pop_front() else {
-            return Ok(CommandFunctionConditionResult::Fallthrough);
+        let mut frame_return = None;
+        let Some(first) = next_queued_command(&mut queue, budget, &mut frame_return)? else {
+            return Ok(frame_return.map_or(
+                CommandFunctionConditionResult::NoFunctions,
+                CommandFunctionConditionResult::Callback,
+            ));
         };
 
         let outcome = self
             .dispatch_active_with_queue(ActiveCommand::Owned(first), queue, budget)?
             .frame_return;
         Ok(outcome.map_or(
-            CommandFunctionConditionResult::Fallthrough,
-            CommandFunctionConditionResult::Returned,
+            CommandFunctionConditionResult::NoFunctions,
+            CommandFunctionConditionResult::Callback,
         ))
     }
 
     fn dispatch_active_with_queue(
         &self,
         mut active: ActiveCommand<'_>,
-        mut queue: VecDeque<QueuedCommand>,
+        mut queue: VecDeque<QueuedAction>,
         budget: &mut CommandExecutionBudget,
     ) -> Result<DispatchOutcome, CommandError> {
         let fork_limit = command_fork_limit(active.context());
@@ -557,7 +563,8 @@ impl CommandDispatcher {
             let step = match step {
                 Ok(step) => step,
                 Err(_error) if active.continues_after_command_error() => {
-                    let Some(next) = queue.pop_front() else {
+                    let Some(next) = next_queued_command(&mut queue, budget, &mut frame_return)?
+                    else {
                         return Ok(dispatch_outcome(
                             total_success_count,
                             last_result,
@@ -577,7 +584,7 @@ impl CommandDispatcher {
                         result = result.as_return_success();
                     }
                     let returns_from_frame = result.returns_from_frame();
-                    let frame_depth = active.frame_depth();
+                    let return_discard_depth = active.return_discard_depth();
                     let callback_result = command_callback_result(result);
                     active.context_mut().on_command_result(callback_result);
                     if active.is_forked() {
@@ -588,9 +595,10 @@ impl CommandDispatcher {
                         .saturating_add(execution_success_count(result, active.is_forked()));
                     if returns_from_frame {
                         frame_return = Some(callback_result);
-                        discard_command_frame(&mut queue, frame_depth);
+                        discard_command_frame(&mut queue, return_discard_depth);
                     }
-                    let Some(next) = queue.pop_front() else {
+                    let Some(next) = next_queued_command(&mut queue, budget, &mut frame_return)?
+                    else {
                         return Ok(dispatch_outcome(
                             total_success_count,
                             last_result,
@@ -609,9 +617,9 @@ impl CommandDispatcher {
                     let next_forked = active.is_forked() || forked;
                     let next_fork_stage = active.next_fork_stage(forked);
                     let next_returning = active.is_returning() || returns;
-                    let next_frame_depth = active.frame_depth();
+                    let next_frame = active.frame();
                     if returns {
-                        discard_command_frame(&mut queue, next_frame_depth);
+                        discard_command_frame(&mut queue, next_frame.return_discard_depth);
                     }
                     if forked {
                         check_command_fork_limit(
@@ -621,16 +629,17 @@ impl CommandDispatcher {
                         )?;
                     }
                     for context in contexts {
-                        queue.push_back(QueuedCommand::new(
+                        queue.push_back(QueuedAction::Command(QueuedCommand::new(
                             next_command.clone(),
                             context,
                             next_forked,
                             next_fork_stage,
                             next_returning,
-                            next_frame_depth,
-                        ));
+                            next_frame,
+                        )));
                     }
-                    let Some(next) = queue.pop_front() else {
+                    let Some(next) = next_queued_command(&mut queue, budget, &mut frame_return)?
+                    else {
                         return Ok(dispatch_outcome(
                             total_success_count,
                             last_result,
@@ -939,7 +948,7 @@ struct QueuedCommand {
     forked: bool,
     fork_stage: usize,
     returning: bool,
-    frame_depth: usize,
+    frame: QueuedFrame,
 }
 
 impl QueuedCommand {
@@ -949,7 +958,7 @@ impl QueuedCommand {
         forked: bool,
         fork_stage: usize,
         returning: bool,
-        frame_depth: usize,
+        frame: QueuedFrame,
     ) -> Self {
         Self {
             command,
@@ -957,12 +966,88 @@ impl QueuedCommand {
             forked,
             fork_stage,
             returning,
-            frame_depth,
+            frame,
+        }
+    }
+}
+
+enum QueuedAction {
+    Command(QueuedCommand),
+    FunctionCall(QueuedFunctionCall),
+    Fallthrough(QueuedFrame),
+}
+
+impl QueuedAction {
+    const fn frame_depth(&self) -> usize {
+        match self {
+            Self::Command(command) => command.frame.depth,
+            Self::FunctionCall(call) => call.frame.depth,
+            Self::Fallthrough(frame) => frame.depth,
+        }
+    }
+}
+
+struct QueuedFunctionCall {
+    function: CommandFunction,
+    context: CommandContext,
+    frame: QueuedFrame,
+    return_parent_frame: bool,
+}
+
+impl QueuedFunctionCall {
+    fn new(
+        function: CommandFunction,
+        context: CommandContext,
+        frame_depth: usize,
+        return_discard_depth: usize,
+        return_parent_frame: bool,
+    ) -> Self {
+        Self {
+            function,
+            context,
+            frame: QueuedFrame::new(frame_depth, return_discard_depth),
+            return_parent_frame,
         }
     }
 
-    fn function_frame(command: String, context: CommandContext) -> Self {
-        Self::new(command, context, false, 0, false, 1)
+    fn enqueue_commands(self, queue: &mut VecDeque<QueuedAction>) {
+        let child_frame = if self.return_parent_frame {
+            QueuedFrame::new(
+                self.frame.depth.saturating_add(1),
+                self.frame.return_discard_depth,
+            )
+        } else {
+            QueuedFrame::for_depth(self.frame.depth.saturating_add(1))
+        };
+        for command in self.function.commands().iter().rev() {
+            queue.push_front(QueuedAction::Command(QueuedCommand::new(
+                command.clone(),
+                self.context.clone(),
+                false,
+                0,
+                false,
+                child_frame,
+            )));
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct QueuedFrame {
+    depth: usize,
+    return_discard_depth: usize,
+}
+
+impl QueuedFrame {
+    const fn new(depth: usize, return_discard_depth: usize) -> Self {
+        Self {
+            depth,
+            return_discard_depth,
+        }
+    }
+
+    const fn for_depth(depth: usize) -> Self {
+        Self::new(depth, depth)
     }
 }
 
@@ -974,8 +1059,7 @@ struct DispatchOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CommandFunctionConditionResult {
     NoFunctions,
-    Returned(CommandCallbackResult),
-    Fallthrough,
+    Callback(CommandCallbackResult),
 }
 
 impl ActiveCommand<'_> {
@@ -1023,11 +1107,19 @@ impl ActiveCommand<'_> {
         }
     }
 
-    fn frame_depth(&self) -> usize {
+    fn frame(&self) -> QueuedFrame {
         match self {
-            Self::Borrowed { .. } => 0,
-            Self::Owned(QueuedCommand { frame_depth, .. }) => *frame_depth,
+            Self::Borrowed { .. } => QueuedFrame::for_depth(0),
+            Self::Owned(QueuedCommand { frame, .. }) => *frame,
         }
+    }
+
+    fn frame_depth(&self) -> usize {
+        self.frame().depth
+    }
+
+    fn return_discard_depth(&self) -> usize {
+        self.frame().return_discard_depth
     }
 
     fn next_fork_stage(&self, forked: bool) -> usize {
@@ -1043,23 +1135,55 @@ impl ActiveCommand<'_> {
     }
 }
 
-fn discard_command_frame(queue: &mut VecDeque<QueuedCommand>, frame_depth: usize) {
+fn next_queued_command(
+    queue: &mut VecDeque<QueuedAction>,
+    budget: &mut CommandExecutionBudget,
+    frame_return: &mut Option<CommandCallbackResult>,
+) -> Result<Option<QueuedCommand>, CommandError> {
+    loop {
+        let Some(action) = queue.pop_front() else {
+            return Ok(None);
+        };
+        match action {
+            QueuedAction::Command(command) => return Ok(Some(command)),
+            QueuedAction::FunctionCall(call) => {
+                budget.consume()?;
+                call.enqueue_commands(queue);
+            }
+            QueuedAction::Fallthrough(frame) => {
+                *frame_return = Some(CommandCallbackResult {
+                    success: false,
+                    result: 0,
+                });
+                discard_command_frame(queue, frame.return_discard_depth);
+            }
+        }
+    }
+}
+
+fn discard_command_frame(queue: &mut VecDeque<QueuedAction>, frame_depth: usize) {
     while queue
         .front()
-        .is_some_and(|queued| queued.frame_depth >= frame_depth)
+        .is_some_and(|queued| queued.frame_depth() >= frame_depth)
     {
         queue.pop_front();
     }
 }
 
 fn queued_fork_stage_contexts(
-    queue: &VecDeque<QueuedCommand>,
+    queue: &VecDeque<QueuedAction>,
     fork_stage: usize,
     command: &str,
 ) -> usize {
     queue
         .iter()
-        .filter(|queued| queued.fork_stage == fork_stage && queued.command == command)
+        .filter(|queued| {
+            matches!(
+                queued,
+                QueuedAction::Command(queued)
+                    if queued.fork_stage == fork_stage && queued.command == command
+            )
+        })
         .count()
 }
 
@@ -1261,6 +1385,28 @@ mod tests {
         assert!(!callback.success);
         assert_eq!(callback.result, 0);
         assert!(!result.returns_from_frame());
+    }
+
+    #[test]
+    fn frame_discard_removes_only_current_frame_prefix() {
+        let mut queue = std::collections::VecDeque::from([
+            super::QueuedAction::Fallthrough(super::QueuedFrame::for_depth(2)),
+            super::QueuedAction::Fallthrough(super::QueuedFrame::for_depth(1)),
+            super::QueuedAction::Fallthrough(super::QueuedFrame::for_depth(0)),
+            super::QueuedAction::Fallthrough(super::QueuedFrame::for_depth(1)),
+        ]);
+
+        super::discard_command_frame(&mut queue, 1);
+
+        assert_eq!(queue.len(), 2);
+        assert!(matches!(
+            queue.front(),
+            Some(super::QueuedAction::Fallthrough(frame)) if frame.depth == 0
+        ));
+        assert!(matches!(
+            queue.back(),
+            Some(super::QueuedAction::Fallthrough(frame)) if frame.depth == 1
+        ));
     }
 
     #[test]
