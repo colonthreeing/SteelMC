@@ -94,6 +94,10 @@ pub struct CommandContext {
 }
 
 /// Authorization state captured when command execution starts.
+///
+/// Vanilla keeps the same permission set when `/execute` changes entity,
+/// position, or world. Steel mirrors that by keeping permission checks tied to
+/// this captured context instead of the mutable execution source fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CommandAuthorizationContext {
     permission_context: PermissionContext,

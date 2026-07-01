@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use glam::DVec3;
 
+use crate::permission::PermissionContext;
 use crate::{
     command::{
         context::{CommandContext, EntityAnchor},
@@ -157,7 +158,7 @@ impl RequirementContext for CommandContext {
     }
 
     fn has_permission(&self, permission: &PermissionExpr) -> bool {
-        sender_has_permission(&self.sender, permission, self)
+        sender_has_permission(&self.sender, permission, self.permission_check_context())
     }
 }
 
@@ -173,12 +174,10 @@ fn sender_source_kind(sender: &CommandSender) -> CommandSourceKind {
 fn sender_has_permission(
     sender: &CommandSender,
     permission: &PermissionExpr,
-    context: &CommandContext,
+    context: &PermissionContext,
 ) -> bool {
     match sender {
-        CommandSender::Player(player) => {
-            player.has_permission_in(permission, context.permission_check_context())
-        }
+        CommandSender::Player(player) => player.has_permission_in(permission, context),
         CommandSender::Console | CommandSender::Rcon => true,
         CommandSender::SuppressedOutput(sender) => {
             sender_has_permission(sender, permission, context)
@@ -242,9 +241,13 @@ impl CommandInputContext for CommandContext {
 mod tests {
     use super::{
         CommandInputContext, CommandSourceKind, PermissionExpr, PermissionKey, Requirement,
-        RequirementContext,
+        RequirementContext, sender_has_permission,
     };
-    use crate::permission::{PermissionEntry, PermissionSet};
+    use crate::{
+        command::sender::CommandSender,
+        permission::{PermissionContext, PermissionEntry, PermissionSet},
+    };
+    use steel_utils::Identifier;
 
     struct StaticContext {
         source_kind: CommandSourceKind,
@@ -276,5 +279,30 @@ mod tests {
         )));
 
         assert!(requirement.allows(&context));
+    }
+
+    #[test]
+    fn console_permissions_do_not_depend_on_execution_context() {
+        let permission = PermissionExpr::key(
+            PermissionKey::parse("minecraft.command.gamemode").expect("key parses"),
+        );
+        let context = PermissionContext::for_world("admin", Identifier::new("admin", "spawn"));
+
+        assert!(sender_has_permission(
+            &CommandSender::Console,
+            &permission,
+            &context
+        ));
+    }
+
+    #[test]
+    fn suppressed_output_keeps_permission_authority() {
+        let permission = PermissionExpr::key(
+            PermissionKey::parse("minecraft.command.gamemode").expect("key parses"),
+        );
+        let context = PermissionContext::for_world("admin", Identifier::new("admin", "spawn"));
+        let sender = CommandSender::Rcon.with_suppressed_output();
+
+        assert!(sender_has_permission(&sender, &permission, &context));
     }
 }
