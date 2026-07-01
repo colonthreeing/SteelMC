@@ -18,7 +18,10 @@ use crate::command::requirement::{
     CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext,
 };
 use crate::command::storage::CommandStorage;
-use crate::entity::{Entity, EntityBase, entities::ItemEntity};
+use crate::entity::{
+    Entity, EntityBase,
+    entities::{ChestMinecartEntity, ItemEntity},
+};
 use crate::scoreboard::{ScoreHolder, Scoreboard};
 
 struct TestContext;
@@ -84,6 +87,16 @@ fn command_failed_translation_key(error: CommandError) -> String {
         panic!("command failure should be translated");
     };
     message.key.to_string()
+}
+
+fn command_failed_plain_text(error: CommandError) -> String {
+    let CommandError::CommandFailed(message) = error else {
+        panic!("error should be a command failure");
+    };
+    let Content::Text { text } = &message.content else {
+        panic!("command failure should be plain text");
+    };
+    text.to_string()
 }
 
 fn entity_item_arguments(
@@ -556,6 +569,31 @@ fn items_entity_condition_ignores_missing_slots() {
         Ok(count) => assert_eq!(count, 0),
         Err(_) => panic!("missing entity slots should count as zero"),
     }
+}
+
+#[test]
+fn items_entity_condition_reports_slots_with_unavailable_backing_state() {
+    init_test_registry();
+    let minecart = Arc::new(ChestMinecartEntity::new(
+        &vanilla_entities::CHEST_MINECART,
+        1,
+        DVec3::ZERO,
+        Weak::new(),
+    ));
+    minecart.set_loot_table(Identifier::new_static("steel", "missing"), 42);
+    let entity: Arc<dyn Entity> = minecart;
+    let arguments = entity_item_arguments(
+        entity,
+        ItemSlotRangeArgumentValue::new("container.0", vec![0]),
+    );
+
+    let error = super::condition::entity_items_match_count(&TestContext, &arguments)
+        .expect_err("unavailable backing state should be reported");
+
+    assert_eq!(
+        command_failed_plain_text(error),
+        "unsupported entity item slot 'container.0'"
+    );
 }
 
 #[test]
