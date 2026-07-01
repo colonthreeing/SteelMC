@@ -4,18 +4,14 @@ use steel_protocol::packets::game::{ArgumentType, SuggestionEntry, SuggestionTyp
 use steel_registry::{REGISTRY, RegistryExt, TaggedRegistryExt, entity_type::EntityTypeRef};
 use steel_utils::Identifier;
 
-use crate::{
-    command::{
-        graph::{
-            BiomeArgumentValue, CommandArgumentClientParser, CommandArgumentParser,
-            CommandParseError, CommandParseErrorKind, ParsedArgument, ParsedArguments,
-            StructureArgumentValue,
-        },
-        reader::CommandReader,
-        requirement::CommandInputContext,
-        suggestions::matches_suggestion_substr,
+use crate::command::{
+    graph::{
+        BiomeArgumentValue, CommandArgumentClientParser, CommandArgumentParser, CommandParseError,
+        CommandParseErrorKind, ParsedArgument, ParsedArguments, StructureArgumentValue,
     },
-    entity::ENTITIES,
+    reader::CommandReader,
+    requirement::CommandInputContext,
+    suggestions::matches_suggestion_substr,
 };
 
 /// Summonable entity type argument parser.
@@ -97,9 +93,6 @@ fn resolve_summon_entity_type(input: &str) -> Option<EntityTypeRef> {
 
 fn can_summon_entity_type(entity_type: EntityTypeRef) -> bool {
     entity_type.summonable
-        && ENTITIES
-            .get()
-            .is_some_and(|registry| registry.has_factory(entity_type))
 }
 
 /// Item resource argument parser.

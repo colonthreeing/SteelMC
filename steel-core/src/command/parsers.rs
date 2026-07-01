@@ -69,7 +69,7 @@ mod tests {
                 CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext,
             },
         },
-        entity::init_test_entities,
+        entity::{ENTITIES, init_test_entities},
         permission::{
             PermissionCatalog, PermissionCatalogSource, PermissionContextCatalog,
             PermissionContextCatalogSource, PermissionContextKey, PermissionKey,
@@ -826,6 +826,48 @@ mod tests {
             value,
             ParsedArgument::EntityType(entity_type) if entity_type == &vanilla_entities::PIG
         ));
+    }
+
+    #[test]
+    fn entity_summon_parser_accepts_summonable_types_without_factories() {
+        init_test_entities();
+        assert!(vanilla_entities::VILLAGER.summonable);
+        assert!(
+            !ENTITIES
+                .get()
+                .expect("entity registry is initialized")
+                .has_factory(&vanilla_entities::VILLAGER)
+        );
+
+        let mut reader = CommandReader::new("villager");
+        let value = EntitySummonParser
+            .parse(&mut reader, &TestContext)
+            .expect("summonable entity type parses even without a Steel factory");
+
+        assert!(matches!(
+            value,
+            ParsedArgument::EntityType(entity_type) if entity_type == &vanilla_entities::VILLAGER
+        ));
+    }
+
+    #[test]
+    fn entity_summon_parser_suggests_summonable_types_without_factories() {
+        init_test_entities();
+        assert!(vanilla_entities::VILLAGER.summonable);
+        assert!(
+            !ENTITIES
+                .get()
+                .expect("entity registry is initialized")
+                .has_factory(&vanilla_entities::VILLAGER)
+        );
+
+        let suggestions = EntitySummonParser
+            .suggest("vill", &ParsedArguments::default(), &TestContext)
+            .into_iter()
+            .map(|suggestion| suggestion.text)
+            .collect::<Vec<_>>();
+
+        assert!(suggestions.iter().any(|text| text == "minecraft:villager"));
     }
 
     #[test]
