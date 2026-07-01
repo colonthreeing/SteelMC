@@ -4,7 +4,8 @@ use steel_protocol::packets::game::{CommandNode as ProtocolCommandNode, CommandN
 
 use super::{
     CommandArgumentParser, CommandExecutor, CommandForkExecutor, CommandGraphAmbiguity,
-    CommandGraphError, CommandRedirectTarget, DynamicPermission, validate_command_node_name,
+    CommandGraphError, CommandRedirectTarget, CommandStepExecutor, DynamicPermission,
+    validate_command_node_name,
 };
 use crate::command::reader::CommandReader;
 use crate::command::requirement::{
@@ -43,9 +44,15 @@ pub(super) struct CommandNode {
     pub(super) kind: CommandNodeKind,
     pub(super) requirement: Requirement,
     pub(super) children: Vec<CommandNode>,
-    pub(super) executor: Option<CommandExecutor>,
+    pub(super) executor: Option<CommandNodeExecutor>,
     pub(super) redirect: Option<CommandRedirect>,
     pub(super) dynamic_permissions: Vec<DynamicPermission>,
+}
+
+#[derive(Clone)]
+pub(super) enum CommandNodeExecutor {
+    Result(CommandExecutor),
+    Step(CommandStepExecutor),
 }
 
 impl CommandNode {

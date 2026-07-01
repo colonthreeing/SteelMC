@@ -608,6 +608,43 @@ impl CommandDispatcher {
                     };
                     active = ActiveCommand::Owned(next);
                 }
+                CommandExecutionStep::CallFunctions { functions } => {
+                    let active_frame = active.frame();
+                    let return_parent_frame = active.is_returning();
+                    let function_context = active
+                        .context()
+                        .clone()
+                        .without_result_callbacks()
+                        .with_suppressed_output();
+                    let mut actions = Vec::with_capacity(
+                        functions
+                            .len()
+                            .saturating_add(usize::from(return_parent_frame)),
+                    );
+                    for function in functions {
+                        actions.push(QueuedAction::FunctionCall(QueuedFunctionCall::new(
+                            function,
+                            function_context.clone(),
+                            active_frame.depth,
+                            active_frame.return_discard_depth,
+                            return_parent_frame,
+                        )));
+                    }
+                    if return_parent_frame {
+                        actions.push(QueuedAction::Fallthrough(active_frame));
+                    }
+                    queue_next_actions(&mut queue, actions);
+                    let Some(next) = next_queued_command(&mut queue, budget, &mut frame_return)?
+                    else {
+                        return Ok(dispatch_outcome(
+                            total_success_count,
+                            last_result,
+                            completed_forked_context,
+                            frame_return,
+                        ));
+                    };
+                    active = ActiveCommand::Owned(next);
+                }
                 CommandExecutionStep::Redirect {
                     command: next_command,
                     contexts,
@@ -628,8 +665,9 @@ impl CommandDispatcher {
                             fork_limit,
                         )?;
                     }
+                    let mut actions = Vec::with_capacity(contexts.len());
                     for context in contexts {
-                        queue.push_back(QueuedAction::Command(QueuedCommand::new(
+                        actions.push(QueuedAction::Command(QueuedCommand::new(
                             next_command.clone(),
                             context,
                             next_forked,
@@ -638,6 +676,7 @@ impl CommandDispatcher {
                             next_frame,
                         )));
                     }
+                    queue_next_actions(&mut queue, actions);
                     let Some(next) = next_queued_command(&mut queue, budget, &mut frame_return)?
                     else {
                         return Ok(dispatch_outcome(
@@ -1135,6 +1174,16 @@ impl ActiveCommand<'_> {
     }
 }
 
+fn queue_next_actions(
+    queue: &mut VecDeque<QueuedAction>,
+    actions: impl IntoIterator<Item = QueuedAction>,
+) {
+    let actions = actions.into_iter().collect::<Vec<_>>();
+    for action in actions.into_iter().rev() {
+        queue.push_front(action);
+    }
+}
+
 fn next_queued_command(
     queue: &mut VecDeque<QueuedAction>,
     budget: &mut CommandExecutionBudget,
@@ -1410,6 +1459,27 @@ mod tests {
     }
 
     #[test]
+    fn queue_next_actions_preserves_order_before_existing_tail() {
+        let mut queue = std::collections::VecDeque::from([super::QueuedAction::Fallthrough(
+            super::QueuedFrame::for_depth(0),
+        )]);
+
+        super::queue_next_actions(
+            &mut queue,
+            [
+                super::QueuedAction::Fallthrough(super::QueuedFrame::for_depth(1)),
+                super::QueuedAction::Fallthrough(super::QueuedFrame::for_depth(2)),
+            ],
+        );
+
+        let depths = queue
+            .iter()
+            .map(super::QueuedAction::frame_depth)
+            .collect::<Vec<_>>();
+        assert_eq!(depths, [1, 2, 0]);
+    }
+
+    #[test]
     fn dispatch_result_preserves_non_forked_command_result() {
         assert_eq!(
             super::dispatch_result(12, 37, false),
@@ -1435,6 +1505,7 @@ mod tests {
         assert!(dispatcher.graph.has_root("list", &player));
         assert!(!dispatcher.graph.has_root("give", &player));
         assert!(!dispatcher.graph.has_root("deop", &player));
+        assert!(!dispatcher.graph.has_root("function", &player));
         assert!(!dispatcher.graph.has_root("gamemode", &player));
         assert!(!dispatcher.graph.has_root("op", &player));
         assert!(!dispatcher.graph.has_root("tp", &player));
@@ -1450,6 +1521,9 @@ mod tests {
 
         let deop_player = player_context_with("minecraft.command.deop");
         assert!(dispatcher.graph.has_root("deop", &deop_player));
+
+        let function_player = player_context_with("minecraft.command.function");
+        assert!(dispatcher.graph.has_root("function", &function_player));
 
         let gamemode_player = player_context_with("minecraft.command.gamemode");
         assert!(dispatcher.graph.has_root("gamemode", &gamemode_player));

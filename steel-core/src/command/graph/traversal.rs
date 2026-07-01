@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use steel_protocol::packets::game::SuggestionEntry;
 
-use super::node::{CommandNode, CommandNodeKind, CommandRedirectModifier};
+use super::node::{CommandNode, CommandNodeExecutor, CommandNodeKind, CommandRedirectModifier};
 use super::{
     CommandArgumentParser, CommandParseError, CommandParseErrorKind, CommandRedirectTarget,
     DynamicPermission, ParseResults, ParsedArgument, ParsedArguments, ParsedCommandAction,
@@ -344,12 +344,20 @@ impl CommandNode {
         path: Vec<String>,
         dynamic_permissions: Vec<DynamicPermission>,
     ) -> Option<ParseResults> {
+        let action = match self.executor.as_ref()? {
+            CommandNodeExecutor::Result(executor) => {
+                ParsedCommandAction::Execute(Arc::clone(executor))
+            }
+            CommandNodeExecutor::Step(executor) => {
+                ParsedCommandAction::ExecuteStep(Arc::clone(executor))
+            }
+        };
         Some(ParseResults {
             input: input.to_owned(),
             arguments,
             path,
             dynamic_permissions,
-            action: ParsedCommandAction::Execute(Arc::clone(self.executor.as_ref()?)),
+            action,
         })
     }
 

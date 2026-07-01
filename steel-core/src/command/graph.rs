@@ -8,6 +8,7 @@ use crate::command::{
     CommandExecutionBudget,
     context::CommandContext,
     error::CommandError,
+    functions::CommandFunction,
     reader::CommandReader,
     requirement::{CommandInputContext, RequirementContext},
 };
@@ -661,6 +662,15 @@ type CommandExecutor = Arc<
         + Send
         + Sync,
 >;
+type CommandStepExecutor = Arc<
+    dyn Fn(
+            &mut CommandContext,
+            &ParsedArguments,
+            &mut CommandExecutionBudget,
+        ) -> Result<CommandExecutionStep, CommandError>
+        + Send
+        + Sync,
+>;
 type CommandForkExecutor = Arc<
     dyn Fn(
             &mut CommandContext,
@@ -762,6 +772,7 @@ pub enum CommandRedirectTarget {
 #[derive(Clone)]
 enum ParsedCommandAction {
     Execute(CommandExecutor),
+    ExecuteStep(CommandStepExecutor),
     Redirect(ParsedRedirect),
 }
 
@@ -782,6 +793,9 @@ enum ParsedRedirectModifier {
 
 pub(crate) enum CommandExecutionStep {
     Complete(CommandResult),
+    CallFunctions {
+        functions: Vec<CommandFunction>,
+    },
     Redirect {
         command: String,
         contexts: Vec<CommandContext>,
@@ -838,6 +852,9 @@ impl ParseResults {
         let mut budget = CommandExecutionBudget::for_context(context);
         match self.execute_step(context, &mut budget)? {
             CommandExecutionStep::Complete(result) => Ok(result),
+            CommandExecutionStep::CallFunctions { .. } => Err(CommandError::failure(
+                "Command function execution requires a command dispatcher",
+            )),
             CommandExecutionStep::Redirect { command, .. } => Err(CommandError::failure(format!(
                 "Command redirect target '{command}' is unavailable"
             ))),
@@ -858,6 +875,9 @@ impl ParseResults {
         match &self.action {
             ParsedCommandAction::Execute(executor) => {
                 executor(context, &self.arguments, budget).map(CommandExecutionStep::Complete)
+            }
+            ParsedCommandAction::ExecuteStep(executor) => {
+                executor(context, &self.arguments, budget)
             }
             ParsedCommandAction::Redirect(redirect) => {
                 let contexts = match &redirect.modifier {

@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
-use super::node::{CommandNode, CommandNodeKind, CommandRedirect, CommandRedirectModifier};
+use super::node::{
+    CommandNode, CommandNodeExecutor, CommandNodeKind, CommandRedirect, CommandRedirectModifier,
+};
 use super::{
-    CommandArgumentParser, CommandExecutor, CommandGraphError, CommandPermissionArgument,
+    CommandArgumentParser, CommandExecutionStep, CommandGraphError, CommandPermissionArgument,
     CommandRedirectTarget, CommandResult, DynamicPermission, ParsedArguments,
     UnresolvedDynamicPermission,
 };
@@ -19,7 +21,7 @@ pub struct CommandNodeBuilder {
     kind: CommandNodeKind,
     requirement: Requirement,
     children: Vec<CommandNodeBuilder>,
-    executor: Option<CommandExecutor>,
+    executor: Option<CommandNodeExecutor>,
     redirect: Option<CommandRedirect>,
     permission_path_mode: PermissionPathMode,
     derived_subcommand_permission: Option<DerivedSubcommandPermissionMode>,
@@ -174,7 +176,24 @@ impl CommandNodeBuilder {
         + Sync
         + 'static,
     ) -> Self {
-        self.executor = Some(Arc::new(executor));
+        self.executor = Some(CommandNodeExecutor::Result(Arc::new(executor)));
+        self
+    }
+
+    /// Marks this node executable with access to the active command execution step.
+    #[must_use]
+    pub(crate) fn executes_step_with_budget(
+        mut self,
+        executor: impl Fn(
+            &mut CommandContext,
+            &ParsedArguments,
+            &mut CommandExecutionBudget,
+        ) -> Result<CommandExecutionStep, CommandError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.executor = Some(CommandNodeExecutor::Step(Arc::new(executor)));
         self
     }
 
