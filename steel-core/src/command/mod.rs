@@ -1679,6 +1679,7 @@ mod tests {
         PermissionCatalogSource, PermissionEntry, PermissionKey, PermissionSegment, PermissionSet,
     };
     use glam::DVec3;
+    use steel_protocol::packets::game::CommandNode as ProtocolCommandNode;
     use steel_registry::test_support::init_test_registry;
     use steel_utils::{Identifier, translations};
     use text_components::{TextComponent, content::Content};
@@ -2533,6 +2534,31 @@ mod tests {
     }
 
     #[test]
+    fn command_packet_filters_aliases_with_primary_permission() {
+        let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
+        let mut dispatcher = CommandDispatcher::new_empty();
+        let registration = CommandRegistration::new(
+            literal("primary").executes(|_, _| Ok(CommandResult::success())),
+            minecraft,
+        )
+        .alias("alias")
+        .expect("alias literal parses");
+
+        dispatcher
+            .register_command(registration)
+            .expect("aliased command registers");
+
+        let denied = dispatcher.get_commands(&player_context());
+        assert!(root_literal_names(&denied).is_empty());
+
+        let allowed = dispatcher.get_commands(&player_context_with("minecraft.command.primary"));
+        assert_eq!(
+            root_literal_names(&allowed),
+            vec!["primary".to_owned(), "alias".to_owned()]
+        );
+    }
+
+    #[test]
     fn parse_error_mapping_uses_vanilla_integer_bound_order() {
         let error = super::CommandParseError::new(
             CommandParseErrorKind::IntegerTooLow { value: 1, min: 5 },
@@ -2575,5 +2601,23 @@ mod tests {
             )),
             translations::PARSING_BOOL_INVALID.0
         );
+    }
+
+    fn root_literal_names(commands: &super::CCommands) -> Vec<String> {
+        let ProtocolCommandNode::Root { children } = &commands.nodes[commands.root_index as usize]
+        else {
+            panic!("root index should point at root node");
+        };
+
+        children
+            .iter()
+            .filter_map(|index| {
+                let index = usize::try_from(*index).ok()?;
+                match &commands.nodes[index] {
+                    ProtocolCommandNode::Literal { name, .. } => Some(name.to_string()),
+                    ProtocolCommandNode::Root { .. } | ProtocolCommandNode::Argument { .. } => None,
+                }
+            })
+            .collect()
     }
 }
