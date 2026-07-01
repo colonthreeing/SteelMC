@@ -20,12 +20,12 @@ use text_components::translation::TranslatedMessage;
 
 use crate::command::context::{CommandCallbackResult, CommandContext, CommandResultCallback};
 use crate::command::error::CommandError;
-use crate::command::functions::CommandFunction;
+use crate::command::functions::{CommandFunction, InstantiatedCommandFunction};
 use crate::command::graph::{
     CommandExecutionStep, CommandGraph, CommandGraphError, CommandNodeBuilder, CommandParseError,
-    CommandParseErrorKind, CommandResult, validate_command_node_name,
+    CommandParseErrorKind, CommandRedirectExecution, CommandResult, validate_command_node_name,
 };
-use crate::command::requirement::RequirementContext;
+use crate::command::requirement::{CommandInputContext, RequirementContext};
 use crate::command::sender::CommandSender;
 use crate::permission::{
     PermissionCatalog, PermissionCatalogSource, PermissionContextCatalog, PermissionExpr,
@@ -531,25 +531,34 @@ impl CommandDispatcher {
         functions: &[CommandFunction],
         context: &CommandContext,
         budget: &mut CommandExecutionBudget,
+        forked: bool,
     ) -> Result<CommandFunctionConditionResult, CommandError> {
         if functions.is_empty() {
             return Ok(CommandFunctionConditionResult::NoFunctions);
         }
 
         let function_context = function_execution_context(context);
+        let prepared_functions = self.instantiate_functions_for_condition(functions, context);
+        if !forked && let Some(failure) = &prepared_functions.failure {
+            let error = command_function_instantiation_error(
+                FunctionInstantiationFailureContext::ExecuteCondition,
+                &failure.function_id,
+                TextComponent::from(failure.reason.clone()),
+            );
+            context
+                .sender
+                .send_failure_feedback(error.into_feedback("execute if function"));
+        }
         let mut queue = VecDeque::new();
         let function_frame = QueuedFrame::new(1, 1);
-        let function_arguments = Arc::new(None);
-        for function in functions {
+        for function in prepared_functions.functions {
             if !queue_action_back(
                 &mut queue,
-                QueuedAction::FunctionCall(QueuedFunctionCall::new(
-                    function.clone(),
-                    Arc::clone(&function_arguments),
+                QueuedAction::FunctionCall(QueuedFunctionCall::new_instantiated(
+                    function,
                     function_context.clone(),
                     function_frame.clone(),
                     CommandResultCallback::empty(),
-                    FunctionInstantiationFailureContext::ExecuteCondition,
                     true,
                     true,
                 )),
@@ -583,6 +592,30 @@ impl CommandDispatcher {
         ))
     }
 
+    fn instantiate_functions_for_condition(
+        &self,
+        functions: &[CommandFunction],
+        context: &dyn CommandInputContext,
+    ) -> PreparedFunctionConditionFunctions {
+        let mut prepared = PreparedFunctionConditionFunctions {
+            functions: Vec::with_capacity(functions.len()),
+            failure: None,
+        };
+        for function in functions {
+            match function.instantiate(None, self, context) {
+                Ok(function) => prepared.functions.push(function),
+                Err(error) => {
+                    prepared.failure = Some(FunctionConditionInstantiationFailure {
+                        function_id: function.id().clone(),
+                        reason: error.to_string(),
+                    });
+                    break;
+                }
+            }
+        }
+        prepared
+    }
+
     fn dispatch_active_with_queue(
         &self,
         mut active: ActiveCommand<'_>,
@@ -605,7 +638,13 @@ impl CommandDispatcher {
                 ));
             }
             let active_command = active.command().to_owned();
-            let step = self.execute_command_step(&active_command, active.context_mut(), budget);
+            let active_forked = active.is_forked();
+            let step = self.execute_command_step(
+                &active_command,
+                active.context_mut(),
+                budget,
+                active_forked,
+            );
             let step = match step {
                 Ok(step) => step,
                 Err(_error) if active.continues_after_command_error() => {
@@ -859,17 +898,20 @@ impl CommandDispatcher {
         command: &str,
         context: &mut CommandContext,
         budget: &mut CommandExecutionBudget,
+        forked: bool,
     ) -> Result<CommandExecutionStep, CommandError> {
         match self.graph.parse(command, context) {
-            Ok(parsed) => parsed.execute_step(context, budget).map_err(|error| {
-                if parsed.invokes_result_callback_on_error() {
-                    context.on_command_result(CommandCallbackResult {
-                        success: false,
-                        result: 0,
-                    });
-                }
-                error
-            }),
+            Ok(parsed) => parsed
+                .execute_step(context, budget, CommandRedirectExecution::new(forked))
+                .map_err(|error| {
+                    if parsed.invokes_result_callback_on_error() {
+                        context.on_command_result(CommandCallbackResult {
+                            success: false,
+                            result: 0,
+                        });
+                    }
+                    error
+                }),
             Err(error) => {
                 context.on_command_result(CommandCallbackResult {
                     success: false,
@@ -891,7 +933,12 @@ impl CommandDispatcher {
             if !budget.consume() {
                 return Ok(false);
             }
-            let step = self.execute_command_step(&sibling.command, &mut sibling.context, budget);
+            let step = self.execute_command_step(
+                &sibling.command,
+                &mut sibling.context,
+                budget,
+                sibling.forked,
+            );
             match step {
                 Ok(CommandExecutionStep::Redirect {
                     command,
@@ -1282,14 +1329,21 @@ impl QueuedAction {
 }
 
 struct QueuedFunctionCall {
-    function: CommandFunction,
-    arguments: Arc<Option<NbtCompound>>,
+    function: QueuedFunction,
     context: CommandContext,
     frame: QueuedFrame,
     return_callback: CommandResultCallback,
-    instantiation_failure_context: FunctionInstantiationFailureContext,
     return_parent_frame: bool,
     propagates_return: bool,
+}
+
+enum QueuedFunction {
+    Deferred {
+        function: CommandFunction,
+        arguments: Arc<Option<NbtCompound>>,
+        instantiation_failure_context: FunctionInstantiationFailureContext,
+    },
+    Instantiated(InstantiatedCommandFunction),
 }
 
 impl QueuedFunctionCall {
@@ -1304,12 +1358,32 @@ impl QueuedFunctionCall {
         propagates_return: bool,
     ) -> Self {
         Self {
-            function,
-            arguments,
+            function: QueuedFunction::Deferred {
+                function,
+                arguments,
+                instantiation_failure_context,
+            },
             context,
             frame,
             return_callback,
-            instantiation_failure_context,
+            return_parent_frame,
+            propagates_return,
+        }
+    }
+
+    fn new_instantiated(
+        function: InstantiatedCommandFunction,
+        context: CommandContext,
+        frame: QueuedFrame,
+        return_callback: CommandResultCallback,
+        return_parent_frame: bool,
+        propagates_return: bool,
+    ) -> Self {
+        Self {
+            function: QueuedFunction::Instantiated(function),
+            context,
+            frame,
+            return_callback,
             return_parent_frame,
             propagates_return,
         }
@@ -1321,29 +1395,43 @@ impl QueuedFunctionCall {
         queue: &mut VecDeque<QueuedAction>,
         budget: &mut CommandExecutionBudget,
     ) -> Result<bool, CommandError> {
-        let instantiated = self
-            .function
-            .instantiate(self.arguments.as_ref().as_ref(), dispatcher, &self.context)
-            .map_err(|error| {
-                command_function_instantiation_error(
-                    self.instantiation_failure_context,
-                    self.function.id(),
-                    TextComponent::from(error.to_string()),
-                )
-            })?;
-        let child_frame = if self.return_parent_frame {
+        let Self {
+            function,
+            context,
+            frame,
+            return_callback,
+            return_parent_frame,
+            propagates_return,
+        } = self;
+        let instantiated = match function {
+            QueuedFunction::Deferred {
+                function,
+                arguments,
+                instantiation_failure_context,
+            } => function
+                .instantiate(arguments.as_ref().as_ref(), dispatcher, &context)
+                .map_err(|error| {
+                    command_function_instantiation_error(
+                        instantiation_failure_context,
+                        function.id(),
+                        TextComponent::from(error.to_string()),
+                    )
+                })?,
+            QueuedFunction::Instantiated(function) => function,
+        };
+        let child_frame = if return_parent_frame {
             QueuedFrame::with_return_callback(
-                self.frame.depth.saturating_add(1),
-                self.frame.return_discard_depth,
-                self.return_callback,
-                self.propagates_return,
+                frame.depth.saturating_add(1),
+                frame.return_discard_depth,
+                return_callback,
+                propagates_return,
             )
         } else {
             QueuedFrame::with_return_callback(
-                self.frame.depth.saturating_add(1),
-                self.frame.depth.saturating_add(1),
-                self.return_callback,
-                self.propagates_return,
+                frame.depth.saturating_add(1),
+                frame.depth.saturating_add(1),
+                return_callback,
+                propagates_return,
             )
         };
         for command in instantiated.commands().iter().rev() {
@@ -1351,7 +1439,7 @@ impl QueuedFunctionCall {
                 queue,
                 QueuedAction::Command(QueuedCommand::new(
                     command.clone(),
-                    self.context.clone(),
+                    context.clone(),
                     false,
                     0,
                     false,
@@ -1457,6 +1545,16 @@ struct DispatchOutcome {
 pub(crate) enum CommandFunctionConditionResult {
     NoFunctions,
     Callback(CommandCallbackResult),
+}
+
+struct PreparedFunctionConditionFunctions {
+    functions: Vec<InstantiatedCommandFunction>,
+    failure: Option<FunctionConditionInstantiationFailure>,
+}
+
+struct FunctionConditionInstantiationFailure {
+    function_id: Identifier,
+    reason: String,
 }
 
 struct FunctionReturnAccumulator {
@@ -1860,6 +1958,7 @@ mod tests {
     use crate::command::{
         context::CommandResultCallback,
         error::CommandError,
+        functions::CommandFunction,
         graph::{
             CommandGraphError, CommandParseErrorKind, CommandResult, StringParser, argument,
             literal,
@@ -2079,6 +2178,36 @@ mod tests {
         );
         assert_eq!(text_content(&args[0]), "test:macro");
         assert_eq!(text_content(&args[1]), "missing arguments");
+    }
+
+    #[test]
+    fn function_condition_instantiation_keeps_successful_prefix_before_error() {
+        let dispatcher = CommandDispatcher::new_empty();
+        let first = CommandFunction::new(
+            Identifier::new_static("test", "first"),
+            ["known".to_owned()],
+        );
+        let invalid_macro =
+            CommandFunction::from_source(Identifier::new_static("test", "macro"), "$echo $(value)")
+                .expect("macro function parses");
+        let skipped = CommandFunction::new(
+            Identifier::new_static("test", "skipped"),
+            ["known skipped".to_owned()],
+        );
+
+        let context = player_context();
+        let prepared = dispatcher
+            .instantiate_functions_for_condition(&[first, invalid_macro, skipped], &context);
+
+        assert_eq!(prepared.functions.len(), 1);
+        assert_eq!(prepared.functions[0].commands(), ["known"]);
+        let failure = prepared.failure.expect("macro instantiation fails");
+        assert_eq!(failure.function_id, Identifier::new_static("test", "macro"));
+        assert!(
+            failure.reason.contains("requires macro arguments"),
+            "unexpected failure reason: {}",
+            failure.reason
+        );
     }
 
     #[test]

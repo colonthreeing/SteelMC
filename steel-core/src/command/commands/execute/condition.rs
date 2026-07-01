@@ -10,9 +10,9 @@ use text_components::{TextComponent, translation::TranslatedMessage};
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
 use crate::command::graph::{
-    CommandFunctionArgumentValue, CommandNodeBuilder, CommandRedirectTarget, CommandResult,
-    DoubleRangeArgumentValue, IntRangeArgumentValue, LootPredicateArgumentValue, ParsedArguments,
-    argument, literal,
+    CommandFunctionArgumentValue, CommandNodeBuilder, CommandRedirectExecution,
+    CommandRedirectTarget, CommandResult, DoubleRangeArgumentValue, IntRangeArgumentValue,
+    LootPredicateArgumentValue, ParsedArguments, argument, literal,
 };
 use crate::command::loot::{CommandLootRandom, command_loot_entity_ref, command_loot_weather};
 use crate::command::parsers::{
@@ -66,10 +66,10 @@ pub(super) fn conditionals(name: &'static str, expected: bool) -> CommandNodeBui
                     fork_predicate_condition(context, arguments, expected)
                 }),
         ))
-        .then(literal("function").then(argument("name", CommandFunctionParser).forks_with_budget(
+        .then(literal("function").then(argument("name", CommandFunctionParser).forks_with_budget_and_execution(
             CommandRedirectTarget::Current,
-            move |context, arguments, budget| {
-                fork_function_condition(context, arguments, expected, budget)
+            move |context, arguments, budget, execution| {
+                fork_function_condition(context, arguments, expected, budget, execution)
             },
         )))
         .then(
@@ -303,8 +303,9 @@ fn fork_function_condition(
     arguments: &ParsedArguments,
     expected: bool,
     budget: &mut CommandExecutionBudget,
+    execution: CommandRedirectExecution,
 ) -> Result<Vec<CommandContext>, CommandError> {
-    let Some(result) = function_condition_result(context, arguments, budget)? else {
+    let Some(result) = function_condition_result(context, arguments, budget, execution)? else {
         return Ok(Vec::new());
     };
     Ok(if (result != 0) == expected {
@@ -318,6 +319,7 @@ fn function_condition_result(
     context: &CommandContext,
     arguments: &ParsedArguments,
     budget: &mut CommandExecutionBudget,
+    execution: CommandRedirectExecution,
 ) -> Result<Option<i32>, CommandError> {
     let functions = {
         let registry = context.server.command_functions.read();
@@ -326,7 +328,7 @@ fn function_condition_result(
             .map_err(|error| CommandError::failure(error.to_string()))?
     };
     let dispatcher = context.server.command_dispatcher.read().clone();
-    match dispatcher.run_functions_for_condition(&functions, context, budget)? {
+    match dispatcher.run_functions_for_condition(&functions, context, budget, execution.is_forked())? {
         CommandFunctionConditionResult::NoFunctions => Ok(None),
         CommandFunctionConditionResult::Callback(result) => Ok(Some(result.result)),
     }

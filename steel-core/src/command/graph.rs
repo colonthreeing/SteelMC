@@ -693,6 +693,7 @@ type CommandForkExecutor = Arc<
             &mut CommandContext,
             &ParsedArguments,
             &mut CommandExecutionBudget,
+            CommandRedirectExecution,
         ) -> Result<Vec<CommandContext>, CommandError>
         + Send
         + Sync,
@@ -786,6 +787,22 @@ pub enum CommandRedirectTarget {
     All,
 }
 
+/// Execution metadata available while preparing a redirected command stage.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CommandRedirectExecution {
+    forked: bool,
+}
+
+impl CommandRedirectExecution {
+    pub(crate) const fn new(forked: bool) -> Self {
+        Self { forked }
+    }
+
+    pub(crate) const fn is_forked(self) -> bool {
+        self.forked
+    }
+}
+
 #[derive(Clone)]
 enum ParsedCommandAction {
     Execute(CommandExecutor),
@@ -868,7 +885,7 @@ impl ParseResults {
     /// Returns a command execution error from the matched executor.
     pub fn execute(&self, context: &mut CommandContext) -> Result<CommandResult, CommandError> {
         let mut budget = CommandExecutionBudget::for_context(context);
-        match self.execute_step(context, &mut budget)? {
+        match self.execute_step(context, &mut budget, CommandRedirectExecution::default())? {
             CommandExecutionStep::Complete(result) => Ok(result),
             CommandExecutionStep::CallFunctions { .. } => Err(CommandError::failure(
                 "Command function execution requires a command dispatcher",
@@ -888,6 +905,7 @@ impl ParseResults {
         &self,
         context: &mut CommandContext,
         budget: &mut CommandExecutionBudget,
+        redirect_execution: CommandRedirectExecution,
     ) -> Result<CommandExecutionStep, CommandError> {
         self.check_dynamic_permissions(context)?;
         match &self.action {
@@ -906,7 +924,12 @@ impl ParseResults {
                     }
                     ParsedRedirectModifier::Fork(executor) => {
                         let mut redirect_context = context.clone();
-                        executor(&mut redirect_context, &self.arguments, budget)?
+                        executor(
+                            &mut redirect_context,
+                            &self.arguments,
+                            budget,
+                            redirect_execution,
+                        )?
                     }
                 };
                 let command = match redirect.target {

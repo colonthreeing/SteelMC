@@ -5,8 +5,8 @@ use super::node::{
 };
 use super::{
     CommandArgumentParser, CommandExecutionStep, CommandGraphError, CommandPermissionArgument,
-    CommandRedirectTarget, CommandResult, DynamicPermission, ParsedArguments,
-    UnresolvedDynamicPermission,
+    CommandRedirectExecution, CommandRedirectTarget, CommandResult, DynamicPermission,
+    ParsedArguments, UnresolvedDynamicPermission,
 };
 use crate::command::{
     CommandExecutionBudget, context::CommandContext, error::CommandError, requirement::Requirement,
@@ -292,12 +292,33 @@ impl CommandNodeBuilder {
     /// Forks from this node using a budget-aware `executor`.
     #[must_use]
     pub(crate) fn forks_with_budget(
+        self,
+        target: CommandRedirectTarget,
+        executor: impl Fn(
+            &mut CommandContext,
+            &ParsedArguments,
+            &mut CommandExecutionBudget,
+        ) -> Result<Vec<CommandContext>, CommandError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.forks_with_budget_and_execution(
+            target,
+            move |context, arguments, budget, _execution| executor(context, arguments, budget),
+        )
+    }
+
+    /// Forks from this node using a budget-aware executor with redirect execution metadata.
+    #[must_use]
+    pub(crate) fn forks_with_budget_and_execution(
         mut self,
         target: CommandRedirectTarget,
         executor: impl Fn(
             &mut CommandContext,
             &ParsedArguments,
             &mut CommandExecutionBudget,
+            CommandRedirectExecution,
         ) -> Result<Vec<CommandContext>, CommandError>
         + Send
         + Sync
