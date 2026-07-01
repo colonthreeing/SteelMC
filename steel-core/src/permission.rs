@@ -98,7 +98,7 @@ impl PermissionRuleContext {
     ///
     /// # Errors
     ///
-    /// Returns an error when two custom contexts use the same key with different values.
+    /// Returns an error when one context key is bound to multiple values.
     pub fn all(
         contexts: impl IntoIterator<Item = Self>,
     ) -> Result<Self, PermissionRuleContextError> {
@@ -175,22 +175,36 @@ fn push_unique_context(
     contexts: &mut Vec<PermissionRuleContext>,
     context: PermissionRuleContext,
 ) -> Result<(), PermissionRuleContextError> {
-    if let PermissionRuleContext::Custom { key, value } = &context {
-        for existing in contexts.iter() {
-            let PermissionRuleContext::Custom {
-                key: existing_key,
-                value: existing_value,
-            } = existing
-            else {
-                continue;
-            };
-            if existing_key != key {
-                continue;
+    for existing in contexts.iter() {
+        match (&context, existing) {
+            (PermissionRuleContext::Domain(domain), PermissionRuleContext::Domain(existing)) => {
+                if domain == existing {
+                    return Ok(());
+                }
+                return Err(PermissionRuleContextError::DuplicateDomain);
             }
-            if existing_value == value {
-                return Ok(());
+            (PermissionRuleContext::World(world), PermissionRuleContext::World(existing)) => {
+                if world == existing {
+                    return Ok(());
+                }
+                return Err(PermissionRuleContextError::DuplicateWorld);
             }
-            return Err(PermissionRuleContextError::DuplicateCustomKey(key.clone()));
+            (
+                PermissionRuleContext::Custom { key, value },
+                PermissionRuleContext::Custom {
+                    key: existing_key,
+                    value: existing_value,
+                },
+            ) => {
+                if existing_key != key {
+                    continue;
+                }
+                if existing_value == value {
+                    return Ok(());
+                }
+                return Err(PermissionRuleContextError::DuplicateCustomKey(key.clone()));
+            }
+            _ => {}
         }
     }
     if contexts.iter().any(|existing| existing == &context) {
@@ -243,6 +257,10 @@ const fn rule_context_rank(context: &PermissionRuleContext) -> u8 {
 pub enum PermissionRuleContextError {
     /// Context value is empty.
     EmptyValue,
+    /// Domain context appears with multiple values in one chained rule context.
+    DuplicateDomain,
+    /// World context appears with multiple values in one chained rule context.
+    DuplicateWorld,
     /// One chained context tried to bind the same custom key to multiple values.
     DuplicateCustomKey(PermissionContextKey),
 }
@@ -251,6 +269,12 @@ impl fmt::Display for PermissionRuleContextError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyValue => write!(f, "permission context value is empty"),
+            Self::DuplicateDomain => {
+                write!(f, "domain permission context cannot have multiple values")
+            }
+            Self::DuplicateWorld => {
+                write!(f, "world permission context cannot have multiple values")
+            }
             Self::DuplicateCustomKey(key) => write!(
                 f,
                 "custom permission context key '{}' cannot have multiple values",
@@ -2778,6 +2802,12 @@ fn permission_rule_context_config_error(
         PermissionRuleContextError::EmptyValue => {
             PermissionRuleContextConfigError::InvalidCustomValue
         }
+        PermissionRuleContextError::DuplicateDomain => {
+            PermissionRuleContextConfigError::DuplicateDomain
+        }
+        PermissionRuleContextError::DuplicateWorld => {
+            PermissionRuleContextConfigError::DuplicateWorld
+        }
         PermissionRuleContextError::DuplicateCustomKey(key) => {
             PermissionRuleContextConfigError::DuplicateCustomKey(key.as_str().to_owned())
         }
@@ -3483,6 +3513,10 @@ pub enum PermissionRuleContextConfigError {
     },
     /// Custom context value is empty.
     InvalidCustomValue,
+    /// Domain context appears with multiple values in one rule context.
+    DuplicateDomain,
+    /// World context appears with multiple values in one rule context.
+    DuplicateWorld,
     /// Custom context key appears with multiple values in the same rule context.
     DuplicateCustomKey(String),
 }
@@ -3539,6 +3573,8 @@ impl fmt::Display for PermissionRuleContextConfigError {
                 write!(f, "invalid custom context key '{key}': {source}")
             }
             Self::InvalidCustomValue => write!(f, "custom context value is empty"),
+            Self::DuplicateDomain => write!(f, "domain context cannot have multiple values"),
+            Self::DuplicateWorld => write!(f, "world context cannot have multiple values"),
             Self::DuplicateCustomKey(key) => {
                 write!(f, "custom context key '{key}' cannot have multiple values")
             }
@@ -3948,6 +3984,46 @@ mod tests {
             first.to_string(),
             "domain lobby + world lobby:spawn + owner builders + region spawn"
         );
+    }
+
+    #[test]
+    fn chained_rule_contexts_deduplicate_same_builtin_contexts() {
+        let domain = PermissionRuleContext::domain("lobby");
+        let context = PermissionRuleContext::all([domain.clone(), domain.clone()])
+            .expect("same domain context is idempotent");
+
+        assert_eq!(context, domain);
+
+        let world = PermissionRuleContext::world(Identifier::new("lobby", "spawn"));
+        let context = PermissionRuleContext::all([world.clone(), world.clone()])
+            .expect("same world context is idempotent");
+
+        assert_eq!(context, world);
+    }
+
+    #[test]
+    fn chained_rule_contexts_reject_conflicting_builtin_contexts() {
+        let error = PermissionRuleContext::all([
+            PermissionRuleContext::domain("lobby"),
+            PermissionRuleContext::domain("survival"),
+        ])
+        .expect_err("domain context cannot have multiple values");
+
+        assert!(matches!(
+            error,
+            super::PermissionRuleContextError::DuplicateDomain
+        ));
+
+        let error = PermissionRuleContext::all([
+            PermissionRuleContext::world(Identifier::new("lobby", "spawn")),
+            PermissionRuleContext::world(Identifier::new("survival", "overworld")),
+        ])
+        .expect_err("world context cannot have multiple values");
+
+        assert!(matches!(
+            error,
+            super::PermissionRuleContextError::DuplicateWorld
+        ));
     }
 
     #[test]
