@@ -12,6 +12,7 @@ use crate::world::World;
 /// Loaded worlds plus domain defaults.
 pub struct WorldMap {
     worlds: FxSmallMap<8, Identifier, Arc<World>>,
+    order: Vec<Arc<World>>,
     default_domain: String,
     default_worlds: FxHashMap<String, Identifier>,
 }
@@ -26,6 +27,7 @@ impl WorldMap {
         }
         Self {
             worlds: FxSmallMap::default(),
+            order: Vec::new(),
             default_domain,
             default_worlds,
         }
@@ -33,6 +35,11 @@ impl WorldMap {
 
     /// Inserts a loaded world.
     pub fn insert(&mut self, key: Identifier, world: Arc<World>) {
+        if let Some(index) = self.order.iter().position(|existing| existing.key == key) {
+            self.order[index] = Arc::clone(&world);
+        } else {
+            self.order.push(Arc::clone(&world));
+        }
         self.worlds.insert(key, world);
     }
 
@@ -44,17 +51,17 @@ impl WorldMap {
 
     /// Iterates loaded world values.
     pub fn values(&self) -> impl Iterator<Item = &Arc<World>> {
-        self.worlds.values()
+        self.order.iter()
     }
 
     /// Iterates loaded world keys.
     pub fn keys(&self) -> impl Iterator<Item = &Identifier> {
-        self.worlds.keys()
+        self.order.iter().map(|world| &world.key)
     }
 
     /// Iterates loaded world key/value pairs.
     pub fn iter(&self) -> impl Iterator<Item = (&Identifier, &Arc<World>)> {
-        self.worlds.iter()
+        self.order.iter().map(|world| (&world.key, world))
     }
 
     /// Returns number of loaded worlds.
