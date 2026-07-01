@@ -248,8 +248,33 @@ impl CommandFunctionRegistry {
     }
 
     /// Registers or replaces a command function tag.
-    pub fn insert_tag(&mut self, id: Identifier, functions: Vec<Identifier>) {
+    ///
+    /// Vanilla builds function tags against the loaded function map and skips a
+    /// tag when any required reference is missing. Steel rejects such tags at
+    /// insertion so resolution cannot silently drop entries later.
+    ///
+    /// # Errors
+    ///
+    /// Returns the missing function IDs when the tag references unloaded
+    /// functions.
+    pub fn insert_tag(
+        &mut self,
+        id: Identifier,
+        functions: Vec<Identifier>,
+    ) -> Result<(), CommandFunctionTagError> {
+        let missing_functions = functions
+            .iter()
+            .filter(|function| !self.functions.contains_key(*function))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing_functions.is_empty() {
+            return Err(CommandFunctionTagError::for_missing_functions(
+                id,
+                missing_functions,
+            ));
+        }
         self.tags.insert(id, functions);
+        Ok(())
     }
 
     /// Returns one command function by ID.
@@ -270,14 +295,23 @@ impl CommandFunctionRegistry {
     }
 
     /// Resolves a parsed command function argument into concrete functions.
-    #[must_use]
+    ///
+    /// Unknown tags resolve to an empty list, matching vanilla's server
+    /// function library. Unknown direct function IDs are errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown direct function ID.
     pub fn resolve_argument(
         &self,
         argument: &CommandFunctionArgumentValue,
-    ) -> Vec<CommandFunction> {
+    ) -> Result<Vec<CommandFunction>, CommandFunctionResolveError> {
         match argument {
-            CommandFunctionArgumentValue::Function(id) => self.function(id).into_iter().collect(),
-            CommandFunctionArgumentValue::Tag(id) => self.tag(id),
+            CommandFunctionArgumentValue::Function(id) => self
+                .function(id)
+                .map(|function| vec![function])
+                .ok_or_else(|| CommandFunctionResolveError::unknown_function(id.clone())),
+            CommandFunctionArgumentValue::Tag(id) => Ok(self.tag(id)),
         }
     }
 
@@ -290,6 +324,85 @@ impl CommandFunctionRegistry {
     pub fn tag_ids(&self) -> Vec<&Identifier> {
         sorted_ids(self.tags.keys())
     }
+}
+
+/// Error returned when registering a command function tag.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandFunctionTagError {
+    tag: Identifier,
+    missing_functions: Vec<Identifier>,
+}
+
+impl CommandFunctionTagError {
+    fn for_missing_functions(tag: Identifier, missing_functions: Vec<Identifier>) -> Self {
+        Self {
+            tag,
+            missing_functions,
+        }
+    }
+
+    /// Returns the tag that failed registration.
+    #[must_use]
+    pub const fn tag(&self) -> &Identifier {
+        &self.tag
+    }
+
+    /// Returns missing required function IDs.
+    #[must_use]
+    pub fn missing_functions(&self) -> &[Identifier] {
+        &self.missing_functions
+    }
+}
+
+impl fmt::Display for CommandFunctionTagError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "command function tag {} references missing functions",
+            self.tag
+        )
+    }
+}
+
+impl Error for CommandFunctionTagError {}
+
+/// Error returned when resolving a parsed command function argument.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandFunctionResolveError {
+    kind: CommandFunctionResolveErrorKind,
+}
+
+impl CommandFunctionResolveError {
+    fn unknown_function(id: Identifier) -> Self {
+        Self {
+            kind: CommandFunctionResolveErrorKind::UnknownFunction(id),
+        }
+    }
+
+    /// Returns the specific resolution failure.
+    #[must_use]
+    pub const fn kind(&self) -> &CommandFunctionResolveErrorKind {
+        &self.kind
+    }
+}
+
+impl fmt::Display for CommandFunctionResolveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.kind {
+            CommandFunctionResolveErrorKind::UnknownFunction(id) => {
+                write!(f, "unknown command function {id}")
+            }
+        }
+    }
+}
+
+impl Error for CommandFunctionResolveError {}
+
+/// Specific command function resolution failure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommandFunctionResolveErrorKind {
+    /// A direct function ID was not registered.
+    UnknownFunction(Identifier),
 }
 
 fn sorted_ids<'a>(ids: impl Iterator<Item = &'a Identifier>) -> Vec<&'a Identifier> {
@@ -423,7 +536,7 @@ mod tests {
 
     use super::{
         CommandFunction, CommandFunctionParseErrorKind, CommandFunctionRegistry,
-        MAX_COMMAND_FUNCTION_LINE_LENGTH,
+        CommandFunctionResolveErrorKind, MAX_COMMAND_FUNCTION_LINE_LENGTH,
     };
 
     struct TestContext;
@@ -470,7 +583,9 @@ mod tests {
             second.clone(),
             vec!["say two".to_owned()],
         ));
-        registry.insert_tag(tag.clone(), vec![second.clone(), first.clone()]);
+        registry
+            .insert_tag(tag.clone(), vec![second.clone(), first.clone()])
+            .expect("tag references loaded functions");
 
         assert_eq!(
             registry.function(&first).map(|function| function.id),
@@ -487,6 +602,7 @@ mod tests {
         assert_eq!(
             registry
                 .resolve_argument(&CommandFunctionArgumentValue::Function(first.clone()))
+                .expect("function resolves")
                 .into_iter()
                 .map(|function| function.id)
                 .collect::<Vec<_>>(),
@@ -495,6 +611,7 @@ mod tests {
         assert_eq!(
             registry
                 .resolve_argument(&CommandFunctionArgumentValue::Tag(tag.clone()))
+                .expect("tag resolves")
                 .into_iter()
                 .map(|function| function.id)
                 .collect::<Vec<_>>(),
@@ -508,6 +625,53 @@ mod tests {
                 .tag(&Identifier::new_static("test", "missing"))
                 .is_empty()
         );
+        assert_eq!(
+            registry
+                .resolve_argument(&CommandFunctionArgumentValue::Tag(Identifier::new_static(
+                    "test", "missing"
+                )))
+                .expect("unknown tag resolves to an empty collection"),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn registry_rejects_tags_with_missing_required_functions() {
+        let loaded = Identifier::new_static("test", "loaded");
+        let missing = Identifier::new_static("test", "missing");
+        let tag = Identifier::new_static("test", "load");
+        let mut registry = CommandFunctionRegistry::default();
+        registry.insert_function(CommandFunction::new(
+            loaded.clone(),
+            vec!["say loaded".to_owned()],
+        ));
+
+        let error = registry
+            .insert_tag(tag.clone(), vec![loaded, missing.clone()])
+            .expect_err("tag with a missing function rejects");
+
+        assert_eq!(error.tag(), &tag);
+        assert_eq!(error.missing_functions(), &[missing]);
+        assert!(
+            registry
+                .tag(&Identifier::new_static("test", "load"))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn registry_errors_for_unknown_direct_function_arguments() {
+        let registry = CommandFunctionRegistry::default();
+        let missing = Identifier::new_static("test", "missing");
+
+        let error = registry
+            .resolve_argument(&CommandFunctionArgumentValue::Function(missing.clone()))
+            .expect_err("unknown direct function rejects");
+
+        assert!(matches!(
+            error.kind(),
+            CommandFunctionResolveErrorKind::UnknownFunction(id) if id == &missing
+        ));
     }
 
     #[test]
