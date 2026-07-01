@@ -152,6 +152,7 @@ fn component_suggestions(base: &str, prefix: &str) -> Vec<SuggestionEntry> {
 fn data_component_keys() -> impl Iterator<Item = String> {
     (0..REGISTRY.data_components.len())
         .filter_map(|id| REGISTRY.data_components.by_id(id))
+        .filter(|component| component.is_persistent())
         .map(|component| component.key.to_string())
 }
 
@@ -283,7 +284,7 @@ impl<'a> ItemPredicateSyntax<'a> {
         cursor: usize,
         key: &Identifier,
     ) -> Result<(), ItemPredicateParseError> {
-        if is_count_key(key) || REGISTRY.data_components.by_key(key).is_some() {
+        if is_count_key(key) || is_persistent_component_key(key) {
             return Ok(());
         }
 
@@ -425,6 +426,13 @@ fn is_component_existence_predicate_key(key: &Identifier) -> bool {
     !is_count_key(key)
         && !is_vanilla_data_component_predicate_key(key)
         && REGISTRY.data_components.by_key(key).is_some()
+}
+
+fn is_persistent_component_key(key: &Identifier) -> bool {
+    REGISTRY
+        .data_components
+        .by_key(key)
+        .is_some_and(|component| component.is_persistent())
 }
 
 fn is_vanilla_data_component_predicate_key(key: &Identifier) -> bool {

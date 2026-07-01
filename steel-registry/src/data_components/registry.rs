@@ -98,6 +98,7 @@ pub struct ComponentEntry {
     pub nbt_reader: NbtReader,
     /// NBT storage writer
     pub nbt_writer: NbtWriter,
+    persistent: bool,
 }
 
 impl ComponentEntry {
@@ -110,6 +111,7 @@ impl ComponentEntry {
         network_writer: NetworkWriter,
         nbt_reader: NbtReader,
         nbt_writer: NbtWriter,
+        persistent: bool,
     ) -> Self {
         Self {
             key,
@@ -118,6 +120,7 @@ impl ComponentEntry {
             network_writer,
             nbt_reader,
             nbt_writer,
+            persistent,
         }
     }
 
@@ -128,6 +131,12 @@ impl ComponentEntry {
     #[must_use]
     pub fn validates(&self, data: &ComponentData) -> bool {
         data.discriminant() == self.expected_discriminant
+    }
+
+    /// Returns whether this component has persistent storage data.
+    #[must_use]
+    pub const fn is_persistent(&self) -> bool {
+        self.persistent
     }
 }
 
@@ -170,6 +179,31 @@ impl DataComponentRegistry {
         &mut self,
         component: DataComponentType<T>,
         expected_discriminant: ComponentDataDiscriminant,
+    ) where
+        T: 'static + Component + WriteTo + ReadFrom + ToNbtTag + FromNbtTag,
+    {
+        self.register_with_persistence(component, expected_discriminant, true);
+    }
+
+    /// Registers a transient vanilla component type.
+    ///
+    /// Transient components have network data but no persistent component codec
+    /// in vanilla, so command component-value predicates must not accept them.
+    pub fn register_transient<T>(
+        &mut self,
+        component: DataComponentType<T>,
+        expected_discriminant: ComponentDataDiscriminant,
+    ) where
+        T: 'static + Component + WriteTo + ReadFrom + ToNbtTag + FromNbtTag,
+    {
+        self.register_with_persistence(component, expected_discriminant, false);
+    }
+
+    fn register_with_persistence<T>(
+        &mut self,
+        component: DataComponentType<T>,
+        expected_discriminant: ComponentDataDiscriminant,
+        persistent: bool,
     ) where
         T: 'static + Component + WriteTo + ReadFrom + ToNbtTag + FromNbtTag,
     {
@@ -233,6 +267,7 @@ impl DataComponentRegistry {
             make_network_writer::<T>(),
             make_nbt_reader::<T>(),
             make_nbt_writer::<T>(),
+            persistent,
         )));
 
         let id = self.entries.len();
@@ -289,6 +324,7 @@ impl DataComponentRegistry {
             network_writer,
             make_nbt_reader::<T>(),
             make_nbt_writer::<T>(),
+            true,
         )));
 
         let id = self.entries.len();
@@ -309,6 +345,48 @@ impl DataComponentRegistry {
         nbt_reader: NbtReader,
         nbt_writer: NbtWriter,
     ) -> usize {
+        self.register_dynamic_with_persistence(
+            key,
+            expected_discriminant,
+            network_reader,
+            network_writer,
+            nbt_reader,
+            nbt_writer,
+            true,
+        )
+    }
+
+    /// Registers a transient dynamic/plugin component type.
+    pub fn register_dynamic_transient(
+        &mut self,
+        key: Identifier,
+        expected_discriminant: ComponentDataDiscriminant,
+        network_reader: NetworkReader,
+        network_writer: NetworkWriter,
+        nbt_reader: NbtReader,
+        nbt_writer: NbtWriter,
+    ) -> usize {
+        self.register_dynamic_with_persistence(
+            key,
+            expected_discriminant,
+            network_reader,
+            network_writer,
+            nbt_reader,
+            nbt_writer,
+            false,
+        )
+    }
+
+    fn register_dynamic_with_persistence(
+        &mut self,
+        key: Identifier,
+        expected_discriminant: ComponentDataDiscriminant,
+        network_reader: NetworkReader,
+        network_writer: NetworkWriter,
+        nbt_reader: NbtReader,
+        nbt_writer: NbtWriter,
+        persistent: bool,
+    ) -> usize {
         assert!(
             self.allows_registering,
             "Cannot register data components after the registry has been frozen"
@@ -321,6 +399,7 @@ impl DataComponentRegistry {
             network_writer,
             nbt_reader,
             nbt_writer,
+            persistent,
         )));
 
         let id = self.entries.len();

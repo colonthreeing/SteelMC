@@ -1296,6 +1296,37 @@ mod tests {
     }
 
     #[test]
+    fn item_predicate_parser_rejects_transient_exact_components() {
+        init_test_registry();
+
+        let mut reader = CommandReader::new("stone[creative_slot_lock]");
+        let error = ItemPredicateParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("transient exact component rejects");
+
+        assert!(matches!(
+            error.kind(),
+            CommandParseErrorKind::InvalidItemPredicate(value)
+                if value == "unknown item component 'minecraft:creative_slot_lock'"
+        ));
+
+        let mut reader = CommandReader::new("stone[creative_slot_lock~{}]");
+        let ParsedArgument::ItemPredicate(predicate) = ItemPredicateParser
+            .parse(&mut reader, &TestContext)
+            .expect("transient component existence predicate parses")
+        else {
+            panic!("expected item predicate");
+        };
+
+        let condition = &predicate.conditions()[0].alternatives()[0];
+        assert!(matches!(
+            condition,
+            ItemPredicateTerm::ComponentPresence { key }
+                if key == &Identifier::vanilla_static("creative_slot_lock")
+        ));
+    }
+
+    #[test]
     fn item_predicate_matches_item_tags_and_count_ranges() {
         init_test_registry();
 
@@ -1648,6 +1679,17 @@ mod tests {
             count_suggestions
                 .iter()
                 .any(|suggestion| suggestion.text == "stone[minecraft:count")
+        );
+
+        let transient_suggestions = ItemPredicateParser.suggest(
+            "stone[creative",
+            &ParsedArguments::default(),
+            &TestContext,
+        );
+        assert!(
+            !transient_suggestions
+                .iter()
+                .any(|suggestion| suggestion.text == "stone[minecraft:creative_slot_lock")
         );
     }
 

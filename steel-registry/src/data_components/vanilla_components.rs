@@ -349,10 +349,8 @@ pub const SHEEP_COLOR: DataComponentType<()> =
 pub const SHULKER_COLOR: DataComponentType<()> =
     DataComponentType::new(Identifier::vanilla_static("shulker/color"));
 
-/// Helper to create stub reader/writer functions for unimplemented components.
-/// These components use the Todo variant as a placeholder.
-macro_rules! register_stub {
-    ($registry:expr, $key:expr) => {{
+macro_rules! register_stub_with {
+    ($registry:expr, $key:expr, $register_method:ident) => {{
         fn network_reader(cursor: &mut std::io::Cursor<&[u8]>) -> std::io::Result<ComponentData> {
             // Stub: read nothing, return Todo
             let _ = cursor;
@@ -373,7 +371,7 @@ macro_rules! register_stub {
             simdnbt::owned::NbtTag::Compound(simdnbt::owned::NbtCompound::new())
         }
 
-        $registry.register_dynamic(
+        $registry.$register_method(
             $key,
             crate::data_components::ComponentDataDiscriminant::Todo,
             network_reader,
@@ -382,6 +380,20 @@ macro_rules! register_stub {
             nbt_writer,
         );
     }};
+}
+
+/// Helper to create stub reader/writer functions for unimplemented components.
+/// These components use the Todo variant as a placeholder.
+macro_rules! register_stub {
+    ($registry:expr, $key:expr) => {
+        register_stub_with!($registry, $key, register_dynamic);
+    };
+}
+
+macro_rules! register_transient_stub {
+    ($registry:expr, $key:expr) => {
+        register_stub_with!($registry, $key, register_dynamic_transient);
+    };
 }
 
 /// Network reader for VarInt-encoded i32 components.
@@ -473,7 +485,7 @@ pub fn register_vanilla_data_components(registry: &mut DataComponentRegistry) {
         varint_writer,
     );
     // 20: creative_slot_lock
-    registry.register(CREATIVE_SLOT_LOCK, ComponentDataDiscriminant::Empty);
+    registry.register_transient(CREATIVE_SLOT_LOCK, ComponentDataDiscriminant::Empty);
     // 21: enchantment_glint_override
     registry.register(ENCHANTMENT_GLINT_OVERRIDE, ComponentDataDiscriminant::Bool);
     // 22: intangible_projectile
@@ -515,7 +527,7 @@ pub fn register_vanilla_data_components(registry: &mut DataComponentRegistry) {
     // 40: swing_animation
     register_stub!(registry, SWING_ANIMATION.key.clone());
     // 41: additional_trade_cost
-    register_stub!(registry, ADDITIONAL_TRADE_COST.key.clone());
+    register_transient_stub!(registry, ADDITIONAL_TRADE_COST.key.clone());
     // 42: stored_enchantments
     registry.register(STORED_ENCHANTMENTS, ComponentDataDiscriminant::Enchantments);
     // 43: dye
@@ -529,7 +541,7 @@ pub fn register_vanilla_data_components(registry: &mut DataComponentRegistry) {
     // 47: map_decorations
     register_stub!(registry, MAP_DECORATIONS.key.clone());
     // 48: map_post_processing
-    register_stub!(registry, MAP_POST_PROCESSING.key.clone());
+    register_transient_stub!(registry, MAP_POST_PROCESSING.key.clone());
     // 49: charged_projectiles
     register_stub!(registry, CHARGED_PROJECTILES.key.clone());
     // 50: bundle_contents
@@ -659,6 +671,7 @@ pub fn register_vanilla_data_components(registry: &mut DataComponentRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RegistryExt;
 
     #[test]
     fn sulfur_cube_content_keeps_vanilla_26_2_component_order() {
@@ -671,5 +684,37 @@ mod tests {
         assert_eq!(registry.get_key_by_id(80), Some(&CONTAINER_LOOT.key));
         assert_eq!(registry.get_key_by_id(81), Some(&BREAK_SOUND.key));
         assert_eq!(registry.get_key_by_id(82), Some(&VILLAGER_VARIANT.key));
+    }
+
+    #[test]
+    fn vanilla_transient_components_are_marked_non_persistent() {
+        let mut registry = DataComponentRegistry::new();
+        register_vanilla_data_components(&mut registry);
+
+        assert!(
+            !registry
+                .by_key(&CREATIVE_SLOT_LOCK.key)
+                .expect("creative_slot_lock is registered")
+                .is_persistent()
+        );
+        assert!(
+            !registry
+                .by_key(&ADDITIONAL_TRADE_COST.key)
+                .expect("additional_trade_cost is registered")
+                .is_persistent()
+        );
+        assert!(
+            !registry
+                .by_key(&MAP_POST_PROCESSING.key)
+                .expect("map_post_processing is registered")
+                .is_persistent()
+        );
+
+        assert!(
+            registry
+                .by_key(&MAX_STACK_SIZE.key)
+                .expect("max_stack_size is registered")
+                .is_persistent()
+        );
     }
 }
