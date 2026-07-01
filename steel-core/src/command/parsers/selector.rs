@@ -503,6 +503,13 @@ impl EntitySelector {
         cursor: usize,
     ) -> Result<Vec<SharedEntity>, CommandParseError> {
         self.check_selector_permission(context, cursor)?;
+        if !self.includes_entities {
+            return Ok(self
+                .find_players(context, cursor)?
+                .into_iter()
+                .map(|player| player as SharedEntity)
+                .collect());
+        }
         let Some(server) = context.server() else {
             return Err(CommandParseError::new(
                 CommandParseErrorKind::MissingCommandContext("server"),
@@ -531,11 +538,6 @@ impl EntitySelector {
                     Vec::new()
                 }
             }
-            SelectorKind::Selector(_) if !self.includes_entities => self
-                .candidate_players(server, context, cursor)?
-                .into_iter()
-                .map(|player| player as SharedEntity)
-                .collect(),
             SelectorKind::Selector(_) => self.candidate_entities(server, context, cursor)?,
         };
 
@@ -745,10 +747,7 @@ impl SelectorFilter {
                 Ok(entity_name_filter_matches(value, *inverted, entity))
             }
             Self::GameMode { value, inverted } => {
-                let matches = entity
-                    .as_player()
-                    .is_some_and(|player| player.game_mode() == *value);
-                Ok(matches != *inverted)
+                Ok(game_mode_filter_matches(*value, *inverted, entity))
             }
             Self::EntityType { value, inverted } => {
                 let matches = entity.entity_type() == *value;
@@ -839,6 +838,13 @@ fn entity_nbt_filter_matches(expected: &NbtCompound, inverted: bool, entity: &dy
 
 fn entity_name_filter_matches(value: &str, inverted: bool, entity: &dyn Entity) -> bool {
     (entity.plain_text_name() == value) != inverted
+}
+
+fn game_mode_filter_matches(value: GameType, inverted: bool, entity: &dyn Entity) -> bool {
+    let Some(player) = entity.as_player() else {
+        return false;
+    };
+    (player.game_mode() == value) != inverted
 }
 
 fn team_filter_matches(
@@ -2251,6 +2257,7 @@ mod tests {
     use steel_registry::{
         entity_type::EntityTypeRef, test_support::init_test_registry, vanilla_entities,
     };
+    use steel_utils::types::GameType;
     use text_components::TextComponent;
 
     use crate::{
@@ -2267,8 +2274,9 @@ mod tests {
 
     use super::{
         IntRange, SelectorFilter, SelectorParseErrorKind, SelectorType, entity_name_filter_matches,
-        entity_nbt_filter_matches, parse_selector_plan, parse_selector_plan_with_permissions,
-        player_name_matches, read_selector_argument, score_filter_matches, team_filter_matches,
+        entity_nbt_filter_matches, game_mode_filter_matches, parse_selector_plan,
+        parse_selector_plan_with_permissions, player_name_matches, read_selector_argument,
+        score_filter_matches, team_filter_matches,
     };
 
     struct SelectorNbtTestEntity {
@@ -2473,6 +2481,18 @@ mod tests {
 
         assert_eq!(entity.plain_text_name(), "Item");
         assert!(entity_name_filter_matches("Item", false, &entity));
+    }
+
+    #[test]
+    fn selector_gamemode_filter_excludes_non_players_even_when_inverted() {
+        let entity = SelectorNbtTestEntity::new();
+
+        assert!(!game_mode_filter_matches(
+            GameType::Creative,
+            false,
+            &entity
+        ));
+        assert!(!game_mode_filter_matches(GameType::Creative, true, &entity));
     }
 
     #[test]

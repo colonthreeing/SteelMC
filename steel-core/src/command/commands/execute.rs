@@ -244,16 +244,27 @@ fn score_holders_or_tracked(
     let value = arguments
         .get::<ScoreHolderArgumentValue>(name)
         .map_err(super::invalid_parsed_argument)?;
+    let wildcard = value.is_wildcard();
     let holders = resolve_score_holders(
         value,
         context,
         ScoreHolderWildcardExpansion::TrackedHolders,
     )?;
     if holders.is_empty() {
-        Err(no_score_holders())
+        if wildcard {
+            Err(empty_score_holder_wildcard())
+        } else {
+            Err(no_score_holders())
+        }
     } else {
         Ok(holders)
     }
+}
+
+fn empty_score_holder_wildcard() -> CommandError {
+    CommandError::failure(TextComponent::from(
+        &translations::ARGUMENT_SCORE_HOLDER_EMPTY,
+    ))
 }
 
 fn no_score_holders() -> CommandError {

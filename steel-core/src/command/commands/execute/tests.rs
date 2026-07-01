@@ -6,8 +6,10 @@ use steel_registry::{
     entity_type::EntityTypeRef, item_stack::ItemStack, test_support::init_test_registry,
     vanilla_entities, vanilla_items,
 };
-use steel_utils::{Identifier, nbt::parse_nbt_path};
+use steel_utils::{Identifier, nbt::parse_nbt_path, translations};
+use text_components::content::Content;
 
+use crate::command::error::CommandError;
 use crate::command::graph::{
     CommandGraph, ItemPredicateArgumentValue, ItemPredicateTarget, ItemSlotRangeArgumentValue,
     ParsedArgument, ParsedArguments,
@@ -70,6 +72,16 @@ fn stone_predicate() -> ItemPredicateArgumentValue {
         ItemPredicateTarget::Item(&vanilla_items::ITEMS.stone),
         Vec::new(),
     )
+}
+
+fn command_failed_translation_key(error: CommandError) -> String {
+    let CommandError::CommandFailed(message) = error else {
+        panic!("error should be a command failure");
+    };
+    let Content::Translate(message) = &message.content else {
+        panic!("command failure should be translated");
+    };
+    message.key.to_string()
 }
 
 fn entity_item_arguments(
@@ -569,6 +581,14 @@ fn store_score_value_writes_all_holders() {
 
     assert_eq!(scoreboard.score(&holders[0], &objective), Some(11));
     assert_eq!(scoreboard.score(&holders[1], &objective), Some(11));
+}
+
+#[test]
+fn empty_score_holder_wildcard_uses_vanilla_error() {
+    assert_eq!(
+        command_failed_translation_key(super::empty_score_holder_wildcard()),
+        translations::ARGUMENT_SCORE_HOLDER_EMPTY.0
+    );
 }
 
 #[test]
