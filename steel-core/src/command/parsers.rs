@@ -370,6 +370,32 @@ mod tests {
     }
 
     #[test]
+    fn int_range_parser_uses_brigadier_number_scanner() {
+        let mut reader = CommandReader::new("1e3");
+        let ParsedArgument::IntRange(range) = IntRangeParser
+            .parse(&mut reader, &TestContext)
+            .expect("range prefix parses")
+        else {
+            panic!("expected int range argument");
+        };
+
+        assert!(range.matches(1));
+        assert!(!range.matches(1000));
+        assert_eq!(reader.remaining(), "e3");
+
+        let mut reader = CommandReader::new("+1");
+        let error = IntRangeParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("leading plus rejects");
+        assert_eq!(
+            error.kind(),
+            &CommandParseErrorKind::InvalidIntegerRange("+1".to_owned())
+        );
+        assert_eq!(error.cursor(), 0);
+        assert_eq!(reader.cursor(), 0);
+    }
+
+    #[test]
     fn double_range_parser_accepts_vanilla_range_forms() {
         for (input, matching, missing) in [
             ("5", 5.0, 4.0),
@@ -415,6 +441,32 @@ mod tests {
             error.kind(),
             &CommandParseErrorKind::InvalidDoubleRange("NaN".to_owned())
         );
+    }
+
+    #[test]
+    fn double_range_parser_uses_brigadier_number_scanner() {
+        let mut reader = CommandReader::new("1e3");
+        let ParsedArgument::DoubleRange(range) = DoubleRangeParser
+            .parse(&mut reader, &TestContext)
+            .expect("range prefix parses")
+        else {
+            panic!("expected double range argument");
+        };
+
+        assert!(range.matches(1.0));
+        assert!(!range.matches(1000.0));
+        assert_eq!(reader.remaining(), "e3");
+
+        let mut reader = CommandReader::new("+1");
+        let error = DoubleRangeParser
+            .parse(&mut reader, &TestContext)
+            .expect_err("leading plus rejects");
+        assert_eq!(
+            error.kind(),
+            &CommandParseErrorKind::InvalidDoubleRange("+1".to_owned())
+        );
+        assert_eq!(error.cursor(), 0);
+        assert_eq!(reader.cursor(), 0);
     }
 
     #[test]

@@ -17,7 +17,7 @@ use crate::{
             EntityTargetArgumentValue,
             selector::{parse_entity_selector_argument, selector_argument_suggestions},
         },
-        reader::{CommandReader, StringMode},
+        reader::{ARGUMENT_SEPARATOR, CommandReader, StringMode},
         requirement::CommandInputContext,
     },
     entity::Entity,
@@ -184,8 +184,8 @@ impl CommandArgumentParser for IntRangeParser {
         _context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let raw = reader.read_token()?;
-        parse_int_range(&raw, cursor).map(ParsedArgument::IntRange)
+        let argument_start = reader.cursor();
+        parse_int_range(reader, argument_start, cursor).map(ParsedArgument::IntRange)
     }
 
     fn client_parser(&self) -> CommandArgumentClientParser {
@@ -212,8 +212,8 @@ impl CommandArgumentParser for DoubleRangeParser {
         _context: &dyn CommandInputContext,
     ) -> Result<ParsedArgument, CommandParseError> {
         let cursor = reader.absolute_cursor();
-        let raw = reader.read_token()?;
-        parse_double_range(&raw, cursor).map(ParsedArgument::DoubleRange)
+        let argument_start = reader.cursor();
+        parse_double_range(reader, argument_start, cursor).map(ParsedArgument::DoubleRange)
     }
 
     fn client_parser(&self) -> CommandArgumentClientParser {
@@ -308,96 +308,163 @@ fn resolve_uuid_score_holders(
         )
 }
 
-fn parse_int_range(raw: &str, cursor: usize) -> Result<IntRangeArgumentValue, CommandParseError> {
-    if let Some((left, right)) = raw.split_once("..") {
-        let min = parse_optional_range_bound(left, raw, cursor)?;
-        let max = parse_optional_range_bound(right, raw, cursor)?;
-        if min.is_none() && max.is_none() {
-            return Err(CommandParseError::new(
-                CommandParseErrorKind::InvalidIntegerRange(raw.to_owned()),
-                cursor,
-            ));
-        }
-        if min.zip(max).is_some_and(|(min, max)| min > max) {
-            return Err(CommandParseError::new(
-                CommandParseErrorKind::SwappedIntegerRange,
-                cursor,
-            ));
-        }
-        return Ok(IntRangeArgumentValue::new(min, max));
+fn parse_int_range(
+    reader: &mut CommandReader<'_>,
+    argument_start: usize,
+    error_cursor: usize,
+) -> Result<IntRangeArgumentValue, CommandParseError> {
+    let min = read_optional_int_range_bound(reader, argument_start, error_cursor)?;
+    let max = if reader.peek() == Some('.') && peek_next(reader) == Some('.') {
+        let _ = reader.read();
+        let _ = reader.read();
+        read_optional_int_range_bound(reader, argument_start, error_cursor)?
+    } else {
+        min
+    };
+
+    if min.is_none() && max.is_none() {
+        return Err(invalid_integer_range_error(
+            reader,
+            argument_start,
+            error_cursor,
+        ));
+    }
+    if min.zip(max).is_some_and(|(min, max)| min > max) {
+        return Err(CommandParseError::new(
+            CommandParseErrorKind::SwappedIntegerRange,
+            error_cursor,
+        ));
     }
 
-    parse_range_bound(raw, raw, cursor).map(IntRangeArgumentValue::exactly)
-}
-
-fn parse_optional_range_bound(
-    value: &str,
-    raw: &str,
-    cursor: usize,
-) -> Result<Option<i32>, CommandParseError> {
-    if value.is_empty() {
-        return Ok(None);
-    }
-
-    parse_range_bound(value, raw, cursor).map(Some)
-}
-
-fn parse_range_bound(value: &str, raw: &str, cursor: usize) -> Result<i32, CommandParseError> {
-    value.parse::<i32>().map_err(|_| {
-        CommandParseError::new(
-            CommandParseErrorKind::InvalidIntegerRange(raw.to_owned()),
-            cursor,
-        )
-    })
+    Ok(IntRangeArgumentValue::new(min, max))
 }
 
 fn parse_double_range(
-    raw: &str,
-    cursor: usize,
+    reader: &mut CommandReader<'_>,
+    argument_start: usize,
+    error_cursor: usize,
 ) -> Result<DoubleRangeArgumentValue, CommandParseError> {
-    if let Some((left, right)) = raw.split_once("..") {
-        let min = parse_optional_double_range_bound(left, raw, cursor)?;
-        let max = parse_optional_double_range_bound(right, raw, cursor)?;
-        if min.is_none() && max.is_none() {
-            return Err(CommandParseError::new(
-                CommandParseErrorKind::InvalidDoubleRange(raw.to_owned()),
-                cursor,
-            ));
-        }
-        if min.zip(max).is_some_and(|(min, max)| min > max) {
-            return Err(CommandParseError::new(
-                CommandParseErrorKind::SwappedDoubleRange,
-                cursor,
-            ));
-        }
-        return Ok(DoubleRangeArgumentValue::new(min, max));
+    let min = read_optional_double_range_bound(reader, argument_start, error_cursor)?;
+    let max = if reader.peek() == Some('.') && peek_next(reader) == Some('.') {
+        let _ = reader.read();
+        let _ = reader.read();
+        read_optional_double_range_bound(reader, argument_start, error_cursor)?
+    } else {
+        min
+    };
+
+    if min.is_none() && max.is_none() {
+        return Err(invalid_double_range_error(
+            reader,
+            argument_start,
+            error_cursor,
+        ));
+    }
+    if min.zip(max).is_some_and(|(min, max)| min > max) {
+        return Err(CommandParseError::new(
+            CommandParseErrorKind::SwappedDoubleRange,
+            error_cursor,
+        ));
     }
 
-    parse_double_range_bound(raw, raw, cursor).map(DoubleRangeArgumentValue::exactly)
+    Ok(DoubleRangeArgumentValue::new(min, max))
 }
 
-fn parse_optional_double_range_bound(
-    value: &str,
-    raw: &str,
-    cursor: usize,
-) -> Result<Option<f64>, CommandParseError> {
-    if value.is_empty() {
+fn read_optional_int_range_bound(
+    reader: &mut CommandReader<'_>,
+    argument_start: usize,
+    error_cursor: usize,
+) -> Result<Option<i32>, CommandParseError> {
+    let start = reader.cursor();
+    read_range_number(reader);
+    if reader.cursor() == start {
         return Ok(None);
     }
 
-    parse_double_range_bound(value, raw, cursor).map(Some)
+    reader.input()[start..reader.cursor()]
+        .parse::<i32>()
+        .map(Some)
+        .map_err(|_| invalid_integer_range_error(reader, argument_start, error_cursor))
 }
 
-fn parse_double_range_bound(
-    value: &str,
-    raw: &str,
-    cursor: usize,
-) -> Result<f64, CommandParseError> {
-    match value.parse::<f64>() {
-        Ok(value) if value.is_finite() => Ok(value),
-        _ => Err(CommandParseError::new(
-            CommandParseErrorKind::InvalidDoubleRange(raw.to_owned()),
-            cursor,
+fn read_optional_double_range_bound(
+    reader: &mut CommandReader<'_>,
+    argument_start: usize,
+    error_cursor: usize,
+) -> Result<Option<f64>, CommandParseError> {
+    let start = reader.cursor();
+    read_range_number(reader);
+    if reader.cursor() == start {
+        return Ok(None);
+    }
+
+    match reader.input()[start..reader.cursor()].parse::<f64>() {
+        Ok(value) if value.is_finite() => Ok(Some(value)),
+        _ => Err(invalid_double_range_error(
+            reader,
+            argument_start,
+            error_cursor,
         )),
     }
+}
+
+fn read_range_number(reader: &mut CommandReader<'_>) {
+    while reader
+        .peek()
+        .is_some_and(|ch| is_range_number_char(ch, peek_next(reader)))
+    {
+        let _ = reader.read();
+    }
+}
+
+fn peek_next(reader: &CommandReader<'_>) -> Option<char> {
+    let mut chars = reader.remaining().chars();
+    chars.next()?;
+    chars.next()
+}
+
+fn is_range_number_char(ch: char, next: Option<char>) -> bool {
+    ch.is_ascii_digit() || ch == '-' || (ch == '.' && next != Some('.'))
+}
+
+fn invalid_integer_range_error(
+    reader: &CommandReader<'_>,
+    argument_start: usize,
+    error_cursor: usize,
+) -> CommandParseError {
+    CommandParseError::new(
+        CommandParseErrorKind::InvalidIntegerRange(range_error_raw(reader, argument_start)),
+        error_cursor,
+    )
+}
+
+fn invalid_double_range_error(
+    reader: &CommandReader<'_>,
+    argument_start: usize,
+    error_cursor: usize,
+) -> CommandParseError {
+    CommandParseError::new(
+        CommandParseErrorKind::InvalidDoubleRange(range_error_raw(reader, argument_start)),
+        error_cursor,
+    )
+}
+
+fn range_error_raw(reader: &CommandReader<'_>, argument_start: usize) -> String {
+    let end = if reader.cursor() == argument_start {
+        next_argument_separator(reader, argument_start)
+    } else {
+        reader.cursor()
+    };
+    reader.input()[argument_start..end].trim_end().to_owned()
+}
+
+fn next_argument_separator(reader: &CommandReader<'_>, start: usize) -> usize {
+    let Some((offset, _)) = reader.input()[start..]
+        .char_indices()
+        .find(|(_, ch)| *ch == ARGUMENT_SEPARATOR)
+    else {
+        return reader.input().len();
+    };
+
+    start + offset
 }
