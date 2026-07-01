@@ -1585,12 +1585,14 @@ fn parse_option(
         }
         "x_rotation" => {
             ensure_set_once(&mut state.x_rotation, "x_rotation", key_cursor)?;
-            selector.x_rotation = Some(parse_float_range(&reader.read_raw_value()?)?);
+            let value_cursor = reader.cursor();
+            selector.x_rotation = Some(parse_float_range(&reader.read_raw_value()?, value_cursor)?);
             Ok(())
         }
         "y_rotation" => {
             ensure_set_once(&mut state.y_rotation, "y_rotation", key_cursor)?;
-            selector.y_rotation = Some(parse_float_range(&reader.read_raw_value()?)?);
+            let value_cursor = reader.cursor();
+            selector.y_rotation = Some(parse_float_range(&reader.read_raw_value()?, value_cursor)?);
             Ok(())
         }
         "limit" => parse_limit_option(reader, selector, state, key_cursor),
@@ -1662,7 +1664,8 @@ fn parse_distance_option(
     key_cursor: usize,
 ) -> Result<(), SelectorParseError> {
     ensure_set_once(&mut state.distance, "distance", key_cursor)?;
-    let range = parse_double_range(&reader.read_raw_value()?)?;
+    let value_cursor = reader.cursor();
+    let range = parse_double_range(&reader.read_raw_value()?, value_cursor)?;
     if range.min.is_some_and(|value| value < 0.0) || range.max.is_some_and(|value| value < 0.0) {
         return Err(SelectorParseError::invalid_at(
             "distance cannot be negative",
@@ -1681,7 +1684,8 @@ fn parse_level_option(
     key_cursor: usize,
 ) -> Result<(), SelectorParseError> {
     ensure_set_once(&mut state.level, "level", key_cursor)?;
-    let range = parse_int_range(&reader.read_raw_value()?)?;
+    let value_cursor = reader.cursor();
+    let range = parse_int_range(&reader.read_raw_value()?, value_cursor)?;
     if range.min.is_some_and(|value| value < 0) || range.max.is_some_and(|value| value < 0) {
         return Err(SelectorParseError::invalid_at(
             "level cannot be negative",
@@ -1924,55 +1928,73 @@ fn parse_game_mode(value: &str) -> Option<GameType> {
     }
 }
 
-fn parse_double_range(raw: &str) -> Result<DoubleRange, SelectorParseError> {
-    let (min, max) = parse_range(raw, |value| value.parse::<f64>())?;
+fn parse_double_range(raw: &str, cursor: usize) -> Result<DoubleRange, SelectorParseError> {
+    let (min, max) = parse_range(raw, cursor, |value| value.parse::<f64>())?;
     if let (Some(min), Some(max)) = (min, max)
         && min > max
     {
-        return Err(SelectorParseError::invalid("range minimum exceeds maximum"));
+        return Err(SelectorParseError::invalid_at(
+            "range minimum exceeds maximum",
+            cursor,
+        ));
     }
     Ok(DoubleRange { min, max })
 }
 
-fn parse_float_range(raw: &str) -> Result<FloatRange, SelectorParseError> {
-    let (min, max) = parse_range(raw, |value| value.parse::<f32>())?;
+fn parse_float_range(raw: &str, cursor: usize) -> Result<FloatRange, SelectorParseError> {
+    let (min, max) = parse_range(raw, cursor, |value| value.parse::<f32>())?;
     Ok(FloatRange { min, max })
 }
 
-fn parse_int_range(raw: &str) -> Result<IntRange, SelectorParseError> {
-    let (min, max) = parse_range(raw, |value| value.parse::<i32>())?;
+fn parse_int_range(raw: &str, cursor: usize) -> Result<IntRange, SelectorParseError> {
+    let (min, max) = parse_range(raw, cursor, |value| value.parse::<i32>())?;
     if let (Some(min), Some(max)) = (min, max)
         && min > max
     {
-        return Err(SelectorParseError::invalid("range minimum exceeds maximum"));
+        return Err(SelectorParseError::invalid_at(
+            "range minimum exceeds maximum",
+            cursor,
+        ));
     }
     Ok(IntRange { min, max })
 }
 
 fn parse_range<T: Copy, E>(
     raw: &str,
+    cursor: usize,
     parse: impl Fn(&str) -> Result<T, E>,
 ) -> Result<(Option<T>, Option<T>), SelectorParseError> {
     if raw.is_empty() {
-        return Err(SelectorParseError::invalid("missing range value"));
+        return Err(SelectorParseError::invalid_at(
+            "missing range value",
+            cursor,
+        ));
     }
     let Some((left, right)) = raw.split_once("..") else {
-        let value = parse(raw).map_err(|_| SelectorParseError::invalid("invalid range value"))?;
+        let value = parse(raw)
+            .map_err(|_| SelectorParseError::invalid_at("invalid range value", cursor))?;
         return Ok((Some(value), Some(value)));
     };
     if left.is_empty() && right.is_empty() {
-        return Err(SelectorParseError::invalid("empty range"));
+        return Err(SelectorParseError::invalid_at("empty range", cursor));
     }
+    let right_cursor = cursor + left.len() + "..".len();
     let min = if left.is_empty() {
         None
     } else {
-        Some(parse(left).map_err(|_| SelectorParseError::invalid("invalid range minimum"))?)
+        Some(
+            parse(left)
+                .map_err(|_| SelectorParseError::invalid_at("invalid range minimum", cursor))?,
+        )
     };
-    let max = if right.is_empty() {
-        None
-    } else {
-        Some(parse(right).map_err(|_| SelectorParseError::invalid("invalid range maximum"))?)
-    };
+    let max =
+        if right.is_empty() {
+            None
+        } else {
+            Some(parse(right).map_err(|_| {
+                SelectorParseError::invalid_at("invalid range maximum", right_cursor)
+            })?)
+        };
     Ok((min, max))
 }
 
@@ -2078,7 +2100,8 @@ impl<'a> SelectorReader<'a> {
             self.skip_whitespace();
             self.expect('=')?;
             self.skip_whitespace();
-            let range = parse_int_range(&self.read_score_range()?)?;
+            let range_cursor = self.cursor;
+            let range = parse_int_range(&self.read_score_range()?, range_cursor)?;
             upsert_score_filter(&mut scores, name, range);
             self.skip_whitespace();
             if self.peek() == Some(',') {
@@ -2594,6 +2617,16 @@ mod tests {
         )
         .expect_err("scores option can only be used once");
         assert!(matches!(error.kind, SelectorParseErrorKind::Invalid(_)));
+    }
+
+    #[test]
+    fn selector_range_errors_keep_value_cursor() {
+        let input = "@e[distance=bad]";
+        let error = parse_selector_plan(input.to_owned(), true)
+            .expect_err("invalid distance range is rejected");
+
+        assert!(matches!(error.kind, SelectorParseErrorKind::Invalid(_)));
+        assert_eq!(error.cursor, "@e[distance=".len());
     }
 
     #[test]
