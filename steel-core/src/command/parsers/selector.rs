@@ -2584,7 +2584,7 @@ mod tests {
     use steel_registry::{
         entity_type::EntityTypeRef, test_support::init_test_registry, vanilla_entities,
     };
-    use steel_utils::types::GameType;
+    use steel_utils::{Identifier, types::GameType};
     use text_components::TextComponent;
 
     use crate::{
@@ -2604,7 +2604,7 @@ mod tests {
         UNSUPPORTED_SELECTOR_OPTION_KEYS, entity_name_filter_matches, entity_nbt_filter_matches,
         game_mode_filter_matches, parse_selector_plan, parse_selector_plan_with_permissions,
         player_name_matches, read_selector_argument, score_filter_matches,
-        selector_argument_suggestions, team_filter_matches,
+        selector_argument_suggestions, selector_predicate_filter_matches, team_filter_matches,
     };
 
     struct SelectorNbtTestEntity {
@@ -3404,5 +3404,21 @@ mod tests {
         assert!(selector.filters.iter().any(
             |filter| matches!(filter, SelectorFilter::Predicate { value, inverted } if value.to_string() == "minecraft:test" && *inverted)
         ));
+    }
+
+    #[test]
+    fn selector_missing_predicate_filter_is_false_even_when_inverted() {
+        init_test_registry();
+        let entity = SelectorNbtTestEntity::new();
+        let missing = Identifier::new_static("steel", "missing_predicate");
+
+        assert!(
+            !selector_predicate_filter_matches(&missing, false, &entity, 0)
+                .expect("missing predicate should evaluate")
+        );
+        assert!(
+            !selector_predicate_filter_matches(&missing, true, &entity, 0)
+                .expect("missing inverted predicate should evaluate")
+        );
     }
 }
