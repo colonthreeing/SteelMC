@@ -99,6 +99,57 @@ fn entity_item_arguments(
 }
 
 #[test]
+fn source_transform_parse_shapes_match_vanilla_non_function_forms() {
+    init_test_registry();
+    let graph = graph();
+    let context = TestContext;
+    let cases: &[(&str, &[&str])] = &[
+        ("execute as Steve run seed", &["execute", "as", "targets"]),
+        ("execute at Steve run seed", &["execute", "at", "targets"]),
+        (
+            "execute positioned 1 2 3 run seed",
+            &["execute", "positioned", "pos"],
+        ),
+        (
+            "execute positioned as Steve run seed",
+            &["execute", "positioned", "as", "targets"],
+        ),
+        (
+            "execute rotated 90 0 run seed",
+            &["execute", "rotated", "rot"],
+        ),
+        (
+            "execute rotated as Steve run seed",
+            &["execute", "rotated", "as", "targets"],
+        ),
+        (
+            "execute facing 1 2 3 run seed",
+            &["execute", "facing", "pos"],
+        ),
+        (
+            "execute facing entity Steve eyes run seed",
+            &["execute", "facing", "entity", "targets", "anchor"],
+        ),
+        ("execute align xyz run seed", &["execute", "align", "axes"]),
+        (
+            "execute anchored eyes run seed",
+            &["execute", "anchored", "anchor"],
+        ),
+        (
+            "execute summon pig run seed",
+            &["execute", "summon", "entity"],
+        ),
+    ];
+
+    for (command, expected_path) in cases {
+        let parsed = graph.parse(command, &context).unwrap_or_else(|_| {
+            panic!("source transform parses: {command}");
+        });
+        assert_eq!(parsed.path(), *expected_path, "{command}");
+    }
+}
+
+#[test]
 fn loaded_condition_parses_direct_and_redirect_forms() {
     let graph = graph();
     let context = TestContext;
