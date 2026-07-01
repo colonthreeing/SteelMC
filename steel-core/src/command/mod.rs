@@ -2325,6 +2325,7 @@ mod tests {
         assert!(!dispatcher.graph.has_root("function", &player));
         assert!(!dispatcher.graph.has_root("gamemode", &player));
         assert!(!dispatcher.graph.has_root("op", &player));
+        assert!(!dispatcher.graph.has_root("return", &player));
         assert!(!dispatcher.graph.has_root("tp", &player));
         assert!(!dispatcher.graph.has_root("teleport", &player));
         assert!(!dispatcher.graph.has_root("steelperms", &player));
@@ -2341,6 +2342,9 @@ mod tests {
 
         let function_player = player_context_with("minecraft.command.function");
         assert!(dispatcher.graph.has_root("function", &function_player));
+
+        let return_player = player_context_with("minecraft.command.return");
+        assert!(dispatcher.graph.has_root("return", &return_player));
 
         let gamemode_player = player_context_with("minecraft.command.gamemode");
         assert!(dispatcher.graph.has_root("gamemode", &gamemode_player));
@@ -2480,6 +2484,67 @@ mod tests {
             dispatcher
                 .graph
                 .parse("execute run gamemode creative", &execute_and_creative)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn return_command_parse_shapes_match_vanilla() {
+        init_test_registry();
+
+        let dispatcher = CommandDispatcher::new().expect("built-in commands register");
+        let return_player = player_context_with("minecraft.command.return");
+        let return_and_seed =
+            player_context_with_all(["minecraft.command.return", "minecraft.command.seed"]);
+
+        let value = dispatcher
+            .graph
+            .parse("return 5", &return_player)
+            .expect("return value parses");
+        assert_eq!(value.path(), ["return", "value"]);
+
+        let fail = dispatcher
+            .graph
+            .parse("return fail", &return_player)
+            .expect("return fail parses");
+        assert_eq!(fail.path(), ["return", "fail"]);
+
+        let run = dispatcher
+            .graph
+            .parse("return run seed", &return_and_seed)
+            .expect("return run parses");
+        assert_eq!(run.path(), ["return", "run"]);
+    }
+
+    #[test]
+    fn return_run_requires_redirected_command_permission() {
+        init_test_registry();
+
+        let dispatcher = CommandDispatcher::new().expect("built-in commands register");
+        let return_only = player_context_with("minecraft.command.return");
+
+        assert!(
+            dispatcher
+                .graph
+                .parse("return run gamemode creative", &return_only)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn return_run_uses_original_source_permissions_for_redirected_command() {
+        init_test_registry();
+
+        let dispatcher = CommandDispatcher::new().expect("built-in commands register");
+        let return_and_creative = player_context_with_all([
+            "minecraft.command.return",
+            "minecraft.command.gamemode.creative",
+        ]);
+
+        assert!(
+            dispatcher
+                .graph
+                .parse("return run gamemode creative", &return_and_creative)
                 .is_ok()
         );
     }
