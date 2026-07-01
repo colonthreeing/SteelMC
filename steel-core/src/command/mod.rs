@@ -3093,6 +3093,40 @@ mod tests {
     }
 
     #[test]
+    fn aliases_preserve_dynamic_argument_permission_base() {
+        init_test_registry();
+        let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
+        let mut dispatcher = CommandDispatcher::new_empty();
+        let registration =
+            CommandRegistration::new(crate::command::commands::gamemode::command(), minecraft)
+                .alias("gm")
+                .expect("alias literal parses");
+
+        dispatcher
+            .register_command(registration)
+            .expect("aliased gamemode command registers");
+
+        let creative = player_context_with("minecraft.command.gamemode.creative");
+        assert!(
+            dispatcher
+                .graph
+                .parse("gamemode creative", &creative)
+                .is_ok()
+        );
+        assert!(dispatcher.graph.parse("gm creative", &creative).is_ok());
+        assert!(dispatcher.graph.parse("gm survival", &creative).is_err());
+        assert!(
+            dispatcher
+                .graph
+                .parse(
+                    "gm creative",
+                    &player_context_with("minecraft.command.gm.creative")
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
     fn parse_error_mapping_uses_vanilla_integer_bound_order() {
         let error = super::CommandParseError::new(
             CommandParseErrorKind::IntegerTooLow { value: 1, min: 5 },
