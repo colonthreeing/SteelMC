@@ -1053,17 +1053,13 @@ fn selector_option_suggestions(
     option_start: usize,
     context: &dyn CommandInputContext,
 ) -> Vec<String> {
-    if prefix[option_start + 1..].contains(']') {
+    if selector_options_have_top_level_close(&prefix[option_start + 1..]) {
         return Vec::new();
     }
 
     let option_prefix = &prefix[..option_start + 1];
     let inside = &prefix[option_start + 1..];
-    let (completed_entries, current_entry) = inside
-        .rsplit_once(',')
-        .map_or(("", inside), |(completed, current)| {
-            (&inside[..completed.len() + 1], current)
-        });
+    let (completed_entries, current_entry) = split_current_selector_option_entry(inside);
     let expression_prefix = format!("{option_prefix}{completed_entries}");
     if let Some((key, value_prefix)) = current_entry.split_once('=') {
         let value_expression_prefix = format!("{expression_prefix}{key}=");
@@ -1088,9 +1084,97 @@ fn selector_option_suggestions(
         .collect()
 }
 
+fn selector_options_have_top_level_close(input: &str) -> bool {
+    let mut state = SelectorSuggestionSplitState::default();
+    for (_, ch) in input.char_indices() {
+        if state.accepts_top_level_close(ch) {
+            return true;
+        }
+    }
+    false
+}
+
+fn split_current_selector_option_entry(input: &str) -> (&str, &str) {
+    let mut state = SelectorSuggestionSplitState::default();
+    let mut separator = None;
+    for (index, ch) in input.char_indices() {
+        if state.accepts_top_level_separator(ch) {
+            separator = Some(index);
+        }
+    }
+
+    separator.map_or(("", input), |index| (&input[..=index], &input[index + 1..]))
+}
+
+fn selector_option_entries(input: &str) -> Vec<&str> {
+    let mut entries = Vec::new();
+    let mut state = SelectorSuggestionSplitState::default();
+    let mut entry_start = 0;
+    for (index, ch) in input.char_indices() {
+        if state.accepts_top_level_separator(ch) {
+            let entry = input[entry_start..index].trim();
+            if !entry.is_empty() {
+                entries.push(entry);
+            }
+            entry_start = index + ch.len_utf8();
+        }
+    }
+
+    let entry = input[entry_start..].trim();
+    if !entry.is_empty() {
+        entries.push(entry);
+    }
+    entries
+}
+
+#[derive(Default)]
+struct SelectorSuggestionSplitState {
+    depth: usize,
+    quote: Option<char>,
+    escaping: bool,
+}
+
+impl SelectorSuggestionSplitState {
+    fn accepts_top_level_separator(&mut self, ch: char) -> bool {
+        self.accepts_top_level_char(ch, ',')
+    }
+
+    fn accepts_top_level_close(&mut self, ch: char) -> bool {
+        self.accepts_top_level_char(ch, ']')
+    }
+
+    fn accepts_top_level_char(&mut self, ch: char, target: char) -> bool {
+        if let Some(quote) = self.quote {
+            if self.escaping {
+                self.escaping = false;
+                return false;
+            }
+            if ch == '\\' {
+                self.escaping = true;
+                return false;
+            }
+            if ch == quote {
+                self.quote = None;
+            }
+            return false;
+        }
+
+        match ch {
+            '"' | '\'' => self.quote = Some(ch),
+            '{' | '[' | '(' => self.depth = self.depth.saturating_add(1),
+            '}' | ')' => self.depth = self.depth.saturating_sub(1),
+            ']' if self.depth == 0 => return target == ']',
+            ']' => self.depth = self.depth.saturating_sub(1),
+            _ if ch == target && self.depth == 0 => return true,
+            _ => {}
+        }
+        false
+    }
+}
+
 fn completed_set_once_selector_options(completed_entries: &str) -> Vec<&str> {
-    completed_entries
-        .split(',')
+    selector_option_entries(completed_entries)
+        .into_iter()
         .filter_map(|entry| entry.split_once('=').map(|(key, _)| key.trim()))
         .filter(|key| SET_ONCE_SELECTOR_OPTIONS.contains(key))
         .collect()
@@ -1159,8 +1243,8 @@ fn completed_option_values<'a>(
     completed_entries: &'a str,
     key: &'a str,
 ) -> impl Iterator<Item = &'a str> {
-    completed_entries
-        .split(',')
+    selector_option_entries(completed_entries)
+        .into_iter()
         .filter_map(|entry| entry.split_once('='))
         .filter(move |(entry_key, _)| entry_key.trim() == key)
         .map(|(_, value)| value.trim())
@@ -2682,6 +2766,46 @@ mod tests {
             after_positive_tag
                 .iter()
                 .any(|suggestion| suggestion == "@e[type=#minecraft:skeletons,type=")
+        );
+    }
+
+    #[test]
+    fn selector_suggestions_keep_nested_option_commas_inside_values() {
+        let context = SelectorResolutionPermissionContext {
+            allow_advanced: true,
+        };
+
+        let inside_score_map =
+            selector_argument_suggestions("@e[scores={kills=1,", false, false, &context);
+        assert!(inside_score_map.is_empty());
+
+        let after_score_map =
+            selector_argument_suggestions("@e[scores={kills=1,deaths=2},", false, false, &context);
+        assert!(
+            after_score_map
+                .iter()
+                .any(|suggestion| suggestion == "@e[scores={kills=1,deaths=2},name=")
+        );
+        assert!(
+            !after_score_map
+                .iter()
+                .any(|suggestion| suggestion == "@e[scores={kills=1,deaths=2},scores=")
+        );
+    }
+
+    #[test]
+    fn selector_suggestions_ignore_closing_brackets_inside_quoted_values() {
+        let context = SelectorResolutionPermissionContext {
+            allow_advanced: true,
+        };
+
+        let suggestions =
+            selector_argument_suggestions("@e[nbt={Tags:[\"foo]bar\"]},", false, false, &context);
+
+        assert!(
+            suggestions
+                .iter()
+                .any(|suggestion| suggestion == "@e[nbt={Tags:[\"foo]bar\"]},name=")
         );
     }
 

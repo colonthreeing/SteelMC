@@ -730,7 +730,7 @@ mod tests {
 
         assert!(texts.iter().any(|text| text == "@e[type="));
         assert!(texts.iter().any(|text| text == "@e[sort="));
-        assert!(texts.iter().any(|text| text == "@e[advancements="));
+        assert!(!texts.iter().any(|text| text == "@e[advancements="));
         assert!(texts.iter().any(|text| text == "@e[predicate="));
     }
 
