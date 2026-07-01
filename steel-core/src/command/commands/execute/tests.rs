@@ -151,6 +151,10 @@ fn source_transform_parse_shapes_match_vanilla_non_function_forms() {
             &["execute", "anchored", "anchor"],
         ),
         (
+            "execute in minecraft:the_nether run seed",
+            &["execute", "in", "dimension"],
+        ),
+        (
             "execute summon pig run seed",
             &["execute", "summon", "entity"],
         ),
