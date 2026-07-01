@@ -1837,13 +1837,15 @@ fn parse_option(
         "x_rotation" => {
             ensure_set_once(&mut state.x_rotation, "x_rotation", key_cursor)?;
             let value_cursor = reader.cursor();
-            selector.x_rotation = Some(parse_float_range(&reader.read_raw_value()?, value_cursor)?);
+            selector.x_rotation =
+                Some(parse_float_range(&reader.read_range_value(), value_cursor)?);
             Ok(())
         }
         "y_rotation" => {
             ensure_set_once(&mut state.y_rotation, "y_rotation", key_cursor)?;
             let value_cursor = reader.cursor();
-            selector.y_rotation = Some(parse_float_range(&reader.read_raw_value()?, value_cursor)?);
+            selector.y_rotation =
+                Some(parse_float_range(&reader.read_range_value(), value_cursor)?);
             Ok(())
         }
         "limit" => parse_limit_option(reader, selector, state, key_cursor),
@@ -1916,7 +1918,7 @@ fn parse_distance_option(
 ) -> Result<(), SelectorParseError> {
     ensure_set_once(&mut state.distance, "distance", key_cursor)?;
     let value_cursor = reader.cursor();
-    let range = parse_double_range(&reader.read_raw_value()?, value_cursor)?;
+    let range = parse_double_range(&reader.read_range_value(), value_cursor)?;
     if range.min.is_some_and(|value| value < 0.0) || range.max.is_some_and(|value| value < 0.0) {
         return Err(SelectorParseError::invalid_at(
             "distance cannot be negative",
@@ -1936,7 +1938,7 @@ fn parse_level_option(
 ) -> Result<(), SelectorParseError> {
     ensure_set_once(&mut state.level, "level", key_cursor)?;
     let value_cursor = reader.cursor();
-    let range = parse_int_range(&reader.read_raw_value()?, value_cursor)?;
+    let range = parse_int_range(&reader.read_range_value(), value_cursor)?;
     if range.min.is_some_and(|value| value < 0) || range.max.is_some_and(|value| value < 0) {
         return Err(SelectorParseError::invalid_at(
             "level cannot be negative",
@@ -2351,12 +2353,22 @@ impl<'a> SelectorReader<'a> {
             self.expect('=')?;
             self.skip_whitespace();
             let range_cursor = self.cursor;
-            let range = parse_int_range(&self.read_score_range()?, range_cursor)?;
+            let range = parse_int_range(&self.read_range_value(), range_cursor)?;
             upsert_score_filter(&mut scores, name, range);
             self.skip_whitespace();
-            if self.peek() == Some(',') {
-                self.read();
-                self.skip_whitespace();
+            match self.peek() {
+                Some(',') => {
+                    self.read();
+                    self.skip_whitespace();
+                }
+                Some('}') => {}
+                Some(_) => {
+                    return Err(SelectorParseError::invalid_at(
+                        "expected ',' or '}' after score range",
+                        self.cursor,
+                    ));
+                }
+                None => {}
             }
         }
         self.expect('}')?;
@@ -2391,21 +2403,40 @@ impl<'a> SelectorReader<'a> {
         self.input[start..self.cursor].to_owned()
     }
 
-    fn read_score_range(&mut self) -> Result<String, SelectorParseError> {
+    fn read_number_string(&mut self) -> String {
+        self.skip_whitespace();
         let start = self.cursor;
+        while self.peek().is_some_and(is_number_char) {
+            self.read();
+        }
+        self.input[start..self.cursor].to_owned()
+    }
+
+    fn read_range_value(&mut self) -> String {
+        self.skip_whitespace();
+        let start = self.cursor;
+        self.read_range_number();
+        if self.peek() == Some('.') && self.peek_next() == Some('.') {
+            self.read();
+            self.read();
+            self.read_range_number();
+        }
+        self.input[start..self.cursor].to_owned()
+    }
+
+    fn read_range_number(&mut self) {
         while self
             .peek()
-            .is_some_and(|ch| ch != ',' && ch != '}' && !ch.is_whitespace())
+            .is_some_and(|ch| is_range_number_char(ch, self.peek_next()))
         {
             self.read();
         }
-        if self.cursor == start {
-            return Err(SelectorParseError::invalid_at(
-                "expected score range",
-                start,
-            ));
-        }
-        Ok(self.input[start..self.cursor].to_owned())
+    }
+
+    fn peek_next(&self) -> Option<char> {
+        let mut chars = self.remaining().chars();
+        chars.next()?;
+        chars.next()
     }
 
     fn read_nbt(&mut self) -> Result<NbtCompound, SelectorParseError> {
@@ -2434,7 +2465,7 @@ impl<'a> SelectorReader<'a> {
 
     fn read_i32(&mut self) -> Result<i32, SelectorParseError> {
         let cursor = self.cursor;
-        let value = self.read_raw_value()?;
+        let value = self.read_number_string();
         value.parse().map_err(|_| {
             SelectorParseError::invalid_at(format!("invalid integer '{value}'"), cursor)
         })
@@ -2442,7 +2473,7 @@ impl<'a> SelectorReader<'a> {
 
     fn read_f64(&mut self) -> Result<f64, SelectorParseError> {
         let cursor = self.cursor;
-        let value = self.read_raw_value()?;
+        let value = self.read_number_string();
         value.parse().map_err(|_| {
             SelectorParseError::invalid_at(format!("invalid double '{value}'"), cursor)
         })
@@ -2527,6 +2558,14 @@ fn is_brigadier_unquoted_char(ch: char) -> bool {
 
 fn is_identifier_char(ch: char) -> bool {
     ch.is_ascii_digit() || matches!(ch, 'a'..='z' | '_' | ':' | '/' | '.' | '-')
+}
+
+fn is_number_char(ch: char) -> bool {
+    ch.is_ascii_digit() || matches!(ch, '.' | '-')
+}
+
+fn is_range_number_char(ch: char, next: Option<char>) -> bool {
+    ch.is_ascii_digit() || ch == '-' || (ch == '.' && next != Some('.'))
 }
 
 fn is_quoted_string_start(ch: char) -> bool {
@@ -2755,6 +2794,41 @@ mod tests {
                 if message == "expected ',' or ']' after selector option")
         );
         assert_eq!(unquoted_error.cursor, "@e[tag=foo".len());
+
+        let range_error = parse_selector_plan("@e[distance=1:2]".to_owned(), true)
+            .expect_err("range option leaves trailing non-number data");
+        assert!(
+            matches!(range_error.kind, SelectorParseErrorKind::Invalid(ref message)
+                if message == "expected ',' or ']' after selector option")
+        );
+        assert_eq!(range_error.cursor, "@e[distance=1".len());
+
+        let double_error = parse_selector_plan("@e[x=1bad]".to_owned(), true)
+            .expect_err("double option leaves trailing non-number data");
+        assert!(
+            matches!(double_error.kind, SelectorParseErrorKind::Invalid(ref message)
+                if message == "expected ',' or ']' after selector option")
+        );
+        assert_eq!(double_error.cursor, "@e[x=1".len());
+
+        let int_error = parse_selector_plan("@e[limit=2:3]".to_owned(), true)
+            .expect_err("integer option leaves trailing non-number data");
+        assert!(
+            matches!(int_error.kind, SelectorParseErrorKind::Invalid(ref message)
+                if message == "expected ',' or ']' after selector option")
+        );
+        assert_eq!(int_error.cursor, "@e[limit=2".len());
+
+        parse_selector_plan("@e[distance=1.5..2.5,x_rotation=-90..90]".to_owned(), true)
+            .expect("range options parse vanilla number forms");
+
+        let score_error = parse_selector_plan("@e[scores={kills=1bad}]".to_owned(), true)
+            .expect_err("score range leaves trailing non-number data");
+        assert!(
+            matches!(score_error.kind, SelectorParseErrorKind::Invalid(ref message)
+                if message == "expected ',' or '}' after score range")
+        );
+        assert_eq!(score_error.cursor, "@e[scores={kills=1".len());
     }
 
     #[test]
