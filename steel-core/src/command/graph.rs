@@ -380,6 +380,13 @@ pub enum CommandGraphError {
         /// Type produced by the parser.
         actual: &'static str,
     },
+    /// A dynamic argument permission did not publish finite catalog segments for root visibility.
+    DynamicPermissionRequiresCatalogSegments {
+        /// Node name.
+        node: String,
+        /// Argument name.
+        argument: String,
+    },
     /// A terminal argument parser was registered with unreachable tail nodes.
     TerminalArgumentMustBeLeaf {
         /// Argument node name.
@@ -442,6 +449,12 @@ impl fmt::Display for CommandGraphError {
                 write!(
                     f,
                     "dynamic permission on command node '{node}' references argument '{argument}' as {expected}, but parser stores {actual}"
+                )
+            }
+            Self::DynamicPermissionRequiresCatalogSegments { node, argument } => {
+                write!(
+                    f,
+                    "dynamic permission on command node '{node}' references argument '{argument}' without finite catalog segments"
                 )
             }
             Self::TerminalArgumentMustBeLeaf { name } => {

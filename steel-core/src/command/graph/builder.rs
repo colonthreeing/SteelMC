@@ -458,6 +458,14 @@ impl CommandNodeBuilder {
                 permission,
                 &available_arguments,
             )?;
+            if permission.catalog_segments.is_empty() {
+                return Err(
+                    CommandGraphError::DynamicPermissionRequiresCatalogSegments {
+                        node: kind.display_name().to_owned(),
+                        argument: permission.argument_name.clone(),
+                    },
+                );
+            }
             for catalog_permission in register_dynamic_permission_catalog_entries(
                 current_permission,
                 permission,

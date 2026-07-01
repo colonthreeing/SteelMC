@@ -1593,8 +1593,10 @@ pub trait CommandPermissionArgument: FromParsedArgument {
 
     /// Returns finite permission segments this argument can publish to the permission catalog.
     ///
-    /// Dynamic arguments can return an empty slice when their value set is
-    /// discovered from runtime state instead of a closed enum.
+    /// Command registration uses these segments to make the command root visible
+    /// to sources that have a specific child permission but not the root
+    /// permission. Runtime-discovered value sets need an explicit command
+    /// permission design instead of returning an empty slice here.
     fn catalog_permission_segments() -> &'static [&'static str] {
         &[]
     }

@@ -20,7 +20,8 @@ use crate::command::{
     },
 };
 use crate::permission::{
-    PermissionCatalog, PermissionCatalogSource, PermissionEntry, PermissionSet,
+    PermissionCatalog, PermissionCatalogSource, PermissionEntry, PermissionKeyError,
+    PermissionSegment, PermissionSet,
 };
 use steel_protocol::packets::game::{
     ArgumentStringTypeBehavior, ArgumentType, CommandNode as ProtocolCommandNode,
@@ -54,6 +55,12 @@ impl CommandArgumentParser for EmptySuccessParser {
 
     fn parsed_type(&self) -> &'static str {
         "empty_success"
+    }
+}
+
+impl crate::command::graph::CommandPermissionArgument for bool {
+    fn permission_segment(&self) -> Result<PermissionSegment, PermissionKeyError> {
+        PermissionSegment::parse(if *self { "true" } else { "false" })
     }
 }
 
@@ -361,6 +368,27 @@ fn dynamic_argument_permission_validates_argument_type() {
             argument: "enabled".to_owned(),
             expected: "gamemode",
             actual: "bool"
+        }
+    );
+}
+
+#[test]
+fn dynamic_argument_permission_requires_finite_catalog_segments() {
+    let root_permission =
+        PermissionKey::parse("minecraft.command.root").expect("permission key parses");
+    let mut catalog = PermissionCatalog::new();
+    let Err(error) = literal("root")
+        .then(argument("enabled", BoolParser).requires_argument_permission::<bool>("enabled"))
+        .resolve_subcommand_permissions(&root_permission, &mut catalog)
+    else {
+        panic!("empty dynamic permission catalog should reject registration");
+    };
+
+    assert_eq!(
+        error,
+        CommandGraphError::DynamicPermissionRequiresCatalogSegments {
+            node: "enabled".to_owned(),
+            argument: "enabled".to_owned(),
         }
     );
 }
