@@ -3038,6 +3038,48 @@ mod tests {
     }
 
     #[test]
+    fn selector_type_player_limits_to_players_only_for_positive_match() {
+        init_test_registry();
+
+        let player_selector = parse_selector_plan("@e[type=minecraft:player]".to_owned(), true)
+            .expect("player type filter parses");
+        assert!(!player_selector.includes_entities);
+        assert!(player_selector.filters.iter().any(
+            |filter| matches!(filter, SelectorFilter::EntityType { value, inverted: false }
+                if **value == vanilla_entities::PLAYER)
+        ));
+
+        let inverted_selector = parse_selector_plan("@e[type=!minecraft:player]".to_owned(), true)
+            .expect("inverted player type filter parses");
+        assert!(inverted_selector.includes_entities);
+        assert!(inverted_selector.filters.iter().any(
+            |filter| matches!(filter, SelectorFilter::EntityType { value, inverted: true }
+                if **value == vanilla_entities::PLAYER)
+        ));
+    }
+
+    #[test]
+    fn selector_current_entity_rejects_limit_and_sort_options() {
+        let limit_error = parse_selector_plan("@s[limit=1]".to_owned(), true)
+            .expect_err("limit is not applicable to @s");
+        assert!(matches!(
+            limit_error.kind,
+            SelectorParseErrorKind::Invalid(ref message)
+                if message == "limit cannot be used with @s"
+        ));
+        assert_eq!(limit_error.cursor, "@s[".len());
+
+        let sort_error = parse_selector_plan("@s[sort=nearest]".to_owned(), true)
+            .expect_err("sort is not applicable to @s");
+        assert!(matches!(
+            sort_error.kind,
+            SelectorParseErrorKind::Invalid(ref message)
+                if message == "sort cannot be used with @s"
+        ));
+        assert_eq!(sort_error.cursor, "@s[".len());
+    }
+
+    #[test]
     fn selector_parses_name_on_broad_entity_selector() {
         let selector =
             parse_selector_plan("@e[name=Steve]".to_owned(), true).expect("selector parses");
