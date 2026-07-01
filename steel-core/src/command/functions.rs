@@ -4,7 +4,11 @@ use std::{collections::HashMap, error::Error, fmt, sync::Arc};
 
 use steel_utils::Identifier;
 
-use crate::command::graph::CommandFunctionArgumentValue;
+use crate::command::{
+    CommandDispatcher,
+    graph::{CommandFunctionArgumentValue, CommandParseError},
+    requirement::CommandInputContext,
+};
 
 const MAX_COMMAND_FUNCTION_LINE_LENGTH: usize = 2_000_000;
 
@@ -13,15 +17,28 @@ const MAX_COMMAND_FUNCTION_LINE_LENGTH: usize = 2_000_000;
 pub struct CommandFunction {
     id: Identifier,
     commands: Arc<[String]>,
+    source_lines: Arc<[usize]>,
 }
 
 impl CommandFunction {
     /// Creates a command function from parsed command lines.
     #[must_use]
     pub fn new(id: Identifier, commands: impl Into<Arc<[String]>>) -> Self {
+        let commands = commands.into();
+        let source_lines = (1..=commands.len()).collect::<Vec<_>>().into();
+        Self::new_with_source_lines(id, commands, source_lines)
+    }
+
+    fn new_with_source_lines(
+        id: Identifier,
+        commands: Arc<[String]>,
+        source_lines: Arc<[usize]>,
+    ) -> Self {
+        debug_assert_eq!(commands.len(), source_lines.len());
         Self {
             id,
-            commands: commands.into(),
+            commands,
+            source_lines,
         }
     }
 
@@ -37,6 +54,12 @@ impl CommandFunction {
         &self.commands
     }
 
+    /// Returns the original source line for a parsed command.
+    #[must_use]
+    pub fn command_source_line(&self, command_index: usize) -> Option<usize> {
+        self.source_lines.get(command_index).copied()
+    }
+
     /// Parses `.mcfunction` source into normalized command lines.
     ///
     /// This performs vanilla source-level handling: trim each line, skip blank
@@ -50,9 +73,89 @@ impl CommandFunction {
     /// Returns a source parse error when the function file uses syntax Steel
     /// cannot faithfully load yet.
     pub fn from_source(id: Identifier, source: &str) -> Result<Self, CommandFunctionParseError> {
-        Ok(Self::new(id, parse_function_source(source)?))
+        let parsed = parse_function_source(source)?;
+        Ok(Self::new_with_source_lines(
+            id,
+            parsed.commands.into(),
+            parsed.source_lines.into(),
+        ))
+    }
+
+    /// Validates each command line against the live command dispatcher.
+    ///
+    /// This mirrors vanilla's function load-time command parsing without
+    /// deciding how the function will execute later.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first command line that does not parse for `context`.
+    pub fn validate_commands(
+        &self,
+        dispatcher: &CommandDispatcher,
+        context: &dyn CommandInputContext,
+    ) -> Result<(), CommandFunctionValidationError> {
+        for (index, command) in self.commands.iter().enumerate() {
+            if let Err(source) = dispatcher.graph.parse(command, context) {
+                return Err(CommandFunctionValidationError::new(
+                    self.command_source_line(index).unwrap_or(index + 1),
+                    command.clone(),
+                    source,
+                ));
+            }
+        }
+        Ok(())
     }
 }
+
+/// Error returned when a parsed command function does not validate.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CommandFunctionValidationError {
+    line: usize,
+    command: String,
+    source: CommandParseError,
+}
+
+impl CommandFunctionValidationError {
+    fn new(line: usize, command: String, source: CommandParseError) -> Self {
+        Self {
+            line,
+            command,
+            source,
+        }
+    }
+
+    /// Returns the 1-based source line where validation failed.
+    #[must_use]
+    pub const fn line(&self) -> usize {
+        self.line
+    }
+
+    /// Returns the command line that failed validation.
+    #[must_use]
+    pub fn command(&self) -> &str {
+        &self.command
+    }
+
+    /// Returns the underlying command parse error.
+    #[must_use]
+    pub const fn source(&self) -> &CommandParseError {
+        &self.source
+    }
+}
+
+impl fmt::Display for CommandFunctionValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "command function validation error on line {} while parsing '{}': {:?}",
+            self.line,
+            self.command,
+            self.source.kind()
+        )
+    }
+}
+
+impl Error for CommandFunctionValidationError {}
 
 /// Error returned when parsing `.mcfunction` source.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -195,9 +298,15 @@ fn sorted_ids<'a>(ids: impl Iterator<Item = &'a Identifier>) -> Vec<&'a Identifi
     ids
 }
 
-fn parse_function_source(source: &str) -> Result<Vec<String>, CommandFunctionParseError> {
+struct ParsedFunctionSource {
+    commands: Vec<String>,
+    source_lines: Vec<usize>,
+}
+
+fn parse_function_source(source: &str) -> Result<ParsedFunctionSource, CommandFunctionParseError> {
     let lines = source.lines().collect::<Vec<_>>();
     let mut commands = Vec::new();
+    let mut source_lines = Vec::new();
     let mut line_index = 0;
     while line_index < lines.len() {
         let line_number = line_index + 1;
@@ -229,9 +338,13 @@ fn parse_function_source(source: &str) -> Result<Vec<String>, CommandFunctionPar
         }
         validate_command_function_line(&line, line_number)?;
         commands.push(line);
+        source_lines.push(line_number);
     }
 
-    Ok(commands)
+    Ok(ParsedFunctionSource {
+        commands,
+        source_lines,
+    })
 }
 
 fn should_concatenate_next_line(line: &str) -> bool {
@@ -297,12 +410,50 @@ fn is_brigadier_unquoted_char(ch: char) -> bool {
 mod tests {
     use steel_utils::Identifier;
 
-    use crate::command::graph::CommandFunctionArgumentValue;
+    use crate::{
+        command::{
+            CommandDispatcher, CommandRegistration,
+            graph::{CommandFunctionArgumentValue, CommandParseErrorKind, CommandResult, literal},
+            requirement::{
+                CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext,
+            },
+        },
+        permission::PermissionSegment,
+    };
 
     use super::{
         CommandFunction, CommandFunctionParseErrorKind, CommandFunctionRegistry,
         MAX_COMMAND_FUNCTION_LINE_LENGTH,
     };
+
+    struct TestContext;
+
+    impl RequirementContext for TestContext {
+        fn source_kind(&self) -> CommandSourceKind {
+            CommandSourceKind::Console
+        }
+
+        fn has_permission(&self, _permission: &PermissionExpr) -> bool {
+            true
+        }
+    }
+
+    impl CommandInputContext for TestContext {}
+
+    fn validation_dispatcher() -> CommandDispatcher {
+        let mut dispatcher = CommandDispatcher::new_empty();
+        let namespace = PermissionSegment::parse("test").expect("namespace parses");
+        let registration = CommandRegistration::new(
+            literal("known").executes(|_, _| Ok(CommandResult::success())),
+            namespace,
+        )
+        .public();
+
+        dispatcher
+            .register_command(registration)
+            .expect("command registers");
+        dispatcher
+    }
 
     #[test]
     fn registry_resolves_functions_and_tags() {
@@ -368,6 +519,40 @@ mod tests {
         .expect("function source parses");
 
         assert_eq!(function.commands(), ["say one", "say two"]);
+    }
+
+    #[test]
+    fn function_source_parser_tracks_physical_command_lines() {
+        let function = CommandFunction::from_source(
+            Identifier::new_static("test", "load"),
+            "# comment\nknown\n\nknown \\\n tail\n",
+        )
+        .expect("function source parses");
+
+        assert_eq!(function.commands(), ["known", "known tail"]);
+        assert_eq!(function.command_source_line(0), Some(2));
+        assert_eq!(function.command_source_line(1), Some(4));
+    }
+
+    #[test]
+    fn function_validation_reports_source_line() {
+        let dispatcher = validation_dispatcher();
+        let function = CommandFunction::from_source(
+            Identifier::new_static("test", "load"),
+            "# comment\nknown\n\nmissing value\n",
+        )
+        .expect("function source parses");
+
+        let error = function
+            .validate_commands(&dispatcher, &TestContext)
+            .expect_err("unknown command should fail validation");
+
+        assert_eq!(error.line(), 4);
+        assert_eq!(error.command(), "missing value");
+        assert!(matches!(
+            error.source().kind(),
+            CommandParseErrorKind::UnknownCommand
+        ));
     }
 
     #[test]
