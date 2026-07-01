@@ -1985,7 +1985,7 @@ fn parse_sort_option(
         ));
     }
     ensure_set_once(&mut state.sort, "sort", key_cursor)?;
-    let value = reader.read_raw_value()?;
+    let value = reader.read_required_unquoted_string()?;
     selector.order = match value.as_str() {
         SORT_NEAREST => SelectorOrder::Nearest,
         SORT_FURTHEST => SelectorOrder::Furthest,
@@ -2009,7 +2009,7 @@ fn parse_gamemode_option(
     let value_cursor = reader.cursor();
     let inverted = reader.read_inversion();
     state.gamemode.parse_element(inverted, "gamemode")?;
-    let value = reader.read_raw_value()?;
+    let value = reader.read_required_unquoted_string()?;
     let Some(game_mode) = parse_game_mode(&value) else {
         return Err(SelectorParseError::invalid_at(
             format!("invalid game mode '{value}'"),
@@ -2064,7 +2064,7 @@ fn parse_tag_option(
     selector: &mut EntitySelector,
 ) -> Result<(), SelectorParseError> {
     let inverted = reader.read_inversion();
-    let value = reader.read_raw_value_allow_empty()?;
+    let value = reader.read_unquoted_string();
     selector
         .filters
         .push(SelectorFilter::Tag { value, inverted });
@@ -2114,7 +2114,7 @@ fn read_identifier(
     reader: &mut SelectorReader<'_>,
     value_cursor: usize,
 ) -> Result<Identifier, SelectorParseError> {
-    let value = reader.read_raw_value()?;
+    let value = reader.read_identifier_string();
     parse_resource_identifier(&value).ok_or_else(|| {
         SelectorParseError::invalid_at(format!("invalid identifier '{value}'"), value_cursor)
     })
@@ -2319,19 +2319,18 @@ impl<'a> SelectorReader<'a> {
 
     fn read_key(&mut self) -> Result<String, SelectorParseError> {
         let start = self.cursor;
-        while self
-            .peek()
-            .is_some_and(|ch| ch != '=' && ch != ',' && ch != ']' && !ch.is_whitespace())
-        {
-            self.read();
+        if self.peek().is_some_and(is_quoted_string_start) {
+            return self.read_quoted_string();
         }
-        if self.cursor == start {
+
+        let key = self.read_unquoted_string();
+        if key.is_empty() {
             return Err(SelectorParseError::invalid_at(
                 "expected selector option name",
                 start,
             ));
         }
-        Ok(self.input[start..self.cursor].to_owned())
+        Ok(key)
     }
 
     fn read_scores(&mut self) -> Result<Vec<(String, IntRange)>, SelectorParseError> {
@@ -2367,6 +2366,26 @@ impl<'a> SelectorReader<'a> {
     fn read_unquoted_string(&mut self) -> String {
         let start = self.cursor;
         while self.peek().is_some_and(is_brigadier_unquoted_char) {
+            self.read();
+        }
+        self.input[start..self.cursor].to_owned()
+    }
+
+    fn read_required_unquoted_string(&mut self) -> Result<String, SelectorParseError> {
+        let start = self.cursor;
+        let value = self.read_unquoted_string();
+        if value.is_empty() {
+            return Err(SelectorParseError::invalid_at(
+                "expected selector option value",
+                start,
+            ));
+        }
+        Ok(value)
+    }
+
+    fn read_identifier_string(&mut self) -> String {
+        let start = self.cursor;
+        while self.peek().is_some_and(is_identifier_char) {
             self.read();
         }
         self.input[start..self.cursor].to_owned()
@@ -2432,7 +2451,7 @@ impl<'a> SelectorReader<'a> {
     fn read_string_value(&mut self) -> Result<String, SelectorParseError> {
         self.skip_whitespace();
         match self.peek() {
-            Some('"') | Some('\'') => self.read_quoted_string(),
+            Some(ch) if is_quoted_string_start(ch) => self.read_quoted_string(),
             _ => self.read_raw_value(),
         }
     }
@@ -2504,6 +2523,14 @@ fn upsert_score_filter(scores: &mut Vec<(String, IntRange)>, name: String, range
 
 fn is_brigadier_unquoted_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '+')
+}
+
+fn is_identifier_char(ch: char) -> bool {
+    ch.is_ascii_digit() || matches!(ch, 'a'..='z' | '_' | ':' | '/' | '.' | '-')
+}
+
+fn is_quoted_string_start(ch: char) -> bool {
+    matches!(ch, '"' | '\'')
 }
 
 #[cfg(test)]
@@ -2684,6 +2711,50 @@ mod tests {
         assert!(selector.includes_entities);
         assert!(selector.world_limited);
         assert!(selector.distance.is_some());
+    }
+
+    #[test]
+    fn selector_option_keys_use_brigadier_strings() {
+        init_test_registry();
+
+        let quoted = parse_selector_plan("@e[\"type\"=pig]".to_owned(), true)
+            .expect("quoted option key parses");
+        assert!(quoted.filters.iter().any(
+            |filter| matches!(filter, SelectorFilter::EntityType { value, inverted: false }
+                if **value == vanilla_entities::PIG)
+        ));
+
+        let error = parse_selector_plan("@e[type:minecraft=pig]".to_owned(), true)
+            .expect_err("unquoted option key stops at Brigadier boundary");
+        assert!(
+            matches!(error.kind, SelectorParseErrorKind::Invalid(ref message)
+                if message == "expected '='")
+        );
+        assert_eq!(error.cursor, "@e[type".len());
+    }
+
+    #[test]
+    fn selector_option_values_keep_vanilla_token_boundaries() {
+        init_test_registry();
+
+        parse_selector_plan("@e[type=minecraft:pig]".to_owned(), true)
+            .expect("identifier option accepts namespace separator");
+
+        let identifier_error = parse_selector_plan("@e[type=minecraft:pig=bad]".to_owned(), true)
+            .expect_err("identifier option leaves trailing non-identifier data");
+        assert!(
+            matches!(identifier_error.kind, SelectorParseErrorKind::Invalid(ref message)
+                if message == "expected ',' or ']' after selector option")
+        );
+        assert_eq!(identifier_error.cursor, "@e[type=minecraft:pig".len());
+
+        let unquoted_error = parse_selector_plan("@e[tag=foo:bar]".to_owned(), true)
+            .expect_err("Brigadier string option leaves ':' as trailing data");
+        assert!(
+            matches!(unquoted_error.kind, SelectorParseErrorKind::Invalid(ref message)
+                if message == "expected ',' or ']' after selector option")
+        );
+        assert_eq!(unquoted_error.cursor, "@e[tag=foo".len());
     }
 
     #[test]
