@@ -913,10 +913,12 @@ impl CommandDispatcher {
                     error
                 }),
             Err(error) => {
-                context.on_command_result(CommandCallbackResult {
-                    success: false,
-                    result: 0,
-                });
+                if Self::parse_error_invokes_result_callback(error.kind()) {
+                    context.on_command_result(CommandCallbackResult {
+                        success: false,
+                        result: 0,
+                    });
+                }
                 Err(Self::parse_error_to_command_error(command, error))
             }
         }
@@ -970,6 +972,10 @@ impl CommandDispatcher {
     ) -> CommandError {
         let cursor = error.cursor();
         CommandError::parse(Self::parse_error_message(error.kind()), input, cursor)
+    }
+
+    fn parse_error_invokes_result_callback(kind: &CommandParseErrorKind) -> bool {
+        matches!(kind, CommandParseErrorKind::IncompleteCommand)
     }
 
     fn parse_error_message(kind: &CommandParseErrorKind) -> TextComponent {
@@ -3103,6 +3109,27 @@ mod tests {
             )),
             translations::PARSING_BOOL_INVALID.0
         );
+    }
+
+    #[test]
+    fn parse_error_callback_rule_matches_brigadier_no_executable_only() {
+        assert!(CommandDispatcher::parse_error_invokes_result_callback(
+            &CommandParseErrorKind::IncompleteCommand
+        ));
+
+        let syntax_errors = [
+            CommandParseErrorKind::EmptyCommand,
+            CommandParseErrorKind::UnknownCommand,
+            CommandParseErrorKind::ExpectedArgument,
+            CommandParseErrorKind::TrailingData,
+            CommandParseErrorKind::InvalidBool("maybe".to_owned()),
+        ];
+        for kind in syntax_errors {
+            assert!(
+                !CommandDispatcher::parse_error_invokes_result_callback(&kind),
+                "{kind:?} should not invoke the result callback"
+            );
+        }
     }
 
     fn root_literal_names(commands: &super::CCommands) -> Vec<String> {
