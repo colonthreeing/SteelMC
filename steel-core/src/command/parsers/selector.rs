@@ -2045,6 +2045,7 @@ fn parse_type_option(
     let inverted = reader.read_inversion();
     if reader.peek() == Some('#') {
         reader.read();
+        reader.skip_whitespace();
         let value = read_identifier(reader, value_cursor)?;
         state.entity_type.parse_tag(&value, "type")?;
         selector
@@ -2817,6 +2818,20 @@ mod tests {
                 if message == "expected ',' or '}' after score range")
         );
         assert_eq!(score_error.cursor, "@e[scores={kills=1".len());
+    }
+
+    #[test]
+    fn selector_type_tag_skips_whitespace_after_hash() {
+        init_test_registry();
+
+        let selector = parse_selector_plan("@e[type=# minecraft:skeletons]".to_owned(), true)
+            .expect("type tag skips whitespace after hash");
+
+        assert!(selector.filters.iter().any(|filter| matches!(
+            filter,
+            SelectorFilter::EntityTypeTag { value, inverted: false }
+                if value.to_string() == "minecraft:skeletons"
+        )));
     }
 
     #[test]
