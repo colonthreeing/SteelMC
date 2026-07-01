@@ -539,29 +539,8 @@ impl CommandDispatcher {
 
         loop {
             budget.consume()?;
-            let step = {
-                let (command, active_context) = active.parts();
-                match self.graph.parse(command, active_context) {
-                    Ok(parsed) => parsed
-                        .execute_step(active_context, budget)
-                        .map_err(|error| {
-                            if parsed.invokes_result_callback_on_error() {
-                                active_context.on_command_result(CommandCallbackResult {
-                                    success: false,
-                                    result: 0,
-                                });
-                            }
-                            error
-                        }),
-                    Err(error) => {
-                        active_context.on_command_result(CommandCallbackResult {
-                            success: false,
-                            result: 0,
-                        });
-                        Err(Self::parse_error_to_command_error(command, error))
-                    }
-                }
-            };
+            let active_command = active.command().to_owned();
+            let step = self.execute_command_step(&active_command, active.context_mut(), budget);
             let step = match step {
                 Ok(step) => step,
                 Err(_error) if active.continues_after_command_error() => {
@@ -718,7 +697,7 @@ impl CommandDispatcher {
                 }
                 CommandExecutionStep::Redirect {
                     command: next_command,
-                    contexts,
+                    mut contexts,
                     forked,
                     returns,
                 } => {
@@ -726,6 +705,22 @@ impl CommandDispatcher {
                     let next_fork_stage = active.next_fork_stage(forked);
                     let next_returning = active.is_returning() || returns;
                     let next_frame = active.frame();
+                    if active.is_forked() && !returns {
+                        self.collect_redirect_sibling_contexts(
+                            RedirectSiblingBatch {
+                                active_command: &active_command,
+                                active_fork_stage: active.fork_stage(),
+                                active_returning: active.is_returning(),
+                                active_frame: &next_frame,
+                                next_command: &next_command,
+                                forked,
+                                returns,
+                            },
+                            &mut contexts,
+                            &mut queue,
+                            budget,
+                        )?;
+                    }
                     if returns {
                         discard_command_frame(&mut queue, next_frame.return_discard_depth);
                     }
@@ -760,6 +755,67 @@ impl CommandDispatcher {
                 }
             }
         }
+    }
+
+    fn execute_command_step(
+        &self,
+        command: &str,
+        context: &mut CommandContext,
+        budget: &mut CommandExecutionBudget,
+    ) -> Result<CommandExecutionStep, CommandError> {
+        match self.graph.parse(command, context) {
+            Ok(parsed) => parsed.execute_step(context, budget).map_err(|error| {
+                if parsed.invokes_result_callback_on_error() {
+                    context.on_command_result(CommandCallbackResult {
+                        success: false,
+                        result: 0,
+                    });
+                }
+                error
+            }),
+            Err(error) => {
+                context.on_command_result(CommandCallbackResult {
+                    success: false,
+                    result: 0,
+                });
+                Err(Self::parse_error_to_command_error(command, error))
+            }
+        }
+    }
+
+    fn collect_redirect_sibling_contexts(
+        &self,
+        batch: RedirectSiblingBatch<'_>,
+        contexts: &mut Vec<CommandContext>,
+        queue: &mut VecDeque<QueuedAction>,
+        budget: &mut CommandExecutionBudget,
+    ) -> Result<(), CommandError> {
+        for mut sibling in drain_redirect_sibling_commands(queue, &batch) {
+            budget.consume()?;
+            let step = self.execute_command_step(&sibling.command, &mut sibling.context, budget);
+            match step {
+                Ok(CommandExecutionStep::Redirect {
+                    command,
+                    contexts: sibling_contexts,
+                    forked,
+                    returns,
+                }) if command == batch.next_command
+                    && forked == batch.forked
+                    && returns == batch.returns =>
+                {
+                    contexts.extend(sibling_contexts);
+                }
+                Ok(_) => {
+                    return Err(CommandError::InvalidConsumption(Some(
+                        "batched redirect sibling produced a different command step".to_owned(),
+                    )));
+                }
+                Err(_error) if sibling.continues_after_command_error() => {}
+                Err(error) => return Err(error),
+            }
+        }
+
+        Ok(())
     }
 
     pub(crate) fn parse_error_to_command_error(
@@ -1078,6 +1134,20 @@ impl QueuedCommand {
             frame,
         }
     }
+
+    fn is_redirect_sibling(&self, batch: &RedirectSiblingBatch<'_>) -> bool {
+        redirect_sibling_matches(
+            &self.command,
+            self.fork_stage,
+            self.returning,
+            &self.frame,
+            batch,
+        )
+    }
+
+    const fn continues_after_command_error(&self) -> bool {
+        self.forked || self.frame.depth > 0
+    }
 }
 
 enum QueuedAction {
@@ -1288,12 +1358,10 @@ fn function_result_message(function_id: &Identifier, result: i32) -> TextCompone
 }
 
 impl ActiveCommand<'_> {
-    fn parts(&mut self) -> (&str, &mut CommandContext) {
+    fn command(&self) -> &str {
         match self {
-            Self::Borrowed { command, context } => (command, context),
-            Self::Owned(QueuedCommand {
-                command, context, ..
-            }) => (command, context),
+            Self::Borrowed { command, .. } => command,
+            Self::Owned(QueuedCommand { command, .. }) => command,
         }
     }
 
@@ -1356,6 +1424,16 @@ impl ActiveCommand<'_> {
     }
 }
 
+struct RedirectSiblingBatch<'a> {
+    active_command: &'a str,
+    active_fork_stage: usize,
+    active_returning: bool,
+    active_frame: &'a QueuedFrame,
+    next_command: &'a str,
+    forked: bool,
+    returns: bool,
+}
+
 fn queue_next_actions(
     queue: &mut VecDeque<QueuedAction>,
     actions: impl IntoIterator<Item = QueuedAction>,
@@ -1391,6 +1469,41 @@ fn redirect_actions(
             ))
         })
         .collect()
+}
+
+fn drain_redirect_sibling_commands(
+    queue: &mut VecDeque<QueuedAction>,
+    batch: &RedirectSiblingBatch<'_>,
+) -> Vec<QueuedCommand> {
+    let mut siblings = Vec::new();
+    while queue.front().is_some_and(|queued| {
+        matches!(queued, QueuedAction::Command(command) if command.is_redirect_sibling(batch))
+    }) {
+        match queue.pop_front() {
+            Some(QueuedAction::Command(command)) => siblings.push(command),
+            _ => break,
+        }
+    }
+    siblings
+}
+
+fn redirect_sibling_matches(
+    command: &str,
+    fork_stage: usize,
+    returning: bool,
+    frame: &QueuedFrame,
+    batch: &RedirectSiblingBatch<'_>,
+) -> bool {
+    command == batch.active_command
+        && fork_stage == batch.active_fork_stage
+        && returning == batch.active_returning
+        && same_frame_return_scope(frame, batch.active_frame)
+}
+
+const fn same_frame_return_scope(left: &QueuedFrame, right: &QueuedFrame) -> bool {
+    left.depth == right.depth
+        && left.return_discard_depth == right.return_discard_depth
+        && left.propagates_return == right.propagates_return
 }
 
 fn return_from_frame(
@@ -1741,6 +1854,50 @@ mod tests {
             .map(super::QueuedAction::frame_depth)
             .collect::<Vec<_>>();
         assert_eq!(depths, [1, 2, 0]);
+    }
+
+    #[test]
+    fn redirect_sibling_matching_is_limited_to_same_command_stage() {
+        let frame = super::QueuedFrame::for_depth(1);
+        let other_frame = super::QueuedFrame::for_depth(2);
+        let batch = super::RedirectSiblingBatch {
+            active_command: "execute if function test:gate run seed",
+            active_fork_stage: 1,
+            active_returning: false,
+            active_frame: &frame,
+            next_command: "execute run seed",
+            forked: true,
+            returns: false,
+        };
+
+        assert!(super::redirect_sibling_matches(
+            "execute if function test:gate run seed",
+            1,
+            false,
+            &frame,
+            &batch,
+        ));
+        assert!(!super::redirect_sibling_matches(
+            "execute if entity @s run seed",
+            1,
+            false,
+            &frame,
+            &batch,
+        ));
+        assert!(!super::redirect_sibling_matches(
+            "execute if function test:gate run seed",
+            2,
+            false,
+            &frame,
+            &batch,
+        ));
+        assert!(!super::redirect_sibling_matches(
+            "execute if function test:gate run seed",
+            1,
+            false,
+            &other_frame,
+            &batch,
+        ));
     }
 
     #[test]
