@@ -1027,6 +1027,23 @@ impl CommandGraph {
         merge_or_push_node(&mut self.roots, root.build()?)
     }
 
+    /// Replaces any existing root literal with the same name, then adds `root`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the node tree contains invalid names.
+    pub fn replace_root(&mut self, root: CommandNodeBuilder) -> Result<(), CommandGraphError> {
+        let root = root.build()?;
+        if let CommandNodeKind::Literal(name) = &root.kind {
+            let name = name.clone();
+            self.roots.retain(
+                |existing| !matches!(&existing.kind, CommandNodeKind::Literal(root) if root == &name),
+            );
+        }
+        self.roots.push(root);
+        Ok(())
+    }
+
     /// Returns diagnostic validation information for this graph.
     #[must_use]
     pub fn validate(&self) -> CommandGraphValidation {

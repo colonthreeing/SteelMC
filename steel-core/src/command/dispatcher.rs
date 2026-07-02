@@ -1,20 +1,24 @@
-use std::{borrow::Cow, sync::Arc};
+use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 
+use rustc_hash::FxHashMap;
 use steel_protocol::packets::game::{CCommandSuggestions, CCommands, CommandNode, SuggestionEntry};
-use steel_utils::translations;
+use steel_utils::{Identifier, translations};
 use text_components::TextComponent;
 use text_components::translation::TranslatedMessage;
 
 use crate::command::commands;
 use crate::command::context::CommandContext;
 use crate::command::error::CommandError;
-use crate::command::graph::{CommandGraph, CommandParseError, CommandParseErrorKind};
+use crate::command::graph::{
+    CommandGraph, CommandNodeBuilder, CommandParseError, CommandParseErrorKind,
+};
 use crate::command::registration::{
     CommandRegistration, CommandRegistrationError, entity_selector_advanced_permission_key,
     entity_selector_permission_key,
 };
 use crate::command::requirement::RequirementContext;
 use crate::command::sender::CommandSender;
+use crate::config::CommandAliasesConfig;
 use crate::permission::{
     PermissionCatalog, PermissionCatalogSource, PermissionContextCatalog, PermissionMetadataCatalog,
 };
@@ -26,6 +30,8 @@ use crate::server::Server;
 pub struct CommandDispatcher {
     /// Dynamic command graph.
     pub(super) graph: CommandGraph,
+    command_roots: FxHashMap<Identifier, CommandNodeBuilder>,
+    alias_overrides: BTreeMap<String, Identifier>,
     pub(super) permission_catalog: PermissionCatalog,
     permission_metadata_catalog: PermissionMetadataCatalog,
     permission_context_catalog: PermissionContextCatalog,
@@ -49,7 +55,22 @@ impl CommandDispatcher {
     pub fn new_with_default_command_permissions(
         require_default_command_permissions: bool,
     ) -> Result<Self, CommandRegistrationError> {
-        let mut dispatcher = CommandDispatcher::new_empty();
+        Self::new_with_default_command_permissions_and_aliases(
+            require_default_command_permissions,
+            CommandAliasesConfig::default(),
+        )
+    }
+
+    /// Creates a new command dispatcher with built-in commands and configured root aliases.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a built-in command registration or configured alias is invalid.
+    pub fn new_with_default_command_permissions_and_aliases(
+        require_default_command_permissions: bool,
+        aliases: CommandAliasesConfig,
+    ) -> Result<Self, CommandRegistrationError> {
+        let mut dispatcher = CommandDispatcher::new_empty_with_aliases(aliases);
         dispatcher.permission_catalog.insert(
             entity_selector_permission_key()?,
             PermissionCatalogSource::Command,
@@ -64,14 +85,30 @@ impl CommandDispatcher {
                 require_default_command_permissions,
             )?;
         }
+        dispatcher.apply_alias_overrides()?;
         Ok(dispatcher)
     }
 
     /// Creates a new command dispatcher with no commands.
     #[must_use]
-    pub const fn new_empty() -> Self {
+    pub fn new_empty() -> Self {
         CommandDispatcher {
             graph: CommandGraph::new(),
+            command_roots: FxHashMap::default(),
+            alias_overrides: BTreeMap::new(),
+            permission_catalog: PermissionCatalog::new(),
+            permission_metadata_catalog: PermissionMetadataCatalog::new(),
+            permission_context_catalog: PermissionContextCatalog::new(),
+        }
+    }
+
+    /// Creates an empty dispatcher with configured command alias overrides.
+    #[must_use]
+    pub fn new_empty_with_aliases(aliases: CommandAliasesConfig) -> Self {
+        CommandDispatcher {
+            graph: CommandGraph::new(),
+            command_roots: FxHashMap::default(),
+            alias_overrides: aliases.aliases,
             permission_catalog: PermissionCatalog::new(),
             permission_metadata_catalog: PermissionMetadataCatalog::new(),
             permission_context_catalog: PermissionContextCatalog::new(),
@@ -91,6 +128,15 @@ impl CommandDispatcher {
         registration: CommandRegistration,
         require_default_command_permissions: bool,
     ) -> Result<(), CommandRegistrationError> {
+        let command_id = registration.command_id()?;
+        if self.command_roots.contains_key(&command_id) {
+            return Err(CommandRegistrationError::DuplicateCommandId(command_id));
+        }
+        let root_literal = registration
+            .root
+            .literal_name()
+            .ok_or(CommandRegistrationError::RootMustBeLiteral)?
+            .to_owned();
         let permission = registration.resolved_permission()?;
         let mut command_catalog = PermissionCatalog::new();
         command_catalog.insert(permission.key.clone(), PermissionCatalogSource::Command);
@@ -105,24 +151,59 @@ impl CommandDispatcher {
                 .clone()
                 .resolve_subcommand_permissions(&permission.key, &mut command_catalog)?
         };
-        let root_for_aliases = (!registration.aliases.is_empty()).then(|| root.clone());
         let mut graph = self.graph.clone();
-        graph.register_root(root)?;
-        for alias in registration.aliases {
-            let root = root_for_aliases
-                .as_ref()
-                .ok_or(CommandRegistrationError::RootMustBeLiteral)?
+
+        let namespaced_root = root
+            .clone()
+            .with_literal_name(command_id.to_string())
+            .ok_or(CommandRegistrationError::RootMustBeLiteral)?;
+        graph.register_root(namespaced_root)?;
+
+        let roots = std::iter::once(root_literal).chain(registration.aliases);
+        for root_name in roots {
+            if self.alias_overrides.contains_key(&root_name) {
+                continue;
+            }
+            let root = root
                 .clone()
-                .with_literal_name(alias)
+                .with_literal_name(root_name)
                 .ok_or(CommandRegistrationError::RootMustBeLiteral)?;
-            graph.register_root(root)?;
+            graph.replace_root(root)?;
         }
         let validation = graph.validate();
         if !validation.is_empty() {
             return Err(CommandRegistrationError::InvalidGraphValidation(validation));
         }
         self.graph = graph;
+        self.command_roots.insert(command_id, root);
         self.permission_catalog.extend(&command_catalog);
+        Ok(())
+    }
+
+    pub(super) fn apply_alias_overrides(&mut self) -> Result<(), CommandRegistrationError> {
+        let mut graph = self.graph.clone();
+        for (alias, target) in &self.alias_overrides {
+            if alias.contains(':') {
+                return Err(CommandRegistrationError::NamespacedAliasRoot(alias.clone()));
+            }
+            let root = self.command_roots.get(target).ok_or_else(|| {
+                CommandRegistrationError::UnknownAliasTarget {
+                    alias: alias.clone(),
+                    target: target.clone(),
+                }
+            })?;
+            let root = root
+                .clone()
+                .with_literal_name(alias.clone())
+                .ok_or(CommandRegistrationError::RootMustBeLiteral)?;
+            graph.replace_root(root)?;
+        }
+
+        let validation = graph.validate();
+        if !validation.is_empty() {
+            return Err(CommandRegistrationError::InvalidGraphValidation(validation));
+        }
+        self.graph = graph;
         Ok(())
     }
 

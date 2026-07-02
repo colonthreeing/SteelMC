@@ -653,6 +653,7 @@ impl Server {
         }
 
         let require_default_command_permissions = config.require_default_command_permissions;
+        let command_aliases = config.command_aliases.clone();
 
         Ok(Server {
             config,
@@ -668,8 +669,9 @@ impl Server {
             stopwatches: SyncRwLock::new(stopwatches),
             boss_bars: SyncRwLock::new(boss_bars),
             command_dispatcher: SyncRwLock::new(
-                CommandDispatcher::new_with_default_command_permissions(
+                CommandDispatcher::new_with_default_command_permissions_and_aliases(
                     require_default_command_permissions,
+                    command_aliases,
                 )
                 .map_err(|e| format!("failed to register commands: {e}"))?,
             ),

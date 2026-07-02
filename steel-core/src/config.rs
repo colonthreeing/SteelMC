@@ -103,6 +103,8 @@ pub struct RuntimeConfig {
     pub command_spam_threshold_seconds: i32,
     /// Whether commands marked as default-access still require explicit permissions.
     pub require_default_command_permissions: bool,
+    /// Root command aliases forced by server configuration.
+    pub command_aliases: CommandAliasesConfig,
     /// The compression settings for the server.
     pub compression: Option<CompressionInfo>,
     /// All settings and configurations for server links.
@@ -135,6 +137,14 @@ impl RuntimeConfig {
 
         Some(CServerLinks { links })
     }
+}
+
+/// Strict root command alias overrides.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct CommandAliasesConfig {
+    /// Maps an unqualified command root to a registered namespaced command id.
+    pub aliases: BTreeMap<String, Identifier>,
 }
 
 /// Label type for server links — either built-in string or custom `TextComponent`.

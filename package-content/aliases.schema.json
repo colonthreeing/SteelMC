@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SteelCommandAliasesConfig",
+  "description": "Strict command root alias overrides for Steel",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "aliases": {
+      "type": "object",
+      "description": "Maps an unqualified command root to a registered namespaced command id",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[a-z0-9_.-]+:[a-z0-9_.-/]+$"
+      },
+      "propertyNames": {
+        "pattern": "^[^\\s:]+$"
+      },
+      "default": {}
+    }
+  },
+  "required": ["aliases"]
+}

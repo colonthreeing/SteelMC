@@ -2,6 +2,7 @@ use std::{error::Error, fmt};
 
 use crate::command::graph::{CommandGraphError, CommandNodeBuilder, validate_command_node_name};
 use crate::permission::{PermissionExpr, PermissionKey, PermissionKeyError, PermissionSegment};
+use steel_utils::Identifier;
 
 pub(crate) struct CommandRegistration {
     pub(super) root: CommandNodeBuilder,
@@ -44,6 +45,11 @@ impl CommandRegistration {
     }
 
     pub(crate) fn alias(mut self, alias: &str) -> Result<Self, CommandRegistrationError> {
+        if alias.contains(':') {
+            return Err(CommandRegistrationError::NamespacedAliasRoot(
+                alias.to_owned(),
+            ));
+        }
         validate_command_node_name(alias).map_err(|source| {
             CommandGraphError::InvalidLiteralName {
                 name: alias.to_owned(),
@@ -52,6 +58,24 @@ impl CommandRegistration {
         })?;
         self.aliases.push(alias.to_owned());
         Ok(self)
+    }
+
+    pub(super) fn command_id(&self) -> Result<Identifier, CommandRegistrationError> {
+        let command_name = self
+            .root
+            .literal_name()
+            .ok_or(CommandRegistrationError::RootMustBeLiteral)?;
+        let namespace = self.namespace.as_str();
+        if !Identifier::validate(namespace, command_name) {
+            return Err(CommandRegistrationError::InvalidCommandId {
+                namespace: namespace.to_owned(),
+                path: command_name.to_owned(),
+            });
+        }
+        Ok(Identifier::new(
+            namespace.to_owned(),
+            command_name.to_owned(),
+        ))
     }
 
     pub(super) fn resolved_permission(
@@ -193,8 +217,26 @@ pub enum CommandRegistrationError {
     RootMustBeLiteral,
     /// A command or alias produced an invalid permission key.
     InvalidPermissionKey(PermissionKeyError),
+    /// A command id was not a valid namespaced id.
+    InvalidCommandId {
+        /// Command namespace.
+        namespace: String,
+        /// Command path.
+        path: String,
+    },
     /// The command graph rejected a node registration.
     InvalidGraph(CommandGraphError),
+    /// Configured command alias pointed at an unknown command id.
+    UnknownAliasTarget {
+        /// Alias root.
+        alias: String,
+        /// Missing command id.
+        target: Identifier,
+    },
+    /// Configured command alias root tried to replace a protected namespaced root.
+    NamespacedAliasRoot(String),
+    /// A command id was registered more than once.
+    DuplicateCommandId(Identifier),
     /// Command graph validation found diagnostics after registration.
     InvalidGraphValidation(crate::command::graph::CommandGraphValidation),
 }
@@ -204,7 +246,25 @@ impl fmt::Display for CommandRegistrationError {
         match self {
             Self::RootMustBeLiteral => write!(f, "command root must be a literal node"),
             Self::InvalidPermissionKey(error) => write!(f, "{error}"),
+            Self::InvalidCommandId { namespace, path } => {
+                write!(f, "invalid command id '{namespace}:{path}'")
+            }
             Self::InvalidGraph(error) => write!(f, "{error}"),
+            Self::UnknownAliasTarget { alias, target } => {
+                write!(
+                    f,
+                    "command alias '{alias}' targets unknown command id '{target}'"
+                )
+            }
+            Self::NamespacedAliasRoot(alias) => {
+                write!(
+                    f,
+                    "command alias root '{alias}' must be unqualified; namespaced command roots are protected"
+                )
+            }
+            Self::DuplicateCommandId(command_id) => {
+                write!(f, "command id '{command_id}' is already registered")
+            }
             Self::InvalidGraphValidation(validation) => {
                 write!(f, "command graph validation failed")?;
                 if let Some(ambiguity) = validation.ambiguities().first() {

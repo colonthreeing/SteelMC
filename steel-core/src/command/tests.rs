@@ -13,6 +13,7 @@ use crate::command::{
     requirement::{CommandInputContext, CommandSourceKind, PermissionExpr, RequirementContext},
     sender::CommandSender,
 };
+use crate::config::CommandAliasesConfig;
 use crate::permission::{
     PermissionCatalogSource, PermissionEntry, PermissionKey, PermissionSegment, PermissionSet,
     PermissionState,
@@ -914,7 +915,7 @@ fn command_registration_rejects_ambiguous_graph_atomically() {
     let CommandRegistrationError::InvalidGraphValidation(validation) = error else {
         panic!("expected graph validation error, got {error:?}");
     };
-    assert_eq!(validation.ambiguities().len(), 1);
+    assert_eq!(validation.ambiguities().len(), 2);
 
     let player = player_context_with("minecraft.command.other");
     assert!(!dispatcher.graph.has_root("root", &player));
@@ -1016,7 +1017,7 @@ fn commands_require_permission_segment_literals() {
 
     assert!(matches!(
         error,
-        CommandRegistrationError::InvalidPermissionKey(_)
+        CommandRegistrationError::InvalidCommandId { .. }
     ));
 }
 
@@ -1034,33 +1035,112 @@ fn aliases_reject_invalid_command_literals() {
 }
 
 #[test]
-fn failed_alias_registration_does_not_leave_primary_root() {
+fn aliases_reject_namespaced_command_roots() {
     let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
-    let mut dispatcher = CommandDispatcher::new_empty();
-    dispatcher
-        .register_command(CommandRegistration::new(
-            literal("other").executes(|_, _| Ok(CommandResult::success())),
-            minecraft.clone(),
-        ))
-        .expect("existing command registers");
-
-    let registration = CommandRegistration::new(
-        literal("root").executes(|_, _| Ok(CommandResult::success())),
-        minecraft,
-    )
-    .alias("other")
-    .expect("alias literal parses");
-    let Err(error) = dispatcher.register_command(registration) else {
-        panic!("colliding alias should reject registration");
+    let Err(error) = CommandRegistration::new(literal("root"), minecraft).alias("other:root")
+    else {
+        panic!("namespaced alias should fail");
     };
 
     assert!(matches!(
         error,
-        CommandRegistrationError::InvalidGraph(CommandGraphError::LiteralCollision { .. })
+        CommandRegistrationError::NamespacedAliasRoot(alias) if alias == "other:root"
     ));
-    let player = player_context_with("minecraft.command.other");
-    assert!(!dispatcher.graph.has_root("root", &player));
-    assert!(dispatcher.graph.has_root("other", &player));
+}
+
+#[test]
+fn colliding_command_roots_keep_namespaced_commands_and_last_short_root() {
+    let plugina = PermissionSegment::parse("plugina").expect("namespace parses");
+    let pluginb = PermissionSegment::parse("pluginb").expect("namespace parses");
+    let mut dispatcher = CommandDispatcher::new_empty();
+    dispatcher
+        .register_command(CommandRegistration::new(
+            literal("home").then(literal("a").executes(|_, _| Ok(CommandResult::success()))),
+            plugina,
+        ))
+        .expect("first command registers");
+
+    dispatcher
+        .register_command(CommandRegistration::new(
+            literal("home").then(literal("b").executes(|_, _| Ok(CommandResult::success()))),
+            pluginb,
+        ))
+        .expect("second command registers");
+
+    let player = player_context_with_all(["plugina.command.home", "pluginb.command.home"]);
+    assert!(dispatcher.graph.parse("plugina:home a", &player).is_ok());
+    assert!(dispatcher.graph.parse("pluginb:home b", &player).is_ok());
+    assert!(dispatcher.graph.parse("home b", &player).is_ok());
+    assert!(dispatcher.graph.parse("home a", &player).is_err());
+}
+
+#[test]
+fn configured_alias_override_selects_command_id() {
+    let plugina = PermissionSegment::parse("plugina").expect("namespace parses");
+    let pluginb = PermissionSegment::parse("pluginb").expect("namespace parses");
+    let mut aliases = CommandAliasesConfig::default();
+    aliases
+        .aliases
+        .insert("home".to_owned(), Identifier::new_static("plugina", "home"));
+    let mut dispatcher = CommandDispatcher::new_empty_with_aliases(aliases);
+
+    dispatcher
+        .register_command(CommandRegistration::new(
+            literal("home").then(literal("a").executes(|_, _| Ok(CommandResult::success()))),
+            plugina,
+        ))
+        .expect("first command registers");
+    dispatcher
+        .register_command(CommandRegistration::new(
+            literal("home").then(literal("b").executes(|_, _| Ok(CommandResult::success()))),
+            pluginb,
+        ))
+        .expect("second command registers");
+    dispatcher
+        .apply_alias_overrides()
+        .expect("configured aliases apply");
+
+    let player = player_context_with_all(["plugina.command.home", "pluginb.command.home"]);
+    assert!(dispatcher.graph.parse("home a", &player).is_ok());
+    assert!(dispatcher.graph.parse("home b", &player).is_err());
+    assert!(dispatcher.graph.parse("pluginb:home b", &player).is_ok());
+}
+
+#[test]
+fn configured_alias_override_rejects_unknown_target() {
+    let mut aliases = CommandAliasesConfig::default();
+    aliases
+        .aliases
+        .insert("home".to_owned(), Identifier::new_static("missing", "home"));
+    let mut dispatcher = CommandDispatcher::new_empty_with_aliases(aliases);
+
+    let Err(error) = dispatcher.apply_alias_overrides() else {
+        panic!("unknown alias target should reject dispatcher startup");
+    };
+
+    assert!(matches!(
+        error,
+        CommandRegistrationError::UnknownAliasTarget { .. }
+    ));
+}
+
+#[test]
+fn configured_alias_override_rejects_namespaced_alias_root() {
+    let mut aliases = CommandAliasesConfig::default();
+    aliases.aliases.insert(
+        "plugina:home".to_owned(),
+        Identifier::new_static("plugina", "home"),
+    );
+    let mut dispatcher = CommandDispatcher::new_empty_with_aliases(aliases);
+
+    let Err(error) = dispatcher.apply_alias_overrides() else {
+        panic!("namespaced alias root should be protected");
+    };
+
+    assert!(matches!(
+        error,
+        CommandRegistrationError::NamespacedAliasRoot(alias) if alias == "plugina:home"
+    ));
 }
 
 #[test]
@@ -1084,7 +1164,11 @@ fn command_packet_filters_aliases_with_primary_permission() {
     let allowed = dispatcher.get_commands(&player_context_with("minecraft.command.primary"));
     assert_eq!(
         root_literal_names(&allowed),
-        vec!["primary".to_owned(), "alias".to_owned()]
+        vec![
+            "minecraft:primary".to_owned(),
+            "primary".to_owned(),
+            "alias".to_owned()
+        ]
     );
 }
 
@@ -1109,6 +1193,12 @@ fn aliases_preserve_dynamic_argument_permission_base() {
             .parse("gamemode creative", &creative)
             .is_ok()
     );
+    assert!(
+        dispatcher
+            .graph
+            .parse("minecraft:gamemode creative", &creative)
+            .is_ok()
+    );
     assert!(dispatcher.graph.parse("gm creative", &creative).is_ok());
     assert!(dispatcher.graph.parse("gm survival", &creative).is_err());
     assert!(
@@ -1118,6 +1208,41 @@ fn aliases_preserve_dynamic_argument_permission_base() {
                 "gm creative",
                 &player_context_with("minecraft.command.gm.creative")
             )
+            .is_err()
+    );
+}
+
+#[test]
+fn permission_base_does_not_rename_namespaced_command_id() {
+    let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
+    let mut dispatcher = CommandDispatcher::new_empty();
+    let registration = CommandRegistration::new(
+        literal("tp").executes(|_, _| Ok(CommandResult::success())),
+        minecraft,
+    )
+    .permission_base("teleport")
+    .expect("permission base parses")
+    .alias("teleport")
+    .expect("alias literal parses");
+
+    dispatcher
+        .register_command(registration)
+        .expect("command registers");
+
+    let teleport = player_context_with("minecraft.command.teleport");
+    assert!(dispatcher.graph.parse("tp", &teleport).is_ok());
+    assert!(dispatcher.graph.parse("teleport", &teleport).is_ok());
+    assert!(dispatcher.graph.parse("minecraft:tp", &teleport).is_ok());
+    assert!(
+        dispatcher
+            .graph
+            .parse("minecraft:teleport", &teleport)
+            .is_err()
+    );
+    assert!(
+        dispatcher
+            .graph
+            .parse("tp", &player_context_with("minecraft.command.tp"))
             .is_err()
     );
 }

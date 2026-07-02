@@ -17,7 +17,8 @@ use tracing_subscriber::filter::Directive;
 use futures::future::BoxFuture;
 use reqwest::Url;
 use steel_core::config::{
-    AuthServiceConfig, CompressionInfo, RuntimeConfig, ServerLinks, WorldsConfig,
+    AuthServiceConfig, CommandAliasesConfig, CompressionInfo, RuntimeConfig, ServerLinks,
+    WorldsConfig,
 };
 use steel_core::permission::{
     PermissionGroupConfig, PermissionGroupStore, PermissionGroupStoreError, PermissionGroups,
@@ -30,6 +31,7 @@ const DEFAULT_FAVICON: &[u8] = include_bytes!("../../package-content/favicon.png
 const DEFAULT_CONFIG: &str = include_str!("../../package-content/config.toml");
 const DEFAULT_WORLDS: &str = include_str!("../../package-content/worlds.toml");
 const DEFAULT_GROUPS: &str = include_str!("../../package-content/groups.toml");
+const DEFAULT_ALIASES: &str = include_str!("../../package-content/aliases.toml");
 
 /// Top-level TOML deserialization target — used once at startup, not stored globally.
 #[derive(Debug, Clone, Deserialize)]
@@ -45,6 +47,9 @@ pub struct SteelConfig {
     /// Permission group configuration from `groups.toml`.
     #[serde(skip, default)]
     pub groups: PermissionGroupsConfig,
+    /// Command alias overrides from `aliases.toml`.
+    #[serde(skip, default)]
+    pub command_aliases: CommandAliasesConfig,
     /// Path to the loaded `groups.toml`, if this config came from disk.
     #[serde(skip, default)]
     pub groups_path: Option<PathBuf>,
@@ -318,6 +323,7 @@ impl ServerConfig {
             chat_spam_threshold_seconds: self.chat_spam_threshold_seconds,
             command_spam_threshold_seconds: self.command_spam_threshold_seconds,
             require_default_command_permissions: self.commands.require_default_permissions,
+            command_aliases: self.commands.aliases,
             compression: self.compression,
             server_links: self.server_links,
             chunk_generation_threads: self.threads.chunk_generation,
@@ -326,11 +332,14 @@ impl ServerConfig {
 }
 
 /// Command permission configuration.
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct CommandConfig {
     /// Whether default-access commands require explicit permissions.
     pub require_default_permissions: bool,
+    /// Strict root command alias overrides.
+    #[serde(skip)]
+    pub aliases: CommandAliasesConfig,
 }
 
 /// Optional worker counts for server thread pools.
@@ -476,6 +485,12 @@ pub fn load_or_create(path: &Path) -> Result<SteelConfig, String> {
         .join("groups.toml");
     config.groups = load_or_create_groups(&groups_path)?;
     config.groups_path = Some(groups_path);
+    let aliases_path = path
+        .parent()
+        .ok_or_else(|| format!("failed to get config directory for {}", path.display()))?
+        .join("aliases.toml");
+    config.command_aliases = load_or_create_aliases(&aliases_path)?;
+    config.server.commands.aliases = config.command_aliases.clone();
 
     // If icon file doesnt exist, write it
     #[cfg(feature = "stand-alone")]
@@ -521,6 +536,24 @@ fn load_or_create_groups(path: &Path) -> Result<PermissionGroupsConfig, String> 
     PermissionGroups::from_config(groups_config.clone())
         .map_err(|e| format!("failed to validate groups config {}: {e}", path.display()))?;
     Ok(groups_config)
+}
+
+fn load_or_create_aliases(path: &Path) -> Result<CommandAliasesConfig, String> {
+    if path.exists() {
+        let aliases_str = fs::read_to_string(path)
+            .map_err(|e| format!("failed to read aliases config file {}: {e}", path.display()))?;
+        toml::from_str::<CommandAliasesConfig>(aliases_str.as_str())
+            .map_err(|e| format!("failed to parse aliases config {}: {e}", path.display()))
+    } else {
+        fs::write(path, DEFAULT_ALIASES).map_err(|e| {
+            format!(
+                "failed to write aliases config file {}: {e}",
+                path.display()
+            )
+        })?;
+        toml::from_str::<CommandAliasesConfig>(DEFAULT_ALIASES)
+            .map_err(|e| format!("failed to parse default aliases config: {e}"))
+    }
 }
 
 /// Validates the server configuration.
@@ -610,6 +643,9 @@ mod tests {
         let groups_config: PermissionGroupsConfig =
             toml::from_str(DEFAULT_GROUPS).expect("default groups parses");
         PermissionGroups::from_config(groups_config).expect("default groups validate");
+        let aliases: CommandAliasesConfig =
+            toml::from_str(DEFAULT_ALIASES).expect("default aliases parse");
+        assert!(aliases.aliases.is_empty());
     }
 
     #[tokio::test]
