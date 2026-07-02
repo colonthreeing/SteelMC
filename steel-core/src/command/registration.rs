@@ -219,9 +219,8 @@ pub(crate) fn minecraft_command_permission_key(
     command_permission_key(&PermissionSegment::parse("minecraft")?, command)
 }
 
-pub(crate) const ENTITY_SELECTOR_PERMISSION_KEY: &str = "minecraft.command.selector";
-pub(crate) const ENTITY_SELECTOR_ADVANCED_PERMISSION_KEY: &str =
-    "minecraft.command.selector.advanced";
+pub(crate) const ENTITY_SELECTOR_PERMISSION_KEY: &str = "minecraft.selector";
+pub(crate) const ENTITY_SELECTOR_ADVANCED_PERMISSION_KEY: &str = "minecraft.selector.advanced";
 
 pub(crate) fn entity_selector_permission_key() -> Result<PermissionKey, PermissionKeyError> {
     PermissionKey::parse(ENTITY_SELECTOR_PERMISSION_KEY)
