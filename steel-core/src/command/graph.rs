@@ -23,14 +23,14 @@ mod traversal;
 
 pub use crate::command::parsers::{
     BiomeArgumentValue, BlockPredicateArgumentValue, CommandFunctionArgumentValue,
-    DoubleRangeArgumentValue, IntRangeArgumentValue, ItemSlotRangeArgumentValue,
-    LootPredicateArgumentValue, ScoreHolderArgumentValue, ScoreboardObjectiveName,
-    StructureArgumentValue,
+    DoubleRangeArgumentValue, IntRangeArgumentValue, ItemPredicateArgumentValue,
+    ItemPredicateCondition, ItemPredicateMatchError, ItemPredicateTarget, ItemPredicateTerm,
+    ItemSlotRangeArgumentValue, LootPredicateArgumentValue, ScoreHolderArgumentValue,
+    ScoreboardObjectiveName, StructureArgumentValue,
 };
 pub use arguments::{
-    CommandPermissionArgument, FromParsedArgument, ItemPredicateArgumentValue,
-    ItemPredicateCondition, ItemPredicateMatchError, ItemPredicateTarget, ItemPredicateTerm,
-    ParsedArgument, ParsedArgumentError, ParsedArguments, PermissionTarget,
+    CommandPermissionArgument, FromParsedArgument, ParsedArgument, ParsedArgumentError,
+    ParsedArguments, PermissionTarget,
 };
 pub use builder::{CommandNodeBuilder, argument, literal};
 use node::{CommandNode, CommandNodeKind, collect_ambiguities, merge_or_push_node};

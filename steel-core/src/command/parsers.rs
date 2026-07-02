@@ -20,7 +20,10 @@ mod world;
 pub use block::{BlockPredicateArgumentValue, BlockPredicateParser};
 pub use function::{CommandFunctionArgumentValue, CommandFunctionParser};
 pub use game::GameModeParser;
-pub use item_predicate::ItemPredicateParser;
+pub use item_predicate::{
+    ItemPredicateArgumentValue, ItemPredicateCondition, ItemPredicateMatchError,
+    ItemPredicateParser, ItemPredicateTarget, ItemPredicateTerm,
+};
 pub use item_stack::ItemStackParser;
 pub use loot_predicate::{LootPredicateArgumentValue, LootPredicateParser};
 pub use nbt::{NbtCompoundParser, NbtPathParser};
