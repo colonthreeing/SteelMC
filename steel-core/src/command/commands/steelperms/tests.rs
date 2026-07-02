@@ -1,8 +1,8 @@
     use super::{
         PermissionAssignedGroupParser, PermissionGroupEditError, PermissionGroupNameParser,
         PermissionManagedRuleExpressionParser, PermissionMetadataExpressionParser,
-        add_default_group_config, assigned_group_suggestions, can_manage_group,
-        can_manage_metadata, can_manage_permission, delete_group_config,
+        add_default_group_config, add_group_config_inheritance, assigned_group_suggestions,
+        can_manage_group, can_manage_metadata, can_manage_permission, delete_group_config,
         direct_metadata_override_suggestions, direct_permission_override_suggestions,
         group_config_metadata_value, group_config_permission_states, group_metadata_suggestions,
         group_permission_suggestions, manageable_assigned_groups,
@@ -11,8 +11,9 @@
         metadata_management_key,
         metadata_resolution_text, permission_check_result_text, permission_context,
         permission_resolution_source_text, permission_rule_context, permission_rule_context_suffix,
-        remove_default_group_config, set_group_config_metadata, set_group_config_permission,
-        set_group_config_priority, unset_group_config_metadata, unset_group_config_permission,
+        remove_default_group_config, remove_group_config_inheritance, set_group_config_metadata,
+        set_group_config_permission, set_group_config_priority, unset_group_config_metadata,
+        unset_group_config_permission,
     };
     use crate::command::graph::{
         CommandArgumentParser, CommandParseErrorKind, ParsedArgument, ParsedArguments,
@@ -1041,6 +1042,53 @@
     }
 
     #[test]
+    fn inheritance_config_edits_add_and_remove_parent_groups() {
+        let mut config = PermissionGroupsConfig::default();
+        config
+            .groups
+            .insert("builder".to_owned(), PermissionGroupConfig::default());
+
+        assert_eq!(
+            add_group_config_inheritance(&mut config, "builder", "default"),
+            Ok(true)
+        );
+        assert_eq!(
+            config.groups["builder"].inherits,
+            vec!["default".to_owned()]
+        );
+        assert_eq!(
+            add_group_config_inheritance(&mut config, "builder", "default"),
+            Ok(false)
+        );
+        assert_eq!(
+            remove_group_config_inheritance(&mut config, "builder", "default"),
+            Ok(true)
+        );
+        assert!(config.groups["builder"].inherits.is_empty());
+        assert_eq!(
+            remove_group_config_inheritance(&mut config, "builder", "default"),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn inheritance_config_edits_reject_missing_and_self_parent_groups() {
+        let mut config = PermissionGroupsConfig::default();
+        config
+            .groups
+            .insert("builder".to_owned(), PermissionGroupConfig::default());
+
+        assert_eq!(
+            add_group_config_inheritance(&mut config, "builder", "missing"),
+            Err(PermissionGroupEditError::Missing("missing".to_owned()))
+        );
+        assert_eq!(
+            add_group_config_inheritance(&mut config, "builder", "builder"),
+            Err(PermissionGroupEditError::SelfInheritance("builder".to_owned()))
+        );
+    }
+
+    #[test]
     fn delete_group_config_removes_non_default_group() {
         let mut config = PermissionGroupsConfig::default();
         config
@@ -1068,6 +1116,37 @@
         assert_eq!(
             delete_group_config(&mut config, "default"),
             Err(PermissionGroupEditError::Default("default".to_owned()))
+        );
+    }
+
+    #[test]
+    fn delete_group_config_rejects_inherited_group() {
+        let mut config = PermissionGroupsConfig::default();
+        let mut builder = PermissionGroupConfig::default();
+        builder.inherits.push("default".to_owned());
+        config.groups.insert("builder".to_owned(), builder);
+
+        assert_eq!(
+            delete_group_config(&mut config, "default"),
+            Err(PermissionGroupEditError::Default("default".to_owned()))
+        );
+        assert_eq!(
+            delete_group_config(&mut config, "builder"),
+            Ok(())
+        );
+
+        let mut builder = PermissionGroupConfig::default();
+        builder.inherits.push("parent".to_owned());
+        config
+            .groups
+            .insert("parent".to_owned(), PermissionGroupConfig::default());
+        config.groups.insert("builder".to_owned(), builder);
+        assert_eq!(
+            delete_group_config(&mut config, "parent"),
+            Err(PermissionGroupEditError::InheritedBy {
+                group: "parent".to_owned(),
+                child: "builder".to_owned(),
+            })
         );
     }
 
@@ -1134,6 +1213,7 @@
     fn group_permission_suggestions_only_include_manageable_group_rules() {
         let group = PermissionGroupConfig {
             priority: 0,
+            inherits: Vec::new(),
             allow: vec![
                 "steel.fly".to_owned(),
                 "minecraft.command.gamemode".to_owned(),
@@ -1157,6 +1237,7 @@
     fn group_metadata_suggestions_only_include_manageable_group_metadata() {
         let group = PermissionGroupConfig {
             priority: 0,
+            inherits: Vec::new(),
             allow: Vec::new(),
             deny: Vec::new(),
             metadata: vec![

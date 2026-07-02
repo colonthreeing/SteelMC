@@ -388,16 +388,22 @@ impl CommandNodeBuilder {
         Ok(resolved.with_root_access_requirement(root_permission, alternate_root_permissions))
     }
 
-    pub(crate) fn register_explicit_permission_catalog_entries(
-        &self,
+    pub(crate) fn resolve_default_command_permissions(
+        self,
+        root_permission: &PermissionKey,
         catalog: &mut PermissionCatalog,
-    ) {
-        for permission in &self.catalog_permissions {
-            catalog.insert(permission.clone(), PermissionCatalogSource::Command);
-        }
-        for child in &self.children {
-            child.register_explicit_permission_catalog_entries(catalog);
-        }
+    ) -> Result<Self, CommandGraphError> {
+        let mut alternate_root_permissions = Vec::new();
+        let resolved = self.resolve_subcommand_permissions_inner(
+            root_permission,
+            root_permission,
+            true,
+            Vec::new(),
+            catalog,
+            &mut alternate_root_permissions,
+        )?;
+        Ok(resolved
+            .with_default_root_access_requirement(root_permission, alternate_root_permissions))
     }
 
     fn resolve_subcommand_permissions_inner(
@@ -538,6 +544,21 @@ impl CommandNodeBuilder {
         );
         self.requires(Requirement::Permission(permission))
     }
+
+    fn with_default_root_access_requirement(
+        self,
+        root_permission: &PermissionKey,
+        alternate_permissions: Vec<PermissionKey>,
+    ) -> Self {
+        let alternatives = alternate_permissions.into_iter().fold(
+            PermissionExpr::key(root_permission.clone()),
+            |permission, alternative| permission | PermissionExpr::key(alternative),
+        );
+        self.requires(Requirement::DefaultCommand {
+            root: root_permission.clone(),
+            alternatives,
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -603,6 +624,10 @@ fn collect_requirement_catalog_permissions(
     match requirement {
         Requirement::Permission(permission) => {
             collect_permission_expr_keys(permission, catalog_permissions);
+        }
+        Requirement::DefaultCommand { root, alternatives } => {
+            push_unique_permission(catalog_permissions, root.clone());
+            collect_permission_expr_keys(alternatives, catalog_permissions);
         }
         Requirement::All(requirements) | Requirement::Any(requirements) => {
             for requirement in requirements {

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use glam::DVec3;
 
-use crate::permission::PermissionContext;
+use crate::permission::{PermissionContext, PermissionState};
 use crate::{
     command::{
         context::{CommandContext, EntityAnchor},
@@ -39,6 +39,12 @@ pub trait RequirementContext {
 
     /// Returns whether this source satisfies `permission`.
     fn has_permission(&self, permission: &PermissionExpr) -> bool;
+
+    /// Returns the resolved state for `permission`, if it is set.
+    fn permission_state(&self, permission: &PermissionExpr) -> Option<PermissionState> {
+        self.has_permission(permission)
+            .then_some(PermissionState::Allow)
+    }
 }
 
 /// Runtime context available to command argument parsers and suggestion providers.
@@ -106,6 +112,13 @@ pub enum Requirement {
     Console,
     /// The source must pass the permission expression.
     Permission(PermissionExpr),
+    /// The source must not explicitly deny a default command permission.
+    DefaultCommand {
+        /// The command's root permission.
+        root: PermissionKey,
+        /// Explicit permissions that can still grant access when the root is denied.
+        alternatives: PermissionExpr,
+    },
     /// All child requirements must pass.
     All(Vec<Requirement>),
     /// At least one child requirement must pass.
@@ -121,6 +134,11 @@ impl Requirement {
             Self::Player => context.source_kind() == CommandSourceKind::Player,
             Self::Console => context.source_kind() == CommandSourceKind::Console,
             Self::Permission(permission) => context.has_permission(permission),
+            Self::DefaultCommand { root, alternatives } => {
+                context.permission_state(&PermissionExpr::key(root.clone()))
+                    != Some(PermissionState::Deny)
+                    || context.has_permission(alternatives)
+            }
             Self::All(requirements) => requirements
                 .iter()
                 .all(|requirement| requirement.allows(context)),
@@ -160,6 +178,10 @@ impl RequirementContext for CommandContext {
     fn has_permission(&self, permission: &PermissionExpr) -> bool {
         sender_has_permission(&self.sender, permission, self.permission_check_context())
     }
+
+    fn permission_state(&self, permission: &PermissionExpr) -> Option<PermissionState> {
+        sender_permission_state(&self.sender, permission, self.permission_check_context())
+    }
 }
 
 fn sender_source_kind(sender: &CommandSender) -> CommandSourceKind {
@@ -185,6 +207,20 @@ fn sender_has_permission(
     }
 }
 
+fn sender_permission_state(
+    sender: &CommandSender,
+    permission: &PermissionExpr,
+    context: &PermissionContext,
+) -> Option<PermissionState> {
+    match sender {
+        CommandSender::Player(player) => player.permission_state_in(permission, context),
+        CommandSender::Console | CommandSender::Rcon => Some(PermissionState::Allow),
+        CommandSender::SuppressedOutput(sender) => {
+            sender_permission_state(sender, permission, context)
+        }
+    }
+}
+
 impl RequirementContext for Player {
     fn source_kind(&self) -> CommandSourceKind {
         CommandSourceKind::Player
@@ -192,6 +228,10 @@ impl RequirementContext for Player {
 
     fn has_permission(&self, permission: &PermissionExpr) -> bool {
         Player::has_permission(self, permission)
+    }
+
+    fn permission_state(&self, permission: &PermissionExpr) -> Option<PermissionState> {
+        Player::permission_state(self, permission)
     }
 }
 

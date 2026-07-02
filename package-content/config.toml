@@ -31,6 +31,11 @@ chat_spam_threshold_seconds = 10
 # Vanilla command spam threshold window in seconds
 command_spam_threshold_seconds = 10
 
+# Command permission settings
+[server.commands]
+# Whether default-access commands require explicit permissions.
+require_default_permissions = false
+
 # Authentication service hosts. Change all three hosts together when using a custom auth service.
 [server.auth]
 session_host = "https://sessionserver.mojang.com"

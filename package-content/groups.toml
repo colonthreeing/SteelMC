@@ -11,6 +11,8 @@ default_groups = ["default"]
 [groups.default]
 # Higher priority wins when equally specific rules from multiple groups match.
 priority = 0
+# Parent groups inherited by this group.
+inherits = []
 allow = []
 deny = []
 # Permission rule expressions can add contexts. Omit `{...}` for a global rule.
@@ -44,6 +46,7 @@ metadata = []
 
 [groups.op]
 priority = 0
+inherits = []
 allow = [
     "*",
 ]

@@ -1127,32 +1127,28 @@ mod tests {
         let registration = CommandRegistration::new(
             literal("known").executes(|_, _| Ok(CommandResult::success())),
             namespace,
-        )
-        .public();
+        );
         let targeted_registration = CommandRegistration::new(
             literal("targeted").then(
                 argument("targets", EntityParser::multiple())
                     .executes(|_, _| Ok(CommandResult::success())),
             ),
             PermissionSegment::parse("test").expect("namespace parses"),
-        )
-        .public();
+        );
         let score_targeted_registration = CommandRegistration::new(
             literal("scoretarget").then(
                 argument("holders", ScoreHolderParser::multiple())
                     .executes(|_, _| Ok(CommandResult::success())),
             ),
             PermissionSegment::parse("test").expect("namespace parses"),
-        )
-        .public();
+        );
         let echo_registration = CommandRegistration::new(
             literal("echo").then(
                 argument("message", StringParser::new(StringMode::GreedyPhrase))
                     .executes(|_, _| Ok(CommandResult::success())),
             ),
             PermissionSegment::parse("test").expect("namespace parses"),
-        )
-        .public();
+        );
 
         dispatcher
             .register_command(registration)

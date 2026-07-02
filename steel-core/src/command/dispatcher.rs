@@ -38,6 +38,17 @@ impl CommandDispatcher {
     ///
     /// Returns an error when a built-in command registration is invalid.
     pub fn new() -> Result<Self, CommandRegistrationError> {
+        Self::new_with_default_command_permissions(false)
+    }
+
+    /// Creates a new command dispatcher with built-in commands.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a built-in command registration is invalid.
+    pub fn new_with_default_command_permissions(
+        require_default_command_permissions: bool,
+    ) -> Result<Self, CommandRegistrationError> {
         let mut dispatcher = CommandDispatcher::new_empty();
         dispatcher.permission_catalog.insert(
             entity_selector_permission_key()?,
@@ -48,7 +59,10 @@ impl CommandDispatcher {
             PermissionCatalogSource::Command,
         );
         for registration in commands::registrations()? {
-            dispatcher.register_command(registration)?;
+            dispatcher.register_command_with_defaults(
+                registration,
+                require_default_command_permissions,
+            )?;
         }
         Ok(dispatcher)
     }
@@ -64,23 +78,32 @@ impl CommandDispatcher {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn register_command(
         &mut self,
         registration: CommandRegistration,
     ) -> Result<(), CommandRegistrationError> {
-        let permission_base = registration.resolved_permission_base()?;
+        self.register_command_with_defaults(registration, true)
+    }
+
+    pub(super) fn register_command_with_defaults(
+        &mut self,
+        registration: CommandRegistration,
+        require_default_command_permissions: bool,
+    ) -> Result<(), CommandRegistrationError> {
+        let permission = registration.resolved_permission()?;
         let mut command_catalog = PermissionCatalog::new();
-        let root = if let Some(permission_base) = &permission_base {
-            command_catalog.insert(permission_base.clone(), PermissionCatalogSource::Command);
+        command_catalog.insert(permission.key.clone(), PermissionCatalogSource::Command);
+        let root = if permission.default_access && !require_default_command_permissions {
             registration
                 .root
                 .clone()
-                .resolve_subcommand_permissions(&permission_base, &mut command_catalog)?
+                .resolve_default_command_permissions(&permission.key, &mut command_catalog)?
         } else {
             registration
                 .root
-                .register_explicit_permission_catalog_entries(&mut command_catalog);
-            registration.root.clone()
+                .clone()
+                .resolve_subcommand_permissions(&permission.key, &mut command_catalog)?
         };
         let root_for_aliases = (!registration.aliases.is_empty()).then(|| root.clone());
         let mut graph = self.graph.clone();

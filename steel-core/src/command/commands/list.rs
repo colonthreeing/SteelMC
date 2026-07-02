@@ -7,7 +7,8 @@ use crate::command::{
 };
 use steel_utils::translations::{COMMANDS_LIST_NAME_AND_ID, COMMANDS_LIST_PLAYERS};
 
-pub(crate) const REGISTRATION: CommandRegistrationSpec = CommandRegistrationSpec::minecraft().public();
+pub(crate) const REGISTRATION: CommandRegistrationSpec =
+    CommandRegistrationSpec::minecraft().default_access();
 
 /// Handler for the "list" command.
 #[must_use]

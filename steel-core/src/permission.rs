@@ -2134,16 +2134,32 @@ impl PermissionSet {
     /// Returns whether this set allows a permission expression in a permission context.
     #[must_use]
     pub fn allows_in(&self, permission: &PermissionExpr, context: &PermissionContext) -> bool {
+        self.resolve_in(permission, context) == Some(PermissionState::Allow)
+    }
+
+    /// Resolves a permission expression in the global context.
+    #[must_use]
+    pub fn resolve(&self, permission: &PermissionExpr) -> Option<PermissionState> {
+        self.resolve_in(permission, &PermissionContext::global())
+    }
+
+    /// Resolves a permission expression in a permission context.
+    #[must_use]
+    pub fn resolve_in(
+        &self,
+        permission: &PermissionExpr,
+        context: &PermissionContext,
+    ) -> Option<PermissionState> {
         match permission {
-            PermissionExpr::Key(key) => self.allows_key_in(key, context),
+            PermissionExpr::Key(key) => self.resolve_key_in(key, context),
             PermissionExpr::ScopedKey { parent, key } => {
-                self.allows_scoped_key_in(parent, key, context)
+                self.resolve_scoped_key_in(parent, key, context)
             }
             PermissionExpr::All(children) => {
-                children.iter().all(|child| self.allows_in(child, context))
+                resolve_all_permission_expression(children, self, context)
             }
             PermissionExpr::Any(children) => {
-                children.iter().any(|child| self.allows_in(child, context))
+                resolve_any_permission_expression(children, self, context)
             }
         }
     }
@@ -2242,6 +2258,56 @@ impl PermissionSet {
             key_specificity: candidate.key_specificity,
             context_specificity: candidate.context_specificity,
         }
+    }
+}
+
+fn resolve_all_permission_expression(
+    children: &[PermissionExpr],
+    permissions: &PermissionSet,
+    context: &PermissionContext,
+) -> Option<PermissionState> {
+    if children.is_empty() {
+        return Some(PermissionState::Allow);
+    }
+
+    let mut saw_unset = false;
+    for child in children {
+        match permissions.resolve_in(child, context) {
+            Some(PermissionState::Allow) => {}
+            Some(PermissionState::Deny) => return Some(PermissionState::Deny),
+            None => saw_unset = true,
+        }
+    }
+
+    if saw_unset {
+        None
+    } else {
+        Some(PermissionState::Allow)
+    }
+}
+
+fn resolve_any_permission_expression(
+    children: &[PermissionExpr],
+    permissions: &PermissionSet,
+    context: &PermissionContext,
+) -> Option<PermissionState> {
+    if children.is_empty() {
+        return Some(PermissionState::Deny);
+    }
+
+    let mut saw_unset = false;
+    for child in children {
+        match permissions.resolve_in(child, context) {
+            Some(PermissionState::Allow) => return Some(PermissionState::Allow),
+            Some(PermissionState::Deny) => {}
+            None => saw_unset = true,
+        }
+    }
+
+    if saw_unset {
+        None
+    } else {
+        Some(PermissionState::Deny)
     }
 }
 
@@ -2663,6 +2729,7 @@ impl Default for PermissionGroupsConfig {
             OP_GROUP.to_owned(),
             PermissionGroupConfig {
                 priority: 0,
+                inherits: Vec::new(),
                 allow: vec!["*".to_owned()],
                 deny: Vec::new(),
                 metadata: Vec::new(),
@@ -2683,6 +2750,8 @@ pub struct PermissionGroupConfig {
     /// Priority used to resolve conflicts between equally specific group rules.
     /// Higher priority wins.
     pub priority: i32,
+    /// Parent groups inherited by this group.
+    pub inherits: Vec<String>,
     /// Permission rule expressions explicitly allowed by this group.
     pub allow: Vec<String>,
     /// Permission rule expressions explicitly denied by this group.
@@ -3009,6 +3078,7 @@ impl Default for PermissionGroups {
             "default".to_owned(),
             PermissionGroup {
                 priority: 0,
+                inherits: Vec::new(),
                 permissions: PermissionSet::new(),
                 metadata: PermissionMetadataSet::new(),
             },
@@ -3017,6 +3087,7 @@ impl Default for PermissionGroups {
             OP_GROUP.to_owned(),
             PermissionGroup {
                 priority: 0,
+                inherits: Vec::new(),
                 permissions: op_permissions,
                 metadata: PermissionMetadataSet::new(),
             },
@@ -3047,6 +3118,7 @@ impl PermissionGroups {
                 OP_GROUP.to_owned(),
             ));
         }
+        validate_group_inheritance(&config)?;
 
         let mut groups = BTreeMap::new();
         for (name, group) in config.groups {
@@ -3092,6 +3164,7 @@ impl PermissionGroups {
                 name,
                 PermissionGroup {
                     priority: group.priority,
+                    inherits: group.inherits,
                     permissions,
                     metadata,
                 },
@@ -3163,12 +3236,13 @@ impl PermissionGroups {
         player_permissions: &PermissionSet,
     ) -> PermissionSet {
         let mut effective = PermissionSet::new();
+        let mut appended_groups = BTreeSet::new();
 
         for group in &self.default_groups {
-            self.append_group_permissions(group, &mut effective);
+            self.append_group_permissions(group, &mut effective, &mut appended_groups);
         }
         for group in assigned_groups {
-            self.append_group_permissions(group, &mut effective);
+            self.append_group_permissions(group, &mut effective, &mut appended_groups);
         }
         for entry in player_permissions.entries() {
             effective.push(entry.clone());
@@ -3188,12 +3262,13 @@ impl PermissionGroups {
         player_metadata: &PermissionMetadataSet,
     ) -> PermissionMetadataSet {
         let mut effective = PermissionMetadataSet::new();
+        let mut appended_groups = BTreeSet::new();
 
         for group in &self.default_groups {
-            self.append_group_metadata(group, &mut effective);
+            self.append_group_metadata(group, &mut effective, &mut appended_groups);
         }
         for group in assigned_groups {
-            self.append_group_metadata(group, &mut effective);
+            self.append_group_metadata(group, &mut effective, &mut appended_groups);
         }
         for entry in player_metadata.entries() {
             effective.push(entry.clone());
@@ -3202,21 +3277,43 @@ impl PermissionGroups {
         effective
     }
 
-    fn append_group_permissions(&self, group_name: &str, effective: &mut PermissionSet) {
+    fn append_group_permissions(
+        &self,
+        group_name: &str,
+        effective: &mut PermissionSet,
+        appended_groups: &mut BTreeSet<String>,
+    ) {
+        if !appended_groups.insert(group_name.to_owned()) {
+            return;
+        }
         let Some(group) = self.groups.get(group_name) else {
             return;
         };
 
+        for parent in &group.inherits {
+            self.append_group_permissions(parent, effective, appended_groups);
+        }
         for entry in group.permissions.entries() {
             effective.push_group(entry.clone(), group_name, group.priority);
         }
     }
 
-    fn append_group_metadata(&self, group_name: &str, effective: &mut PermissionMetadataSet) {
+    fn append_group_metadata(
+        &self,
+        group_name: &str,
+        effective: &mut PermissionMetadataSet,
+        appended_groups: &mut BTreeSet<String>,
+    ) {
+        if !appended_groups.insert(group_name.to_owned()) {
+            return;
+        }
         let Some(group) = self.groups.get(group_name) else {
             return;
         };
 
+        for parent in &group.inherits {
+            self.append_group_metadata(parent, effective, appended_groups);
+        }
         for entry in group.metadata.entries() {
             effective.push_group(entry.clone(), group_name, group.priority);
         }
@@ -3258,10 +3355,62 @@ fn validate_group_name(group: &str) -> Result<(), PermissionConfigError> {
     )
 }
 
+fn validate_group_inheritance(
+    config: &PermissionGroupsConfig,
+) -> Result<(), PermissionConfigError> {
+    for (group, group_config) in &config.groups {
+        for parent in &group_config.inherits {
+            validate_group_name(parent)?;
+            if !config.groups.contains_key(parent) {
+                return Err(PermissionConfigError::MissingInheritedGroup {
+                    group: group.clone(),
+                    inherited: parent.clone(),
+                });
+            }
+        }
+    }
+
+    let mut visited = BTreeSet::new();
+    let mut stack = Vec::new();
+    for group in config.groups.keys() {
+        validate_group_inheritance_node(group, config, &mut visited, &mut stack)?;
+    }
+    Ok(())
+}
+
+fn validate_group_inheritance_node(
+    group: &str,
+    config: &PermissionGroupsConfig,
+    visited: &mut BTreeSet<String>,
+    stack: &mut Vec<String>,
+) -> Result<(), PermissionConfigError> {
+    if visited.contains(group) {
+        return Ok(());
+    }
+    if let Some(cycle_start) = stack.iter().position(|ancestor| ancestor == group) {
+        let mut cycle = stack[cycle_start..].to_vec();
+        cycle.push(group.to_owned());
+        return Err(PermissionConfigError::InheritedGroupCycle(cycle));
+    }
+
+    stack.push(group.to_owned());
+    let group_config = config
+        .groups
+        .get(group)
+        .expect("inheritance validation only visits configured groups");
+    for parent in &group_config.inherits {
+        validate_group_inheritance_node(parent, config, visited, stack)?;
+    }
+    stack.pop();
+    visited.insert(group.to_owned());
+    Ok(())
+}
+
 /// One resolved permission group.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PermissionGroup {
     priority: i32,
+    inherits: Vec<String>,
     permissions: PermissionSet,
     metadata: PermissionMetadataSet,
 }
@@ -3271,6 +3420,12 @@ impl PermissionGroup {
     #[must_use]
     pub const fn priority(&self) -> i32 {
         self.priority
+    }
+
+    /// Returns the parent groups this group inherits.
+    #[must_use]
+    pub fn inherits(&self) -> &[String] {
+        &self.inherits
     }
 
     /// Returns this group's permission entries.
@@ -3293,6 +3448,15 @@ pub enum PermissionConfigError {
     MissingDefaultGroup(String),
     /// A built-in required group name does not exist in the group map.
     MissingRequiredGroup(String),
+    /// A group inherits a group that does not exist.
+    MissingInheritedGroup {
+        /// Group containing the bad inheritance edge.
+        group: String,
+        /// Missing inherited group.
+        inherited: String,
+    },
+    /// Group inheritance contains a cycle.
+    InheritedGroupCycle(Vec<String>),
     /// A group contains an invalid permission rule expression.
     InvalidPermissionExpression {
         /// Group containing the bad expression.
@@ -3324,6 +3488,19 @@ impl fmt::Display for PermissionConfigError {
             }
             Self::MissingRequiredGroup(group) => {
                 write!(f, "required permission group '{group}' is not configured")
+            }
+            Self::MissingInheritedGroup { group, inherited } => {
+                write!(
+                    f,
+                    "permission group '{group}' inherits unknown group '{inherited}'"
+                )
+            }
+            Self::InheritedGroupCycle(cycle) => {
+                write!(
+                    f,
+                    "permission group inheritance cycle: {}",
+                    cycle.join(" -> ")
+                )
             }
             Self::InvalidPermissionExpression { group, source } => {
                 write!(
@@ -3429,6 +3606,7 @@ mod tests {
             "builder".to_owned(),
             super::PermissionGroupConfig {
                 priority: 0,
+                inherits: Vec::new(),
                 allow: vec!["steel.build".to_owned()],
                 deny: Vec::new(),
                 metadata: Vec::new(),
@@ -4160,6 +4338,96 @@ mod tests {
     }
 
     #[test]
+    fn groups_inherit_parent_permissions() {
+        let mut config = PermissionGroupsConfig::default();
+        let mut builder = super::PermissionGroupConfig::default();
+        builder.allow.push("steel.build".to_owned());
+        config.groups.insert("builder".to_owned(), builder);
+        let mut moderator = super::PermissionGroupConfig::default();
+        moderator.inherits.push("builder".to_owned());
+        moderator.allow.push("steel.kick".to_owned());
+        config.groups.insert("moderator".to_owned(), moderator);
+
+        let groups = PermissionGroups::from_config(config).expect("groups config is valid");
+        let effective =
+            groups.effective_permissions(&["moderator".to_owned()], &PermissionSet::new());
+
+        assert!(effective.allows_key(&key("steel.build")));
+        assert!(effective.allows_key(&key("steel.kick")));
+        assert_eq!(
+            effective
+                .resolve_key_detailed(&key("steel.build"))
+                .expect("inherited permission resolves")
+                .source()
+                .group_name(),
+            Some("builder")
+        );
+    }
+
+    #[test]
+    fn inherited_group_rules_keep_defining_group_priority() {
+        let mut config = PermissionGroupsConfig::default();
+        let mut parent = super::PermissionGroupConfig {
+            priority: 50,
+            ..super::PermissionGroupConfig::default()
+        };
+        parent.deny.push("steel.fly".to_owned());
+        config.groups.insert("parent".to_owned(), parent);
+        let mut child = super::PermissionGroupConfig {
+            priority: 0,
+            ..super::PermissionGroupConfig::default()
+        };
+        child.inherits.push("parent".to_owned());
+        child.allow.push("steel.fly".to_owned());
+        config.groups.insert("child".to_owned(), child);
+
+        let groups = PermissionGroups::from_config(config).expect("groups config is valid");
+        let effective = groups.effective_permissions(&["child".to_owned()], &PermissionSet::new());
+        let resolution = effective
+            .resolve_key_detailed(&key("steel.fly"))
+            .expect("permission resolves");
+
+        assert_eq!(resolution.state(), PermissionState::Deny);
+        assert_eq!(resolution.source().group_name(), Some("parent"));
+        assert_eq!(resolution.source().group_priority(), Some(50));
+    }
+
+    #[test]
+    fn group_inheritance_rejects_missing_parents() {
+        let mut config = PermissionGroupsConfig::default();
+        let mut child = super::PermissionGroupConfig::default();
+        child.inherits.push("missing".to_owned());
+        config.groups.insert("child".to_owned(), child);
+
+        assert!(matches!(
+            PermissionGroups::from_config(config),
+            Err(super::PermissionConfigError::MissingInheritedGroup { group, inherited })
+                if group == "child" && inherited == "missing"
+        ));
+    }
+
+    #[test]
+    fn group_inheritance_rejects_cycles() {
+        let mut config = PermissionGroupsConfig::default();
+        let mut first = super::PermissionGroupConfig::default();
+        first.inherits.push("second".to_owned());
+        config.groups.insert("first".to_owned(), first);
+        let mut second = super::PermissionGroupConfig::default();
+        second.inherits.push("first".to_owned());
+        config.groups.insert("second".to_owned(), second);
+
+        assert!(matches!(
+            PermissionGroups::from_config(config),
+            Err(super::PermissionConfigError::InheritedGroupCycle(cycle))
+                if cycle == vec![
+                    "first".to_owned(),
+                    "second".to_owned(),
+                    "first".to_owned()
+                ]
+        ));
+    }
+
+    #[test]
     fn groups_register_config_permissions_in_catalog() {
         let groups = PermissionGroups::from_config(PermissionGroupsConfig::default())
             .expect("default groups config is valid");
@@ -4272,6 +4540,7 @@ mod tests {
                     "builder".to_owned(),
                     super::PermissionGroupConfig {
                         priority: 0,
+                        inherits: Vec::new(),
                         allow: vec!["steel.build".to_owned()],
                         deny: Vec::new(),
                         metadata: Vec::new(),
@@ -4302,6 +4571,7 @@ mod tests {
                     "builder".to_owned(),
                     super::PermissionGroupConfig {
                         priority: 0,
+                        inherits: Vec::new(),
                         allow: vec!["steel.build".to_owned()],
                         deny: Vec::new(),
                         metadata: Vec::new(),
@@ -4467,6 +4737,7 @@ mod tests {
             "low".to_owned(),
             super::PermissionGroupConfig {
                 priority: 0,
+                inherits: Vec::new(),
                 allow: Vec::new(),
                 deny: vec!["steel.fly".to_owned()],
                 metadata: Vec::new(),
@@ -4476,6 +4747,7 @@ mod tests {
             "high".to_owned(),
             super::PermissionGroupConfig {
                 priority: 50,
+                inherits: Vec::new(),
                 allow: vec!["steel.fly".to_owned()],
                 deny: Vec::new(),
                 metadata: Vec::new(),
@@ -4503,6 +4775,7 @@ mod tests {
             "allow".to_owned(),
             super::PermissionGroupConfig {
                 priority: 10,
+                inherits: Vec::new(),
                 allow: vec!["steel.fly".to_owned()],
                 deny: Vec::new(),
                 metadata: Vec::new(),
@@ -4512,6 +4785,7 @@ mod tests {
             "deny".to_owned(),
             super::PermissionGroupConfig {
                 priority: 10,
+                inherits: Vec::new(),
                 allow: Vec::new(),
                 deny: vec!["steel.fly".to_owned()],
                 metadata: Vec::new(),
@@ -4533,6 +4807,7 @@ mod tests {
             "broad".to_owned(),
             super::PermissionGroupConfig {
                 priority: 100,
+                inherits: Vec::new(),
                 allow: vec!["steel.*".to_owned()],
                 deny: Vec::new(),
                 metadata: Vec::new(),
@@ -4542,6 +4817,7 @@ mod tests {
             "specific".to_owned(),
             super::PermissionGroupConfig {
                 priority: 0,
+                inherits: Vec::new(),
                 allow: Vec::new(),
                 deny: vec!["steel.fly".to_owned()],
                 metadata: Vec::new(),
@@ -4591,6 +4867,7 @@ mod tests {
             "low".to_owned(),
             super::PermissionGroupConfig {
                 priority: 0,
+                inherits: Vec::new(),
                 allow: Vec::new(),
                 deny: Vec::new(),
                 metadata: vec![super::PermissionMetadataRuleConfig {
@@ -4603,6 +4880,7 @@ mod tests {
             "high".to_owned(),
             super::PermissionGroupConfig {
                 priority: 50,
+                inherits: Vec::new(),
                 allow: Vec::new(),
                 deny: Vec::new(),
                 metadata: vec![super::PermissionMetadataRuleConfig {

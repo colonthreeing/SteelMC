@@ -15,6 +15,7 @@ use crate::command::{
 };
 use crate::permission::{
     PermissionCatalogSource, PermissionEntry, PermissionKey, PermissionSegment, PermissionSet,
+    PermissionState,
 };
 use glam::DVec3;
 use steel_protocol::packets::game::CommandNode as ProtocolCommandNode;
@@ -34,6 +35,10 @@ impl RequirementContext for TestContext {
 
     fn has_permission(&self, permission: &PermissionExpr) -> bool {
         self.permissions.allows(permission)
+    }
+
+    fn permission_state(&self, permission: &PermissionExpr) -> Option<PermissionState> {
+        self.permissions.resolve(permission)
     }
 }
 
@@ -888,13 +893,10 @@ fn command_registration_rejects_ambiguous_graph_atomically() {
     let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
     let mut dispatcher = CommandDispatcher::new_empty();
     dispatcher
-        .register_command(
-            CommandRegistration::new(
-                literal("other").executes(|_, _| Ok(CommandResult::success())),
-                minecraft.clone(),
-            )
-            .public(),
-        )
+        .register_command(CommandRegistration::new(
+            literal("other").executes(|_, _| Ok(CommandResult::success())),
+            minecraft.clone(),
+        ))
         .expect("existing command registers");
 
     let registration = CommandRegistration::new(
@@ -904,8 +906,7 @@ fn command_registration_rejects_ambiguous_graph_atomically() {
             literal("run").executes(|_, _| Ok(CommandResult::success())),
         ]),
         minecraft,
-    )
-    .public();
+    );
 
     let Err(error) = dispatcher.register_command(registration) else {
         panic!("ambiguous command should fail registration");
@@ -915,7 +916,7 @@ fn command_registration_rejects_ambiguous_graph_atomically() {
     };
     assert_eq!(validation.ambiguities().len(), 1);
 
-    let player = player_context();
+    let player = player_context_with("minecraft.command.other");
     assert!(!dispatcher.graph.has_root("root", &player));
     assert!(dispatcher.graph.has_root("other", &player));
 }
@@ -940,95 +941,83 @@ fn aliases_validate_as_command_literals_not_permission_segments() {
 }
 
 #[test]
-fn public_commands_do_not_silently_discard_derived_permission_markers() {
+fn default_commands_allow_unset_permissions_when_relaxed() {
     let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
     let mut dispatcher = CommandDispatcher::new_empty();
     let registration = CommandRegistration::new(
-        literal("root").then(literal("child").requires_subcommand_permission()),
+        literal("list").executes(|_, _| Ok(CommandResult::success())),
         minecraft,
     )
-    .public();
+    .default_access();
 
-    let Err(error) = dispatcher.register_command(registration) else {
-        panic!("public derived permission marker should fail registration");
-    };
+    dispatcher
+        .register_command_with_defaults(registration, false)
+        .expect("default command registers");
 
-    assert!(matches!(
-        error,
-        CommandRegistrationError::InvalidGraph(
-            CommandGraphError::UnresolvedDerivedPermission { .. }
-        )
-    ));
+    let player = player_context();
+    assert!(dispatcher.graph.has_root("list", &player));
+    assert!(dispatcher.graph.parse("list", &player).is_ok());
 }
 
 #[test]
-fn public_commands_do_not_require_permission_segment_literals() {
+fn default_commands_respect_explicit_deny_when_relaxed() {
+    let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
+    let mut dispatcher = CommandDispatcher::new_empty();
+    let registration = CommandRegistration::new(
+        literal("list").executes(|_, _| Ok(CommandResult::success())),
+        minecraft,
+    )
+    .default_access();
+
+    dispatcher
+        .register_command_with_defaults(registration, false)
+        .expect("default command registers");
+
+    let player = player_context_with_entries([deny("minecraft.command.list")]);
+    assert!(!dispatcher.graph.has_root("list", &player));
+    assert!(dispatcher.graph.parse("list", &player).is_err());
+}
+
+#[test]
+fn default_commands_require_permissions_when_strict() {
+    let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
+    let mut dispatcher = CommandDispatcher::new_empty();
+    let registration = CommandRegistration::new(
+        literal("list").executes(|_, _| Ok(CommandResult::success())),
+        minecraft,
+    )
+    .default_access();
+
+    dispatcher
+        .register_command_with_defaults(registration, true)
+        .expect("default command registers");
+
+    assert!(!dispatcher.graph.has_root("list", &player_context()));
+    assert!(
+        dispatcher
+            .graph
+            .parse("list", &player_context_with("minecraft.command.list"))
+            .is_ok()
+    );
+}
+
+#[test]
+fn commands_require_permission_segment_literals() {
     let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
     let mut dispatcher = CommandDispatcher::new_empty();
     let registration = CommandRegistration::new(
         literal("Visible").executes(|_, _| Ok(CommandResult::success())),
         minecraft,
-    )
-    .public();
-
-    dispatcher
-        .register_command(registration)
-        .expect("public command registers without permission key derivation");
-
-    let player = player_context();
-    assert!(dispatcher.graph.has_root("Visible", &player));
-    assert!(dispatcher.graph.parse("Visible", &player).is_ok());
-}
-
-#[test]
-fn public_commands_register_explicit_permission_catalog_entries() {
-    let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
-    let admin_permission =
-        PermissionKey::parse("steel.command.public.admin").expect("permission parses");
-    let mut dispatcher = CommandDispatcher::new_empty();
-    let registration = CommandRegistration::new(
-        literal("public")
-            .then(literal("open").executes(|_, _| Ok(CommandResult::success())))
-            .then(
-                literal("admin")
-                    .requires_permission(admin_permission.clone())
-                    .executes(|_, _| Ok(CommandResult::success())),
-            ),
-        minecraft,
-    )
-    .public();
-
-    dispatcher
-        .register_command(registration)
-        .expect("public command registers");
-
-    assert_eq!(
-        dispatcher
-            .permission_catalog
-            .suggestions("steel.command.public"),
-        vec!["steel.command.public.admin".to_owned()]
     );
-    assert!(
-        dispatcher
-            .graph
-            .parse("public open", &player_context())
-            .is_ok()
-    );
-    assert!(
-        dispatcher
-            .graph
-            .parse("public admin", &player_context())
-            .is_err()
-    );
-    assert!(
-        dispatcher
-            .graph
-            .parse(
-                "public admin",
-                &player_context_with("steel.command.public.admin"),
-            )
-            .is_ok()
-    );
+
+    let Err(error) = dispatcher.register_command(registration) else {
+        panic!("invalid permission segment should reject registration");
+    };
+
+    assert!(matches!(
+        error,
+        CommandRegistrationError::InvalidPermissionKey(_)
+    ));
 }
 
 #[test]
@@ -1049,20 +1038,16 @@ fn failed_alias_registration_does_not_leave_primary_root() {
     let minecraft = PermissionSegment::parse("minecraft").expect("namespace parses");
     let mut dispatcher = CommandDispatcher::new_empty();
     dispatcher
-        .register_command(
-            CommandRegistration::new(
-                literal("other").executes(|_, _| Ok(CommandResult::success())),
-                minecraft.clone(),
-            )
-            .public(),
-        )
+        .register_command(CommandRegistration::new(
+            literal("other").executes(|_, _| Ok(CommandResult::success())),
+            minecraft.clone(),
+        ))
         .expect("existing command registers");
 
     let registration = CommandRegistration::new(
         literal("root").executes(|_, _| Ok(CommandResult::success())),
         minecraft,
     )
-    .public()
     .alias("other")
     .expect("alias literal parses");
     let Err(error) = dispatcher.register_command(registration) else {
@@ -1073,7 +1058,7 @@ fn failed_alias_registration_does_not_leave_primary_root() {
         error,
         CommandRegistrationError::InvalidGraph(CommandGraphError::LiteralCollision { .. })
     ));
-    let player = player_context();
+    let player = player_context_with("minecraft.command.other");
     assert!(!dispatcher.graph.has_root("root", &player));
     assert!(dispatcher.graph.has_root("other", &player));
 }

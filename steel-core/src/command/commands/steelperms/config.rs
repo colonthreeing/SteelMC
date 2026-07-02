@@ -16,6 +16,8 @@ pub(super) enum PermissionGroupEditError {
     Missing(String),
     Required(String),
     Default(String),
+    InheritedBy { group: String, child: String },
+    SelfInheritance(String),
 }
 
 impl fmt::Display for PermissionGroupEditError {
@@ -26,6 +28,12 @@ impl fmt::Display for PermissionGroupEditError {
             Self::Required(group) => write!(f, "permission group '{group}' is required"),
             Self::Default(group) => {
                 write!(f, "permission group '{group}' is still a default group")
+            }
+            Self::InheritedBy { group, child } => {
+                write!(f, "permission group '{group}' is inherited by '{child}'")
+            }
+            Self::SelfInheritance(group) => {
+                write!(f, "permission group '{group}' cannot inherit itself")
             }
         }
     }
@@ -59,6 +67,16 @@ pub(super) fn delete_group_config(
     }
     if config.default_groups.iter().any(|default| default == group) {
         return Err(PermissionGroupEditError::Default(group.to_owned()));
+    }
+    if let Some((child, _)) = config
+        .groups
+        .iter()
+        .find(|(_, child)| child.inherits.iter().any(|parent| parent == group))
+    {
+        return Err(PermissionGroupEditError::InheritedBy {
+            group: group.to_owned(),
+            child: child.clone(),
+        });
     }
 
     config.groups.remove(group);
@@ -179,6 +197,44 @@ pub(super) fn set_group_config_priority(
 
     group_config.priority = priority;
     Ok(true)
+}
+
+pub(super) fn add_group_config_inheritance(
+    config: &mut PermissionGroupsConfig,
+    group: &str,
+    parent: &str,
+) -> Result<bool, PermissionGroupEditError> {
+    if group == parent {
+        return Err(PermissionGroupEditError::SelfInheritance(group.to_owned()));
+    }
+    if !config.groups.contains_key(parent) {
+        return Err(PermissionGroupEditError::Missing(parent.to_owned()));
+    }
+    let Some(group_config) = config.groups.get_mut(group) else {
+        return Err(PermissionGroupEditError::Missing(group.to_owned()));
+    };
+    if group_config.inherits.iter().any(|inherited| inherited == parent) {
+        return Ok(false);
+    }
+
+    group_config.inherits.push(parent.to_owned());
+    Ok(true)
+}
+
+pub(super) fn remove_group_config_inheritance(
+    config: &mut PermissionGroupsConfig,
+    group: &str,
+    parent: &str,
+) -> Result<bool, PermissionGroupEditError> {
+    if !config.groups.contains_key(parent) {
+        return Err(PermissionGroupEditError::Missing(parent.to_owned()));
+    }
+    let Some(group_config) = config.groups.get_mut(group) else {
+        return Err(PermissionGroupEditError::Missing(group.to_owned()));
+    };
+    let old_len = group_config.inherits.len();
+    group_config.inherits.retain(|inherited| inherited != parent);
+    Ok(group_config.inherits.len() != old_len)
 }
 
 fn push_group_config_permission(

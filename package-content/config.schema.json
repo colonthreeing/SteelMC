@@ -115,6 +115,18 @@
           "maximum": 2147483647,
           "default": 10
         },
+        "commands": {
+          "type": "object",
+          "description": "Command permission settings",
+          "properties": {
+            "require_default_permissions": {
+              "type": "boolean",
+              "description": "Whether default-access commands require explicit permissions",
+              "default": false
+            }
+          },
+          "additionalProperties": false
+        },
         "compression": {
           "type": "object",
           "description": "Compression settings",

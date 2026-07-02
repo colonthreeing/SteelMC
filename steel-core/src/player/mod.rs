@@ -103,7 +103,7 @@ use crate::inventory::{SyncPlayerInv, equipment::EquipmentSlot};
 use crate::level_data::RespawnData;
 use crate::permission::{
     PermissionContext, PermissionExpr, PermissionMetadataSet, PermissionMetadataValue,
-    PermissionSet,
+    PermissionSet, PermissionState,
 };
 use crate::physics::MoveResult;
 use crate::player::experience::Experience;
@@ -1144,6 +1144,27 @@ impl Player {
             .lock()
             .effective
             .allows_in(permission, context)
+    }
+
+    /// Returns the resolved state for `permission` in the player's current world context.
+    #[must_use]
+    pub fn permission_state(&self, permission: &PermissionExpr) -> Option<PermissionState> {
+        let world = self.get_world();
+        let context = PermissionContext::for_world(world.domain().to_owned(), world.key.clone());
+        self.permission_state_in(permission, &context)
+    }
+
+    /// Returns the resolved state for `permission` in `context`.
+    #[must_use]
+    pub fn permission_state_in(
+        &self,
+        permission: &PermissionExpr,
+        context: &PermissionContext,
+    ) -> Option<PermissionState> {
+        self.permissions
+            .lock()
+            .effective
+            .resolve_in(permission, context)
     }
 
     /// Returns a configured permission metadata in the player's current world context.

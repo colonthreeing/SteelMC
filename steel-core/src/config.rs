@@ -101,6 +101,8 @@ pub struct RuntimeConfig {
     pub chat_spam_threshold_seconds: i32,
     /// Vanilla command spam threshold window in seconds
     pub command_spam_threshold_seconds: i32,
+    /// Whether commands marked as default-access still require explicit permissions.
+    pub require_default_command_permissions: bool,
     /// The compression settings for the server.
     pub compression: Option<CompressionInfo>,
     /// All settings and configurations for server links.

@@ -118,6 +118,7 @@ fn push_group_config(
     group: &PermissionGroupConfig,
 ) -> Result<(), toml::ser::Error> {
     push_toml_field(output, "priority", &group.priority)?;
+    push_string_array_field(output, "inherits", &group.inherits)?;
     push_string_array_field(output, "allow", &group.allow)?;
     push_string_array_field(output, "deny", &group.deny)?;
     push_metadata_rules(output, &group.metadata)?;
@@ -286,6 +287,9 @@ pub struct ServerConfig {
     /// Vanilla command spam threshold window in seconds
     #[serde(default = "default_spam_threshold_seconds")]
     pub command_spam_threshold_seconds: i32,
+    /// Command permission behavior.
+    #[serde(default)]
+    pub commands: CommandConfig,
     /// The compression settings for the server.
     pub compression: Option<CompressionInfo>,
     /// All settings and configurations for server links.
@@ -313,11 +317,20 @@ impl ServerConfig {
             enforce_secure_chat: self.enforce_secure_chat,
             chat_spam_threshold_seconds: self.chat_spam_threshold_seconds,
             command_spam_threshold_seconds: self.command_spam_threshold_seconds,
+            require_default_command_permissions: self.commands.require_default_permissions,
             compression: self.compression,
             server_links: self.server_links,
             chunk_generation_threads: self.threads.chunk_generation,
         }
     }
+}
+
+/// Command permission configuration.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct CommandConfig {
+    /// Whether default-access commands require explicit permissions.
+    pub require_default_permissions: bool,
 }
 
 /// Optional worker counts for server thread pools.
@@ -609,6 +622,7 @@ mod tests {
             "builder".to_owned(),
             steel_core::permission::PermissionGroupConfig {
                 priority: 0,
+                inherits: Vec::new(),
                 allow: vec!["steel.build".to_owned()],
                 deny: Vec::new(),
                 metadata: Vec::new(),
@@ -652,6 +666,7 @@ mod tests {
         let config: SteelConfig = toml::from_str(input).expect("config should parse");
 
         assert!(!config.server.allow_flight);
+        assert!(!config.server.commands.require_default_permissions);
     }
 
     #[test]
@@ -703,6 +718,23 @@ mod tests {
         assert_eq!(
             config.server.into_runtime_config().chunk_generation_threads,
             Some(5)
+        );
+    }
+
+    #[test]
+    fn configured_default_command_permission_setting_flows_to_runtime_config() {
+        let config_toml = DEFAULT_CONFIG.replace(
+            "require_default_permissions = false",
+            "require_default_permissions = true",
+        );
+        let config: SteelConfig = toml::from_str(&config_toml).expect("config parses");
+
+        assert!(config.server.commands.require_default_permissions);
+        assert!(
+            config
+                .server
+                .into_runtime_config()
+                .require_default_command_permissions
         );
     }
 

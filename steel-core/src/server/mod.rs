@@ -652,6 +652,8 @@ impl Server {
             worlds.insert(world_entry.key.clone(), world);
         }
 
+        let require_default_command_permissions = config.require_default_command_permissions;
+
         Ok(Server {
             config,
             permission_groups,
@@ -666,8 +668,10 @@ impl Server {
             stopwatches: SyncRwLock::new(stopwatches),
             boss_bars: SyncRwLock::new(boss_bars),
             command_dispatcher: SyncRwLock::new(
-                CommandDispatcher::new()
-                    .map_err(|e| format!("failed to register commands: {e}"))?,
+                CommandDispatcher::new_with_default_command_permissions(
+                    require_default_command_permissions,
+                )
+                .map_err(|e| format!("failed to register commands: {e}"))?,
             ),
             command_queue: CommandQueue::new(),
             jobs: ServerJobQueue::new(),

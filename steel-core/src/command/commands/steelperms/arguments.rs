@@ -24,6 +24,12 @@ pub(super) fn group(arguments: &ParsedArguments) -> Result<String, CommandError>
         .map_err(super::super::invalid_parsed_argument)
 }
 
+pub(super) fn parent_group(arguments: &ParsedArguments) -> Result<String, CommandError> {
+    arguments
+        .get::<String>("parent")
+        .map_err(super::super::invalid_parsed_argument)
+}
+
 pub(super) fn group_priority(arguments: &ParsedArguments) -> Result<i32, CommandError> {
     arguments
         .get::<i32>("priority")

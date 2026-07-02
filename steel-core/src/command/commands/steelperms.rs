@@ -42,8 +42,8 @@ use self::access::{
     metadata_management_key,
 };
 use self::arguments::{
-    group, group_priority, metadata_key, metadata_value, permission, permission_context,
-    permission_rule_context, targets,
+    group, group_priority, metadata_key, metadata_value, parent_group, permission,
+    permission_context, permission_rule_context, targets,
 };
 use self::messages::{
     command_result, group_list_text, group_metadata_list_text, permission_key_list_text,
@@ -64,7 +64,8 @@ use self::messages::{
     permission_rule_context_suffix,
 };
 use self::config::{
-    add_default_group_config, create_group_config, delete_group_config, remove_default_group_config,
+    add_default_group_config, add_group_config_inheritance, create_group_config,
+    delete_group_config, remove_default_group_config, remove_group_config_inheritance,
     set_group_config_metadata, set_group_config_permission, set_group_config_priority,
     unset_group_config_metadata, unset_group_config_permission,
 };
@@ -226,8 +227,16 @@ fn group_info(
     };
 
     context.sender.send_message(&TextComponent::plain(format!(
-        "Group '{group}': priority {}, allow [{}], deny [{}], metadata [{}]",
+        "Group '{group}': priority {}, inherits [{}], allow [{}], deny [{}], metadata [{}]",
         group_config.priority,
+        group_list_text(
+            &group_config
+                .inherits
+                .iter()
+                .filter(|parent| can_manage_group(context, parent))
+                .cloned()
+                .collect::<Vec<_>>()
+        ),
         permission_key_list_text(&manageable_group_permission_keys(
             &group_config.allow,
             context
@@ -240,6 +249,32 @@ fn group_info(
     )));
 
     Ok(CommandResult::success())
+}
+
+fn group_inheritance_list(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let group = group(arguments)?;
+    require_group_management(context, &group)?;
+    let config = context.server.permission_groups.config_snapshot();
+    let Some(group_config) = config.groups.get(&group) else {
+        return Err(CommandError::failure(format!(
+            "Unknown permission group '{group}'"
+        )));
+    };
+    let inherited = group_config
+        .inherits
+        .iter()
+        .filter(|parent| can_manage_group(context, parent))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    context.sender.send_message(&TextComponent::plain(format!(
+        "Group '{group}' inherits [{}]",
+        group_list_text(&inherited)
+    )));
+    Ok(command_result(inherited.len()))
 }
 
 fn create_group(
@@ -260,6 +295,32 @@ fn delete_group(
     let group = group(arguments)?;
     require_group_management(context, &group)?;
     spawn_delete_group(Arc::clone(&context.server), context.sender.clone(), group);
+
+    Ok(CommandResult::success())
+}
+
+fn inherit_group(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let group = group(arguments)?;
+    let parent = parent_group(arguments)?;
+    require_group_management(context, &group)?;
+    require_group_management(context, &parent)?;
+    spawn_add_group_inheritance(Arc::clone(&context.server), context.sender.clone(), group, parent);
+
+    Ok(CommandResult::success())
+}
+
+fn uninherit_group(
+    context: &mut CommandContext,
+    arguments: &ParsedArguments,
+) -> Result<CommandResult, CommandError> {
+    let group = group(arguments)?;
+    let parent = parent_group(arguments)?;
+    require_group_management(context, &group)?;
+    require_group_management(context, &parent)?;
+    spawn_remove_group_inheritance(Arc::clone(&context.server), context.sender.clone(), group, parent);
 
     Ok(CommandResult::success())
 }
@@ -854,6 +915,58 @@ fn spawn_remove_default_group(server: Arc<Server>, sender: CommandSender, group:
         {
             Ok(true) => send_remove_default_group_summary(&sender, &group),
             Ok(false) => send_default_group_not_set_summary(&sender, &group),
+            Err(error) => send_group_update_error(&sender, error),
+        }
+    });
+}
+
+fn spawn_add_group_inheritance(
+    server: Arc<Server>,
+    sender: CommandSender,
+    group: String,
+    parent: String,
+) {
+    tokio::spawn(async move {
+        let group_for_update = group.clone();
+        let parent_for_update = parent.clone();
+        match server
+            .try_update_permission_groups(move |config| {
+                add_group_config_inheritance(config, &group_for_update, &parent_for_update)
+            })
+            .await
+        {
+            Ok(true) => sender.send_message(&TextComponent::plain(format!(
+                "Group '{group}' now inherits '{parent}'"
+            ))),
+            Ok(false) => sender.send_message(&TextComponent::plain(format!(
+                "Group '{group}' already inherits '{parent}'"
+            ))),
+            Err(error) => send_group_update_error(&sender, error),
+        }
+    });
+}
+
+fn spawn_remove_group_inheritance(
+    server: Arc<Server>,
+    sender: CommandSender,
+    group: String,
+    parent: String,
+) {
+    tokio::spawn(async move {
+        let group_for_update = group.clone();
+        let parent_for_update = parent.clone();
+        match server
+            .try_update_permission_groups(move |config| {
+                remove_group_config_inheritance(config, &group_for_update, &parent_for_update)
+            })
+            .await
+        {
+            Ok(true) => sender.send_message(&TextComponent::plain(format!(
+                "Group '{group}' no longer inherits '{parent}'"
+            ))),
+            Ok(false) => sender.send_message(&TextComponent::plain(format!(
+                "Group '{group}' does not inherit '{parent}'"
+            ))),
             Err(error) => send_group_update_error(&sender, error),
         }
     });

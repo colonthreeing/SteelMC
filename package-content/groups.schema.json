@@ -81,6 +81,15 @@
           "description": "Conflict priority used when equally specific rules from multiple groups match. Higher priority wins.",
           "default": 0
         },
+        "inherits": {
+          "type": "array",
+          "description": "Parent permission groups inherited by this group",
+          "items": {
+            "$ref": "#/definitions/group_name"
+          },
+          "uniqueItems": true,
+          "default": []
+        },
         "allow": {
           "type": "array",
           "description": "Permission rule expressions explicitly allowed by this group",

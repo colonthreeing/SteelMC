@@ -16,10 +16,10 @@ use super::parsers::{
 };
 use super::{
     add_default_group, add_group, allow_group_permission, allow_permission, check_metadata,
-    check_permission, create_group, delete_group, deny_group_permission, deny_permission, group_info,
-    group_list, remove_default_group, remove_group, set_group_metadata, set_group_priority,
-    set_metadata, unset_group_metadata, unset_group_permission, unset_metadata, unset_permission,
-    user_info,
+    check_permission, create_group, delete_group, deny_group_permission, deny_permission,
+    group_inheritance_list, group_info, group_list, inherit_group, remove_default_group,
+    remove_group, set_group_metadata, set_group_priority, set_metadata, uninherit_group,
+    unset_group_metadata, unset_group_permission, unset_metadata, unset_permission, user_info,
 };
 
 pub(super) fn command() -> CommandNodeBuilder {
@@ -84,6 +84,7 @@ fn group_command() -> CommandNodeBuilder {
             literal("priority")
                 .requires_additional_subcommand_permission()
                 .then(argument("priority", IntegerParser::new()).executes(set_group_priority)),
+            group_inheritance_arguments(),
             group_metadata_arguments(),
         ]),
     )
@@ -153,6 +154,20 @@ fn group_metadata_arguments() -> CommandNodeBuilder {
         literal("unset")
             .requires_additional_subcommand_permission()
             .then(group_metadata_argument(unset_group_metadata)),
+    ])
+}
+
+fn group_inheritance_arguments() -> CommandNodeBuilder {
+    literal("inherit").then_all([
+        literal("list")
+            .requires_subcommand_permission()
+            .executes(group_inheritance_list),
+        literal("add")
+            .requires_additional_subcommand_permission()
+            .then(argument("parent", PermissionManagedGroupParser).executes(inherit_group)),
+        literal("remove")
+            .requires_additional_subcommand_permission()
+            .then(argument("parent", PermissionManagedGroupParser).executes(uninherit_group)),
     ])
 }
 

@@ -28,8 +28,8 @@ impl CommandRegistration {
         Ok(Self::new(root, PermissionSegment::parse("steel")?))
     }
 
-    pub(crate) fn public(mut self) -> Self {
-        self.permission = CommandPermissionMode::Public;
+    pub(crate) fn default_access(mut self) -> Self {
+        self.permission = CommandPermissionMode::DefaultAccess;
         self
     }
 
@@ -54,19 +54,53 @@ impl CommandRegistration {
         Ok(self)
     }
 
-    pub(super) fn resolved_permission_base(
+    pub(super) fn resolved_permission(
         &self,
-    ) -> Result<Option<PermissionKey>, CommandRegistrationError> {
+    ) -> Result<ResolvedCommandPermission, CommandRegistrationError> {
         match &self.permission {
-            CommandPermissionMode::Public => Ok(None),
             CommandPermissionMode::Auto => {
                 let command_name = self
                     .root
                     .literal_name()
                     .ok_or(CommandRegistrationError::RootMustBeLiteral)?;
-                Ok(Some(command_permission_key(&self.namespace, command_name)?))
+                Ok(ResolvedCommandPermission::required(command_permission_key(
+                    &self.namespace,
+                    command_name,
+                )?))
             }
-            CommandPermissionMode::Override(permission) => Ok(Some(permission.clone())),
+            CommandPermissionMode::DefaultAccess => {
+                let command_name = self
+                    .root
+                    .literal_name()
+                    .ok_or(CommandRegistrationError::RootMustBeLiteral)?;
+                Ok(ResolvedCommandPermission::default_access(
+                    command_permission_key(&self.namespace, command_name)?,
+                ))
+            }
+            CommandPermissionMode::Override(permission) => {
+                Ok(ResolvedCommandPermission::required(permission.clone()))
+            }
+        }
+    }
+}
+
+pub(super) struct ResolvedCommandPermission {
+    pub(super) key: PermissionKey,
+    pub(super) default_access: bool,
+}
+
+impl ResolvedCommandPermission {
+    fn required(key: PermissionKey) -> Self {
+        Self {
+            key,
+            default_access: false,
+        }
+    }
+
+    fn default_access(key: PermissionKey) -> Self {
+        Self {
+            key,
+            default_access: true,
         }
     }
 }
@@ -96,8 +130,8 @@ impl CommandRegistrationSpec {
         }
     }
 
-    pub(crate) const fn public(mut self) -> Self {
-        self.permission = CommandRegistrationSpecPermission::Public;
+    pub(crate) const fn default_access(mut self) -> Self {
+        self.permission = CommandRegistrationSpecPermission::DefaultAccess;
         self
     }
 
@@ -121,7 +155,7 @@ impl CommandRegistrationSpec {
         };
         let mut registration = match self.permission {
             CommandRegistrationSpecPermission::Auto => registration,
-            CommandRegistrationSpecPermission::Public => registration.public(),
+            CommandRegistrationSpecPermission::DefaultAccess => registration.default_access(),
             CommandRegistrationSpecPermission::PermissionBase(command) => {
                 registration.permission_base(command)?
             }
@@ -142,13 +176,13 @@ enum CommandRegistrationNamespace {
 #[derive(Clone, Copy)]
 enum CommandRegistrationSpecPermission {
     Auto,
-    Public,
+    DefaultAccess,
     PermissionBase(&'static str),
 }
 
 enum CommandPermissionMode {
     Auto,
-    Public,
+    DefaultAccess,
     Override(PermissionKey),
 }
 
