@@ -5,9 +5,9 @@ use std::fmt;
 use steel_utils::Identifier;
 
 use crate::permission::{
-    OP_GROUP, PermissionGroupConfig, PermissionGroupsConfig, PermissionKey, PermissionRuleConfig,
-    PermissionRuleContext, PermissionRuleContextConfig, PermissionRuleCustomContextConfig,
-    PermissionRuleStateConfig, PermissionState, PermissionValue, PermissionValueRuleConfig,
+    OP_GROUP, PermissionGroupConfig, PermissionGroupsConfig, PermissionKey,
+    PermissionMetadataExpression, PermissionMetadataRuleConfig, PermissionRuleContext,
+    PermissionRuleExpression, PermissionState, PermissionValue,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,7 +16,6 @@ pub(super) enum PermissionGroupEditError {
     Missing(String),
     Required(String),
     Default(String),
-    UnsupportedContext(PermissionRuleContext),
 }
 
 impl fmt::Display for PermissionGroupEditError {
@@ -27,12 +26,6 @@ impl fmt::Display for PermissionGroupEditError {
             Self::Required(group) => write!(f, "permission group '{group}' is required"),
             Self::Default(group) => {
                 write!(f, "permission group '{group}' is still a default group")
-            }
-            Self::UnsupportedContext(context) => {
-                write!(
-                    f,
-                    "permission group config cannot store context '{context}'"
-                )
             }
         }
     }
@@ -194,19 +187,11 @@ fn push_group_config_permission(
     rule_context: &PermissionRuleContext,
     state: PermissionState,
 ) -> Result<(), PermissionGroupEditError> {
-    if rule_context.is_global() {
-        match state {
-            PermissionState::Allow => group_config.allow.push(permission.as_str().to_owned()),
-            PermissionState::Deny => group_config.deny.push(permission.as_str().to_owned()),
-        }
-        return Ok(());
+    let expression = PermissionRuleExpression::new(permission.clone(), rule_context.clone());
+    match state {
+        PermissionState::Allow => group_config.allow.push(expression.to_string()),
+        PermissionState::Deny => group_config.deny.push(expression.to_string()),
     }
-
-    group_config.rules.push(PermissionRuleConfig {
-        key: permission.as_str().to_owned(),
-        state: permission_rule_state_config(state),
-        context: Some(permission_rule_context_config(rule_context)?),
-    });
     Ok(())
 }
 
@@ -216,14 +201,9 @@ fn push_group_config_metadata(
     value: &PermissionValue,
     rule_context: &PermissionRuleContext,
 ) -> Result<(), PermissionGroupEditError> {
-    group_config.values.push(PermissionValueRuleConfig {
-        key: key.to_string(),
+    group_config.metadata.push(PermissionMetadataRuleConfig {
+        key: PermissionMetadataExpression::new(key.clone(), rule_context.clone()).to_string(),
         value: value.clone(),
-        context: if rule_context.is_global() {
-            None
-        } else {
-            Some(permission_rule_context_config(rule_context)?)
-        },
     });
     Ok(())
 }
@@ -234,31 +214,19 @@ pub(super) fn group_config_permission_states(
     rule_context: &PermissionRuleContext,
 ) -> Vec<PermissionState> {
     let mut states = Vec::new();
-    if rule_context.is_global() {
-        states.extend(
-            group_config
-                .allow
-                .iter()
-                .filter(|key| key.as_str() == permission.as_str())
-                .map(|_| PermissionState::Allow),
-        );
-        states.extend(
-            group_config
-                .deny
-                .iter()
-                .filter(|key| key.as_str() == permission.as_str())
-                .map(|_| PermissionState::Deny),
-        );
-    }
     states.extend(
         group_config
-            .rules
+            .allow
             .iter()
-            .filter(|rule| {
-                rule.key == permission.as_str()
-                    && permission_rule_config_matches(rule.context.as_ref(), rule_context)
-            })
-            .map(|rule| permission_state_from_rule_config(rule.state)),
+            .filter(|expression| permission_rule_expression_matches(expression, permission, rule_context))
+            .map(|_| PermissionState::Allow),
+    );
+    states.extend(
+        group_config
+            .deny
+            .iter()
+            .filter(|expression| permission_rule_expression_matches(expression, permission, rule_context))
+            .map(|_| PermissionState::Deny),
     );
 
     states
@@ -270,11 +238,10 @@ pub(super) fn group_config_metadata_value<'a>(
     rule_context: &PermissionRuleContext,
 ) -> Option<&'a PermissionValue> {
     group_config
-        .values
+        .metadata
         .iter()
         .find(|value| {
-            value.key == key.to_string()
-                && permission_rule_config_matches(value.context.as_ref(), rule_context)
+            permission_metadata_expression_matches(&value.key, key, rule_context)
         })
         .map(|value| &value.value)
 }
@@ -284,27 +251,18 @@ fn remove_group_config_permission(
     permission: &PermissionKey,
     rule_context: &PermissionRuleContext,
 ) -> bool {
-    let mut changed = false;
-    if rule_context.is_global() {
-        let old_allow_len = group_config.allow.len();
-        group_config
-            .allow
-            .retain(|key| key.as_str() != permission.as_str());
-        changed |= group_config.allow.len() != old_allow_len;
-
-        let old_deny_len = group_config.deny.len();
-        group_config
-            .deny
-            .retain(|key| key.as_str() != permission.as_str());
-        changed |= group_config.deny.len() != old_deny_len;
-    }
-
-    let old_rules_len = group_config.rules.len();
-    group_config.rules.retain(|rule| {
-        rule.key != permission.as_str()
-            || !permission_rule_config_matches(rule.context.as_ref(), rule_context)
+    let old_allow_len = group_config.allow.len();
+    group_config.allow.retain(|expression| {
+        !permission_rule_expression_matches(expression, permission, rule_context)
     });
-    changed | (group_config.rules.len() != old_rules_len)
+    let allow_changed = group_config.allow.len() != old_allow_len;
+
+    let old_deny_len = group_config.deny.len();
+    group_config.deny.retain(|expression| {
+        !permission_rule_expression_matches(expression, permission, rule_context)
+    });
+
+    allow_changed || group_config.deny.len() != old_deny_len
 }
 
 fn remove_group_config_metadata(
@@ -312,73 +270,29 @@ fn remove_group_config_metadata(
     key: &Identifier,
     rule_context: &PermissionRuleContext,
 ) -> bool {
-    let old_len = group_config.values.len();
-    group_config.values.retain(|value| {
-        value.key != key.to_string()
-            || !permission_rule_config_matches(value.context.as_ref(), rule_context)
+    let old_len = group_config.metadata.len();
+    group_config.metadata.retain(|value| {
+        !permission_metadata_expression_matches(&value.key, key, rule_context)
     });
-    group_config.values.len() != old_len
+    group_config.metadata.len() != old_len
 }
 
-fn permission_rule_context_config(
-    rule_context: &PermissionRuleContext,
-) -> Result<PermissionRuleContextConfig, PermissionGroupEditError> {
-    let mut config = PermissionRuleContextConfig::default();
-    append_permission_rule_context_config(&mut config, rule_context)?;
-    if config.domain.is_none() && config.world.is_none() && config.custom.is_empty() {
-        return Err(PermissionGroupEditError::UnsupportedContext(
-            rule_context.clone(),
-        ));
-    }
-    Ok(config)
-}
-
-fn append_permission_rule_context_config(
-    config: &mut PermissionRuleContextConfig,
-    rule_context: &PermissionRuleContext,
-) -> Result<(), PermissionGroupEditError> {
-    match rule_context {
-        PermissionRuleContext::Global => {}
-        PermissionRuleContext::Domain(domain) => config.domain = Some(domain.clone()),
-        PermissionRuleContext::World(world) => config.world = Some(world.to_string()),
-        PermissionRuleContext::Custom { key, value } => {
-            config.custom.push(PermissionRuleCustomContextConfig {
-                key: key.as_str().to_owned(),
-                value: value.clone(),
-            });
-        }
-        PermissionRuleContext::All(contexts) => {
-            for context in contexts.iter() {
-                append_permission_rule_context_config(config, context)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn permission_rule_config_matches(
-    config: Option<&PermissionRuleContextConfig>,
+fn permission_rule_expression_matches(
+    expression: &str,
+    permission: &PermissionKey,
     rule_context: &PermissionRuleContext,
 ) -> bool {
-    match config {
-        None => rule_context.is_global(),
-        Some(config) => config
-            .clone()
-            .into_rule_context()
-            .is_ok_and(|context| &context == rule_context),
-    }
+    PermissionRuleExpression::parse(expression.to_owned()).is_ok_and(|expression| {
+        expression.key() == permission && expression.context() == rule_context
+    })
 }
 
-fn permission_rule_state_config(state: PermissionState) -> PermissionRuleStateConfig {
-    match state {
-        PermissionState::Allow => PermissionRuleStateConfig::Allow,
-        PermissionState::Deny => PermissionRuleStateConfig::Deny,
-    }
-}
-
-pub(super) fn permission_state_from_rule_config(state: PermissionRuleStateConfig) -> PermissionState {
-    match state {
-        PermissionRuleStateConfig::Allow => PermissionState::Allow,
-        PermissionRuleStateConfig::Deny => PermissionState::Deny,
-    }
+fn permission_metadata_expression_matches(
+    expression: &str,
+    key: &Identifier,
+    rule_context: &PermissionRuleContext,
+) -> bool {
+    PermissionMetadataExpression::parse(expression.to_owned()).is_ok_and(|expression| {
+        expression.key() == key && expression.context() == rule_context
+    })
 }

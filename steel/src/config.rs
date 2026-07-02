@@ -4,7 +4,7 @@
 //! The config is loaded once at startup, split into creation-time values
 //! (consumed by the server constructor) and a `RuntimeConfig` (stored on `Server`).
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs, io,
@@ -20,7 +20,8 @@ use steel_core::config::{
     AuthServiceConfig, CompressionInfo, RuntimeConfig, ServerLinks, WorldsConfig,
 };
 use steel_core::permission::{
-    PermissionGroupStore, PermissionGroupStoreError, PermissionGroups, PermissionGroupsConfig,
+    PermissionGroupConfig, PermissionGroupStore, PermissionGroupStoreError, PermissionGroups,
+    PermissionGroupsConfig, PermissionMetadataRuleConfig, PermissionValue,
 };
 
 #[cfg(feature = "stand-alone")]
@@ -80,7 +81,7 @@ impl PermissionGroupStore for FilePermissionGroupStore {
     ) -> BoxFuture<'static, Result<(), PermissionGroupStoreError>> {
         let path = self.path.clone();
         Box::pin(async move {
-            let serialized = toml::to_string_pretty(&config).map_err(|error| {
+            let serialized = serialize_groups_config(&config).map_err(|error| {
                 PermissionGroupStoreError::new(format!(
                     "failed to serialize groups config: {error}"
                 ))
@@ -94,6 +95,87 @@ impl PermissionGroupStore for FilePermissionGroupStore {
                     ))
                 })
         })
+    }
+}
+
+fn serialize_groups_config(config: &PermissionGroupsConfig) -> Result<String, toml::ser::Error> {
+    let mut output = String::new();
+    push_toml_field(&mut output, "default_groups", &config.default_groups)?;
+
+    for (name, group) in &config.groups {
+        output.push('\n');
+        output.push_str("[groups.");
+        output.push_str(name);
+        output.push_str("]\n");
+        push_group_config(&mut output, group)?;
+    }
+
+    Ok(output)
+}
+
+fn push_group_config(
+    output: &mut String,
+    group: &PermissionGroupConfig,
+) -> Result<(), toml::ser::Error> {
+    push_toml_field(output, "priority", &group.priority)?;
+    push_toml_field(output, "allow", &group.allow)?;
+    push_toml_field(output, "deny", &group.deny)?;
+    push_metadata_rules(output, &group.metadata)?;
+    Ok(())
+}
+
+fn push_metadata_rules(
+    output: &mut String,
+    metadata: &[PermissionMetadataRuleConfig],
+) -> Result<(), toml::ser::Error> {
+    if metadata.is_empty() {
+        output.push_str("metadata = []\n");
+        return Ok(());
+    }
+
+    output.push_str("metadata = [\n");
+    for entry in metadata {
+        output.push_str("    { key = ");
+        output.push_str(&toml_value(&entry.key)?);
+        output.push_str(", value = ");
+        output.push_str(&permission_value_toml(&entry.value)?);
+        output.push_str(" },\n");
+    }
+    output.push_str("]\n");
+    Ok(())
+}
+
+fn push_toml_field<T: Serialize + ?Sized>(
+    output: &mut String,
+    key: &str,
+    value: &T,
+) -> Result<(), toml::ser::Error> {
+    output.push_str(key);
+    output.push_str(" = ");
+    output.push_str(&toml_value(value)?);
+    output.push('\n');
+    Ok(())
+}
+
+fn toml_value<T: Serialize + ?Sized>(value: &T) -> Result<String, toml::ser::Error> {
+    #[derive(Serialize)]
+    struct Field<'a, T: Serialize + ?Sized> {
+        value: &'a T,
+    }
+
+    let serialized = toml::to_string(&Field { value })?;
+    Ok(serialized
+        .trim_end()
+        .strip_prefix("value = ")
+        .unwrap_or(serialized.trim_end())
+        .to_owned())
+}
+
+fn permission_value_toml(value: &PermissionValue) -> Result<String, toml::ser::Error> {
+    match value {
+        PermissionValue::Bool(value) => toml_value(value),
+        PermissionValue::Integer(value) => toml_value(value),
+        PermissionValue::String(value) => toml_value(value),
     }
 }
 
@@ -505,8 +587,7 @@ mod tests {
                 priority: 0,
                 allow: vec!["steel.build".to_owned()],
                 deny: Vec::new(),
-                rules: Vec::new(),
-                values: Vec::new(),
+                metadata: Vec::new(),
             },
         );
 
@@ -520,6 +601,7 @@ mod tests {
         let parsed: PermissionGroupsConfig =
             toml::from_str(&written).expect("written groups config should parse");
         assert_eq!(parsed, config);
+        assert!(written.contains("metadata = []"));
 
         let _ = tokio::fs::remove_dir_all(root).await;
     }

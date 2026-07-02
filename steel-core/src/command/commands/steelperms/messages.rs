@@ -8,11 +8,11 @@ use crate::command::graph::{CommandResult, PermissionTarget};
 use crate::command::sender::CommandSender;
 use crate::permission::{
     PermissionEntry, PermissionKey, PermissionResolution, PermissionResolutionSource,
-    PermissionRuleConfig, PermissionRuleContext, PermissionRuleContextConfig, PermissionState,
-    PermissionValue, PermissionValueEntry, PermissionValueResolution, PermissionValueRuleConfig,
+    PermissionMetadataRuleConfig, PermissionRuleContext, PermissionState, PermissionValue,
+    PermissionValueEntry, PermissionValueResolution,
 };
 
-use super::config::{PermissionGroupEditError, permission_state_from_rule_config};
+use super::config::PermissionGroupEditError;
 pub(super) fn send_user_info(
     sender: &CommandSender,
     target: &PermissionTarget,
@@ -297,26 +297,7 @@ pub(super) fn permission_key_list_text(permissions: &[String]) -> String {
     permissions.join(", ")
 }
 
-pub(super) fn group_rule_list_text(rules: &[PermissionRuleConfig]) -> String {
-    if rules.is_empty() {
-        return "none".to_owned();
-    }
-
-    rules
-        .iter()
-        .map(|rule| {
-            format!(
-                "{} {}{}",
-                permission_state_text(permission_state_from_rule_config(rule.state)),
-                rule.key,
-                permission_rule_config_suffix(rule.context.as_ref())
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-pub(super) fn group_metadata_list_text(values: &[PermissionValueRuleConfig]) -> String {
+pub(super) fn group_metadata_list_text(values: &[PermissionMetadataRuleConfig]) -> String {
     if values.is_empty() {
         return "none".to_owned();
     }
@@ -325,10 +306,9 @@ pub(super) fn group_metadata_list_text(values: &[PermissionValueRuleConfig]) -> 
         .iter()
         .map(|value| {
             format!(
-                "{} = {}{}",
+                "{} = {}",
                 value.key,
                 permission_value_text(&value.value),
-                permission_rule_config_suffix(value.context.as_ref())
             )
         })
         .collect::<Vec<_>>()
@@ -386,16 +366,6 @@ pub(super) fn permission_rule_context_suffix(rule_context: &PermissionRuleContex
         String::new()
     } else {
         format!(" ({rule_context})")
-    }
-}
-
-fn permission_rule_config_suffix(context: Option<&PermissionRuleContextConfig>) -> String {
-    match context {
-        None => String::new(),
-        Some(context) => context.clone().into_rule_context().map_or_else(
-            |_| " (invalid context)".to_owned(),
-            |context| permission_rule_context_suffix(&context),
-        ),
     }
 }
 

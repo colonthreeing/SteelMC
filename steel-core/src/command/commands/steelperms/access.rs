@@ -9,9 +9,9 @@ use crate::command::error::CommandError;
 use crate::command::requirement::{PermissionExpr, RequirementContext};
 use crate::permission::{
     PermissionEntry, PermissionGroupConfig, PermissionKey, PermissionKeyError,
-    PermissionMetadataCatalog, PermissionMetadataExpression, PermissionRuleConfig,
-    PermissionRuleContext, PermissionRuleExpression, PermissionSegment, PermissionSet,
-    PermissionValueEntry, PermissionValueRuleConfig, PermissionValueSet, parse_permission_value_key,
+    PermissionMetadataCatalog, PermissionMetadataExpression, PermissionMetadataRuleConfig,
+    PermissionRuleExpression, PermissionSegment, PermissionSet, PermissionValueEntry,
+    PermissionValueSet, parse_permission_value_key,
 };
 
 pub(super) fn direct_permission_override_suggestions(
@@ -66,9 +66,6 @@ pub(super) fn group_permission_suggestions(
     for permission in &group_config.deny {
         push_managed_group_permission_suggestion(&mut permissions, prefix, permission, context);
     }
-    for rule in &group_config.rules {
-        push_managed_group_permission_rule_suggestion(&mut permissions, prefix, rule, context);
-    }
 
     permissions.into_iter().map(SuggestionEntry::new).collect()
 }
@@ -113,36 +110,22 @@ pub(super) fn manageable_group_permission_keys(
     permissions
         .iter()
         .filter(|permission| {
-            PermissionKey::parse((*permission).clone())
-                .is_ok_and(|permission| can_manage_permission(context, &permission))
-        })
-        .cloned()
-        .collect()
-}
-
-pub(super) fn manageable_group_permission_rules(
-    rules: &[PermissionRuleConfig],
-    context: &dyn RequirementContext,
-) -> Vec<PermissionRuleConfig> {
-    rules
-        .iter()
-        .filter(|rule| {
-            PermissionKey::parse(rule.key.clone())
-                .is_ok_and(|permission| can_manage_permission(context, &permission))
+            PermissionRuleExpression::parse((*permission).clone())
+                .is_ok_and(|expression| can_manage_permission(context, expression.key()))
         })
         .cloned()
         .collect()
 }
 
 pub(super) fn manageable_group_metadata_rules(
-    values: &[PermissionValueRuleConfig],
+    values: &[PermissionMetadataRuleConfig],
     context: &dyn RequirementContext,
-) -> Vec<PermissionValueRuleConfig> {
+) -> Vec<PermissionMetadataRuleConfig> {
     values
         .iter()
         .filter(|value| {
-            parse_permission_value_key(value.key.clone())
-                .is_ok_and(|key| can_manage_metadata(context, &key))
+            PermissionMetadataExpression::parse(value.key.clone())
+                .is_ok_and(|expression| can_manage_metadata(context, expression.key()))
         })
         .cloned()
         .collect()
@@ -154,22 +137,13 @@ pub(super) fn group_metadata_suggestions(
     context: &dyn RequirementContext,
 ) -> Vec<SuggestionEntry> {
     let mut keys = BTreeSet::new();
-    for value in &group_config.values {
-        let Ok(key) = parse_permission_value_key(value.key.clone()) else {
+    for value in &group_config.metadata {
+        let Ok(expression) = PermissionMetadataExpression::parse(value.key.clone()) else {
             continue;
         };
-        let rule_context = value
-            .context
-            .clone()
-            .map_or(Ok(PermissionRuleContext::Global), |context| {
-                context.into_rule_context()
-            });
-        let Ok(rule_context) = rule_context else {
-            continue;
-        };
-        let expression = PermissionMetadataExpression::new(key.clone(), rule_context).to_string();
-        if expression.starts_with(prefix) && can_manage_metadata(context, &key) {
-            keys.insert(expression);
+        let expression_text = expression.to_string();
+        if expression_text.starts_with(prefix) && can_manage_metadata(context, expression.key()) {
+            keys.insert(expression_text);
         }
     }
 
@@ -202,39 +176,11 @@ fn push_managed_group_permission_suggestion(
     if !permission.starts_with(prefix) {
         return;
     }
-    let Ok(permission) = PermissionKey::parse(permission) else {
+    let Ok(expression) = PermissionRuleExpression::parse(permission.to_owned()) else {
         return;
     };
-    if can_manage_permission(context, &permission) {
-        permissions.insert(permission.as_str().to_owned());
-    }
-}
-
-fn push_managed_group_permission_rule_suggestion(
-    permissions: &mut BTreeSet<String>,
-    prefix: &str,
-    rule: &PermissionRuleConfig,
-    context: &dyn RequirementContext,
-) {
-    let Ok(permission) = PermissionKey::parse(rule.key.clone()) else {
-        return;
-    };
-    if !can_manage_permission(context, &permission) {
-        return;
-    }
-
-    let rule_context = rule
-        .context
-        .clone()
-        .map_or(Ok(PermissionRuleContext::Global), |context| {
-            context.into_rule_context()
-        });
-    let Ok(rule_context) = rule_context else {
-        return;
-    };
-    let expression = PermissionRuleExpression::new(permission, rule_context).to_string();
-    if expression.starts_with(prefix) {
-        permissions.insert(expression);
+    if can_manage_permission(context, expression.key()) {
+        permissions.insert(expression.to_string());
     }
 }
 

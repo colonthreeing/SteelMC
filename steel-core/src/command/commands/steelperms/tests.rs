@@ -7,8 +7,8 @@
         group_config_metadata_value, group_config_permission_states, group_metadata_suggestions,
         group_permission_suggestions, manageable_assigned_groups,
         manageable_group_metadata_rules, manageable_group_permission_keys,
-        manageable_group_permission_rules, manageable_metadata_entries,
-        manageable_permission_entries, metadata_catalog_suggestions, metadata_management_key,
+        manageable_metadata_entries, manageable_permission_entries, metadata_catalog_suggestions,
+        metadata_management_key,
         metadata_resolution_text, permission_check_result_text, permission_context,
         permission_resolution_source_text, permission_rule_context, permission_rule_context_suffix,
         remove_default_group_config, set_group_config_metadata, set_group_config_permission,
@@ -25,11 +25,9 @@
         PermissionContext, PermissionContextCatalog, PermissionContextCatalogSource,
         PermissionContextKey, PermissionEntry, PermissionGroupConfig, PermissionGroupsConfig,
         PermissionKey, PermissionMetadataCatalog, PermissionMetadataCatalogSource,
-        PermissionResolutionSource, PermissionRuleConfig, PermissionRuleContext,
-        PermissionRuleContextConfig, PermissionRuleCustomContextConfig, PermissionRuleExpression,
-        PermissionRuleStateConfig, PermissionSet, PermissionState, PermissionValue,
-        PermissionValueEntry, PermissionValueRuleConfig, PermissionValueSet, PermissionCatalog,
-        PermissionCatalogSource,
+        PermissionMetadataRuleConfig, PermissionResolutionSource, PermissionRuleContext,
+        PermissionRuleExpression, PermissionSet, PermissionState, PermissionValue,
+        PermissionValueEntry, PermissionValueSet, PermissionCatalog, PermissionCatalogSource,
         parse_permission_value_key,
     };
     use steel_protocol::packets::game::{
@@ -558,42 +556,22 @@
         let allow = vec![
             "steel.fly".to_owned(),
             "minecraft.command.op".to_owned(),
-        ];
-        let rules = vec![
-            PermissionRuleConfig {
-                key: "steel.chat".to_owned(),
-                state: PermissionRuleStateConfig::Allow,
-                context: None,
-            },
-            PermissionRuleConfig {
-                key: "minecraft.command.op".to_owned(),
-                state: PermissionRuleStateConfig::Deny,
-                context: None,
-            },
+            "steel.chat{domain=lobby}".to_owned(),
         ];
         let values = vec![
-            PermissionValueRuleConfig {
+            PermissionMetadataRuleConfig {
                 key: "plugin:homes".to_owned(),
                 value: PermissionValue::Integer(10),
-                context: None,
             },
-            PermissionValueRuleConfig {
+            PermissionMetadataRuleConfig {
                 key: "other:homes".to_owned(),
                 value: PermissionValue::Integer(20),
-                context: None,
             },
         ];
 
         assert_eq!(
             manageable_group_permission_keys(&allow, &context),
-            vec!["steel.fly".to_owned()]
-        );
-        assert_eq!(
-            manageable_group_permission_rules(&rules, &context)
-                .into_iter()
-                .map(|rule| rule.key)
-                .collect::<Vec<_>>(),
-            vec!["steel.chat"]
+            vec!["steel.fly".to_owned(), "steel.chat{domain=lobby}".to_owned()]
         );
         assert_eq!(
             manageable_group_metadata_rules(&values, &context)
@@ -680,7 +658,7 @@
         let default = config.groups.get("default").expect("default group exists");
         assert_eq!(default.allow, vec!["steel.fly"]);
         assert!(default.deny.is_empty());
-        assert!(default.rules.is_empty());
+        assert!(default.metadata.is_empty());
 
         assert_eq!(
             set_group_config_permission(
@@ -727,7 +705,7 @@
     }
 
     #[test]
-    fn group_config_contextual_permission_edits_use_structured_rules() {
+    fn group_config_contextual_permission_edits_use_expressions() {
         let mut config = PermissionGroupsConfig::default();
         let permission = key("steel.fly");
         let lobby = PermissionRuleContext::domain("lobby");
@@ -743,19 +721,8 @@
             Ok(true)
         );
         let default = config.groups.get("default").expect("default group exists");
-        assert!(default.allow.is_empty());
+        assert_eq!(default.allow, vec!["steel.fly{domain=lobby}"]);
         assert!(default.deny.is_empty());
-        assert_eq!(default.rules.len(), 1);
-        assert_eq!(default.rules[0].key, "steel.fly");
-        assert_eq!(default.rules[0].state, PermissionRuleStateConfig::Allow);
-        assert_eq!(
-            default.rules[0].context,
-            Some(PermissionRuleContextConfig {
-                domain: Some("lobby".to_owned()),
-                world: None,
-                custom: Vec::new(),
-            })
-        );
 
         assert_eq!(
             set_group_config_permission(
@@ -768,8 +735,8 @@
             Ok(true)
         );
         let default = config.groups.get("default").expect("default group exists");
-        assert_eq!(default.rules.len(), 1);
-        assert_eq!(default.rules[0].state, PermissionRuleStateConfig::Deny);
+        assert!(default.allow.is_empty());
+        assert_eq!(default.deny, vec!["steel.fly{domain=lobby}"]);
 
         assert_eq!(
             group_config_permission_states(default, &permission, &lobby),
@@ -778,7 +745,7 @@
     }
 
     #[test]
-    fn group_config_custom_context_permission_edits_use_structured_rules() {
+    fn group_config_custom_context_permission_edits_use_expressions() {
         let mut config = PermissionGroupsConfig::default();
         let permission = key("steel.region.build");
         let spawn_region = custom_context("region", "spawn");
@@ -795,20 +762,7 @@
         );
 
         let default = config.groups.get("default").expect("default group exists");
-        assert_eq!(default.rules.len(), 1);
-        assert_eq!(default.rules[0].key, "steel.region.build");
-        assert_eq!(default.rules[0].state, PermissionRuleStateConfig::Allow);
-        assert_eq!(
-            default.rules[0].context,
-            Some(PermissionRuleContextConfig {
-                domain: None,
-                world: None,
-                custom: vec![PermissionRuleCustomContextConfig {
-                    key: "region".to_owned(),
-                    value: "spawn".to_owned(),
-                }],
-            })
-        );
+        assert_eq!(default.allow, vec!["steel.region.build{region=spawn}"]);
         assert_eq!(
             group_config_permission_states(default, &permission, &spawn_region),
             vec![PermissionState::Allow]
@@ -816,7 +770,7 @@
     }
 
     #[test]
-    fn group_config_chained_context_permission_edits_use_structured_rules() {
+    fn group_config_chained_context_permission_edits_use_expressions() {
         let mut config = PermissionGroupsConfig::default();
         let permission = key("steel.region.build");
         let lobby = PermissionRuleContext::domain("lobby");
@@ -836,19 +790,9 @@
         );
 
         let default = config.groups.get("default").expect("default group exists");
-        assert_eq!(default.rules.len(), 1);
-        assert_eq!(default.rules[0].key, "steel.region.build");
-        assert_eq!(default.rules[0].state, PermissionRuleStateConfig::Allow);
         assert_eq!(
-            default.rules[0].context,
-            Some(PermissionRuleContextConfig {
-                domain: Some("lobby".to_owned()),
-                world: None,
-                custom: vec![PermissionRuleCustomContextConfig {
-                    key: "region".to_owned(),
-                    value: "spawn".to_owned(),
-                }],
-            })
+            default.allow,
+            vec!["steel.region.build{domain=lobby,region=spawn}"]
         );
         assert_eq!(
             group_config_permission_states(default, &permission, &context),
@@ -866,7 +810,11 @@
             Ok(true)
         );
         let default = config.groups.get("default").expect("default group exists");
-        assert_eq!(default.rules.len(), 1);
+        assert!(default.allow.is_empty());
+        assert_eq!(
+            default.deny,
+            vec!["steel.region.build{domain=lobby,region=spawn}"]
+        );
         assert_eq!(
             group_config_permission_states(default, &permission, &context),
             vec![PermissionState::Deny]
@@ -877,11 +825,11 @@
             Ok(true)
         );
         let default = config.groups.get("default").expect("default group exists");
-        assert!(default.rules.is_empty());
+        assert!(default.deny.is_empty());
     }
 
     #[test]
-    fn group_config_metadata_edits_use_value_rules() {
+    fn group_config_metadata_edits_use_metadata_rules() {
         let mut config = PermissionGroupsConfig::default();
         let homes = metadata_key("plugin:homes");
         let lobby = PermissionRuleContext::domain("lobby");
@@ -907,7 +855,7 @@
             Ok(true)
         );
         let default = config.groups.get("default").expect("default group exists");
-        assert_eq!(default.values.len(), 2);
+        assert_eq!(default.metadata.len(), 2);
         assert_eq!(
             group_config_metadata_value(default, &homes, &PermissionRuleContext::Global),
             Some(&PermissionValue::Integer(10))
@@ -930,7 +878,7 @@
     }
 
     #[test]
-    fn group_config_custom_context_metadata_edits_use_value_rules() {
+    fn group_config_custom_context_metadata_edits_use_metadata_rules() {
         let mut config = PermissionGroupsConfig::default();
         let homes = metadata_key("plugin:homes");
         let spawn_region = custom_context("region", "spawn");
@@ -947,20 +895,9 @@
         );
 
         let default = config.groups.get("default").expect("default group exists");
-        assert_eq!(default.values.len(), 1);
-        assert_eq!(default.values[0].key, "plugin:homes");
-        assert_eq!(default.values[0].value, PermissionValue::Integer(10));
-        assert_eq!(
-            default.values[0].context,
-            Some(PermissionRuleContextConfig {
-                domain: None,
-                world: None,
-                custom: vec![PermissionRuleCustomContextConfig {
-                    key: "region".to_owned(),
-                    value: "spawn".to_owned(),
-                }],
-            })
-        );
+        assert_eq!(default.metadata.len(), 1);
+        assert_eq!(default.metadata[0].key, "plugin:homes{region=spawn}");
+        assert_eq!(default.metadata[0].value, PermissionValue::Integer(10));
         assert_eq!(
             group_config_metadata_value(default, &homes, &spawn_region),
             Some(&PermissionValue::Integer(10))
@@ -968,7 +905,7 @@
     }
 
     #[test]
-    fn group_config_chained_context_metadata_edits_use_value_rules() {
+    fn group_config_chained_context_metadata_edits_use_metadata_rules() {
         let mut config = PermissionGroupsConfig::default();
         let homes = metadata_key("plugin:homes");
         let lobby = PermissionRuleContext::domain("lobby");
@@ -988,20 +925,9 @@
         );
 
         let default = config.groups.get("default").expect("default group exists");
-        assert_eq!(default.values.len(), 1);
-        assert_eq!(default.values[0].key, "plugin:homes");
-        assert_eq!(default.values[0].value, PermissionValue::Integer(10));
-        assert_eq!(
-            default.values[0].context,
-            Some(PermissionRuleContextConfig {
-                domain: Some("lobby".to_owned()),
-                world: None,
-                custom: vec![PermissionRuleCustomContextConfig {
-                    key: "region".to_owned(),
-                    value: "spawn".to_owned(),
-                }],
-            })
-        );
+        assert_eq!(default.metadata.len(), 1);
+        assert_eq!(default.metadata[0].key, "plugin:homes{domain=lobby,region=spawn}");
+        assert_eq!(default.metadata[0].value, PermissionValue::Integer(10));
         assert_eq!(
             group_config_metadata_value(default, &homes, &context),
             Some(&PermissionValue::Integer(10))
@@ -1012,7 +938,7 @@
             Ok(true)
         );
         let default = config.groups.get("default").expect("default group exists");
-        assert!(default.values.is_empty());
+        assert!(default.metadata.is_empty());
     }
 
     #[test]
@@ -1044,7 +970,7 @@
             Ok(true)
         );
         let default = config.groups.get("default").expect("default group exists");
-        assert_eq!(default.values.len(), 1);
+        assert_eq!(default.metadata.len(), 1);
         assert_eq!(
             group_config_metadata_value(default, &homes, &lobby),
             Some(&PermissionValue::Integer(5))
@@ -1185,8 +1111,7 @@
         );
         let default = config.groups.get("default").expect("default group exists");
         assert!(default.allow.is_empty());
-        assert_eq!(default.rules.len(), 1);
-        assert_eq!(default.rules[0].state, PermissionRuleStateConfig::Deny);
+        assert_eq!(default.deny, vec!["steel.fly{domain=lobby}"]);
     }
 
     #[test]
@@ -1212,18 +1137,10 @@
             allow: vec![
                 "steel.fly".to_owned(),
                 "minecraft.command.gamemode".to_owned(),
+                "steel.chat{domain=lobby}".to_owned(),
             ],
             deny: vec!["steel.stop".to_owned()],
-            rules: vec![PermissionRuleConfig {
-                key: "steel.chat".to_owned(),
-                state: PermissionRuleStateConfig::Allow,
-                context: Some(PermissionRuleContextConfig {
-                    domain: Some("lobby".to_owned()),
-                    world: None,
-                    custom: Vec::new(),
-                }),
-            }],
-            values: Vec::new(),
+            metadata: Vec::new(),
         };
 
         assert_eq!(
@@ -1242,21 +1159,14 @@
             priority: 0,
             allow: Vec::new(),
             deny: Vec::new(),
-            rules: Vec::new(),
-            values: vec![
-                PermissionValueRuleConfig {
-                    key: "plugin:homes".to_owned(),
+            metadata: vec![
+                PermissionMetadataRuleConfig {
+                    key: "plugin:homes{domain=lobby}".to_owned(),
                     value: PermissionValue::Integer(10),
-                    context: Some(PermissionRuleContextConfig {
-                        domain: Some("lobby".to_owned()),
-                        world: None,
-                        custom: Vec::new(),
-                    }),
                 },
-                PermissionValueRuleConfig {
+                PermissionMetadataRuleConfig {
                     key: "other:homes".to_owned(),
                     value: PermissionValue::Integer(20),
-                    context: None,
                 },
             ],
         };

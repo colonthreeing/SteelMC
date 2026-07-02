@@ -13,37 +13,37 @@ default_groups = ["default"]
 priority = 0
 allow = []
 deny = []
-# Structured rules can add contexts. Omit `context` for a global rule.
+# Permission rule expressions can add contexts. Omit `{...}` for a global rule.
 # Multiple context selectors are combined with AND.
 #
-# [[groups.default.rules]]
-# key = "minecraft.command.gamemode"
-# state = "allow"
-# context = { domain = "lobby" }
+# allow = [
+#     "minecraft.command.gamemode{domain=lobby}",
+# ]
 #
-# [[groups.default.rules]]
-# key = "minecraft.command.gamemode.creative"
-# state = "deny"
-# context = { world = "lobby:spawn" }
+# deny = [
+#     "minecraft.command.gamemode.creative{world=lobby:spawn}",
+# ]
 #
 # Custom contexts are available for plugins/subsystems that provide matching
 # runtime context during permission checks. Namespaced keys are preferred for
 # plugin-owned contexts.
 #
-# [[groups.default.rules]]
-# key = "plugin.region.build"
-# state = "allow"
-# context = { world = "lobby:spawn", custom = { key = "plugin:region", value = "spawn" } }
+# allow = [
+#     "plugin.region.build{world=lobby:spawn,plugin:region=spawn}",
+# ]
 #
 # Permission values configure typed metadata resolved through the same context
-# model. Values are separate from boolean allow/deny rules.
+# expression model. Metadata rules are ordered; later equally specific entries
+# win as the final deterministic tie-breaker.
 #
-# [[groups.default.values]]
-# key = "plugin:homes"
-# value = 10
-# context = { domain = "survival" }
+# metadata = [
+#     { key = "plugin:homes", value = 10 },
+#     { key = "plugin:homes{domain=survival}", value = 5 },
+# ]
+metadata = []
 
 [groups.op]
 priority = 0
 allow = ["*"]
 deny = []
+metadata = []

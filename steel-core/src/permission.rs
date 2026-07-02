@@ -2655,8 +2655,7 @@ impl Default for PermissionGroupsConfig {
                 priority: 0,
                 allow: vec!["*".to_owned()],
                 deny: Vec::new(),
-                rules: Vec::new(),
-                values: Vec::new(),
+                metadata: Vec::new(),
             },
         );
 
@@ -2674,171 +2673,22 @@ pub struct PermissionGroupConfig {
     /// Priority used to resolve conflicts between equally specific group rules.
     /// Higher priority wins.
     pub priority: i32,
-    /// Permission keys explicitly allowed by this group.
+    /// Permission rule expressions explicitly allowed by this group.
     pub allow: Vec<String>,
-    /// Permission keys explicitly denied by this group.
+    /// Permission rule expressions explicitly denied by this group.
     pub deny: Vec<String>,
-    /// Structured permission rules with optional contexts.
-    pub rules: Vec<PermissionRuleConfig>,
-    /// Structured permission values with optional contexts.
-    pub values: Vec<PermissionValueRuleConfig>,
+    /// Ordered permission metadata rules.
+    pub metadata: Vec<PermissionMetadataRuleConfig>,
 }
 
-/// One structured `groups.toml` permission rule.
+/// One `groups.toml` permission metadata rule.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct PermissionRuleConfig {
-    /// Permission key pattern affected by this rule.
-    pub key: String,
-    /// Whether this rule allows or denies the key.
-    pub state: PermissionRuleStateConfig,
-    /// Context where this rule applies. Omitted means global.
-    pub context: Option<PermissionRuleContextConfig>,
-}
-
-/// One structured `groups.toml` permission value rule.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct PermissionValueRuleConfig {
-    /// Permission metadata key affected by this rule.
+pub struct PermissionMetadataRuleConfig {
+    /// Permission metadata expression affected by this rule.
     pub key: String,
     /// Configured value.
     pub value: PermissionValue,
-    /// Context where this value applies. Omitted means global.
-    pub context: Option<PermissionRuleContextConfig>,
-}
-
-/// Configured permission rule state.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum PermissionRuleStateConfig {
-    /// Explicitly allow the matching permission.
-    Allow,
-    /// Explicitly deny the matching permission.
-    Deny,
-}
-
-impl PermissionRuleStateConfig {
-    const fn permission_state(self) -> PermissionState {
-        match self {
-            Self::Allow => PermissionState::Allow,
-            Self::Deny => PermissionState::Deny,
-        }
-    }
-}
-
-/// Configured rule-side context for one permission rule.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
-pub struct PermissionRuleContextConfig {
-    /// Domain where the rule applies.
-    pub domain: Option<String>,
-    /// Loaded world where the rule applies. Must be a namespaced world id.
-    pub world: Option<String>,
-    /// Plugin or subsystem-defined custom context.
-    #[serde(
-        default,
-        deserialize_with = "deserialize_custom_contexts",
-        skip_serializing_if = "Vec::is_empty"
-    )]
-    pub custom: Vec<PermissionRuleCustomContextConfig>,
-}
-
-impl PermissionRuleContextConfig {
-    pub(crate) fn into_rule_context(
-        self,
-    ) -> Result<PermissionRuleContext, PermissionRuleContextConfigError> {
-        let mut contexts = Vec::new();
-        if let Some(domain) = self.domain {
-            if domain.is_empty() || !Identifier::validate_namespace(&domain) {
-                return Err(PermissionRuleContextConfigError::InvalidDomain(domain));
-            }
-            contexts.push(PermissionRuleContext::domain(domain));
-        }
-        if let Some(world) = self.world {
-            contexts.push(PermissionRuleContext::world(parse_loaded_world_context(
-                world,
-            )?));
-        }
-        for custom in self.custom {
-            contexts.push(custom.into_rule_context()?);
-        }
-
-        if contexts.is_empty() {
-            return Err(PermissionRuleContextConfigError::EmptyContext);
-        }
-
-        PermissionRuleContext::all(contexts).map_err(permission_rule_context_config_error)
-    }
-}
-
-/// Configured custom rule-side context.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct PermissionRuleCustomContextConfig {
-    /// Context key, such as `region`.
-    pub key: String,
-    /// Context value owned by the provider.
-    pub value: String,
-}
-
-impl PermissionRuleCustomContextConfig {
-    fn into_rule_context(self) -> Result<PermissionRuleContext, PermissionRuleContextConfigError> {
-        let key = PermissionContextKey::parse(self.key.clone()).map_err(|source| {
-            PermissionRuleContextConfigError::InvalidCustomKey {
-                key: self.key,
-                source,
-            }
-        })?;
-        PermissionRuleContext::custom(key, self.value)
-            .map_err(|_| PermissionRuleContextConfigError::InvalidCustomValue)
-    }
-}
-
-fn permission_rule_context_config_error(
-    error: PermissionRuleContextError,
-) -> PermissionRuleContextConfigError {
-    match error {
-        PermissionRuleContextError::EmptyValue => {
-            PermissionRuleContextConfigError::InvalidCustomValue
-        }
-        PermissionRuleContextError::DuplicateDomain => {
-            PermissionRuleContextConfigError::DuplicateDomain
-        }
-        PermissionRuleContextError::DuplicateWorld => {
-            PermissionRuleContextConfigError::DuplicateWorld
-        }
-        PermissionRuleContextError::DuplicateCustomKey(key) => {
-            PermissionRuleContextConfigError::DuplicateCustomKey(key.as_str().to_owned())
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum PermissionRuleCustomContextsConfig {
-    One(PermissionRuleCustomContextConfig),
-    Many(Vec<PermissionRuleCustomContextConfig>),
-}
-
-fn deserialize_custom_contexts<'de, D>(
-    deserializer: D,
-) -> Result<Vec<PermissionRuleCustomContextConfig>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    match Option::<PermissionRuleCustomContextsConfig>::deserialize(deserializer)? {
-        None => Ok(Vec::new()),
-        Some(PermissionRuleCustomContextsConfig::One(context)) => Ok(vec![context]),
-        Some(PermissionRuleCustomContextsConfig::Many(contexts)) => Ok(contexts),
-    }
-}
-
-fn parse_loaded_world_context(
-    world: String,
-) -> Result<Identifier, PermissionRuleContextConfigError> {
-    parse_loaded_world_identifier(&world)
-        .ok_or(PermissionRuleContextConfigError::InvalidWorld(world))
 }
 
 fn parse_loaded_world_identifier(value: &str) -> Option<Identifier> {
@@ -3194,59 +3044,34 @@ impl PermissionGroups {
             let mut permissions = PermissionSet::new();
             let mut values = PermissionValueSet::new();
             for permission in group.allow {
-                permissions.allow(PermissionKey::parse(permission).map_err(|source| {
-                    PermissionConfigError::InvalidPermissionKey {
+                let expression = PermissionRuleExpression::parse(permission).map_err(|source| {
+                    PermissionConfigError::InvalidPermissionExpression {
                         group: name.clone(),
                         source,
                     }
-                })?);
+                })?;
+                let (key, context) = expression.into_parts();
+                permissions.push(PermissionEntry::allow_with_context(key, context));
             }
             for permission in group.deny {
-                permissions.deny(PermissionKey::parse(permission).map_err(|source| {
-                    PermissionConfigError::InvalidPermissionKey {
-                        group: name.clone(),
-                        source,
-                    }
-                })?);
-            }
-            for rule in group.rules {
-                let key = PermissionKey::parse(rule.key).map_err(|source| {
-                    PermissionConfigError::InvalidPermissionKey {
+                let expression = PermissionRuleExpression::parse(permission).map_err(|source| {
+                    PermissionConfigError::InvalidPermissionExpression {
                         group: name.clone(),
                         source,
                     }
                 })?;
-                let context = rule
-                    .context
-                    .map_or(Ok(PermissionRuleContext::Global), |context| {
-                        context.into_rule_context()
-                    })
-                    .map_err(|source| PermissionConfigError::InvalidRuleContext {
-                        group: name.clone(),
-                        source,
-                    })?;
-                permissions.push(PermissionEntry::new_with_context(
-                    key,
-                    context,
-                    rule.state.permission_state(),
-                ));
+                let (key, context) = expression.into_parts();
+                permissions.push(PermissionEntry::deny_with_context(key, context));
             }
-            for value in group.values {
-                let key = parse_permission_value_key(value.key).map_err(|source| {
-                    PermissionConfigError::InvalidValueKey {
-                        group: name.clone(),
-                        source,
-                    }
-                })?;
-                let context = value
-                    .context
-                    .map_or(Ok(PermissionRuleContext::Global), |context| {
-                        context.into_rule_context()
-                    })
-                    .map_err(|source| PermissionConfigError::InvalidValueContext {
-                        group: name.clone(),
-                        source,
+            for value in group.metadata {
+                let expression =
+                    PermissionMetadataExpression::parse(value.key).map_err(|source| {
+                        PermissionConfigError::InvalidMetadataExpression {
+                            group: name.clone(),
+                            source,
+                        }
                     })?;
+                let (key, context) = expression.into_parts();
                 values.push(PermissionValueEntry::new_with_context(
                     key,
                     context,
@@ -3458,19 +3283,19 @@ pub enum PermissionConfigError {
     MissingDefaultGroup(String),
     /// A built-in required group name does not exist in the group map.
     MissingRequiredGroup(String),
-    /// A group contains an invalid permission key.
-    InvalidPermissionKey {
-        /// Group containing the bad key.
+    /// A group contains an invalid permission rule expression.
+    InvalidPermissionExpression {
+        /// Group containing the bad expression.
         group: String,
         /// Parse error.
-        source: PermissionKeyError,
+        source: PermissionRuleExpressionError,
     },
-    /// A group contains an invalid permission metadata key.
-    InvalidValueKey {
-        /// Group containing the bad metadata key.
+    /// A group contains an invalid permission metadata expression.
+    InvalidMetadataExpression {
+        /// Group containing the bad expression.
         group: String,
         /// Parse error.
-        source: PermissionValueKeyError,
+        source: PermissionMetadataExpressionError,
     },
     /// A group name is not command-usable.
     InvalidGroupName {
@@ -3479,46 +3304,6 @@ pub enum PermissionConfigError {
         /// Parse error.
         source: PermissionKeyError,
     },
-    /// A structured rule context is invalid.
-    InvalidRuleContext {
-        /// Group containing the bad rule.
-        group: String,
-        /// Parse error.
-        source: PermissionRuleContextConfigError,
-    },
-    /// A structured value context is invalid.
-    InvalidValueContext {
-        /// Group containing the bad value.
-        group: String,
-        /// Parse error.
-        source: PermissionRuleContextConfigError,
-    },
-}
-
-/// Invalid configured permission rule context.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PermissionRuleContextConfigError {
-    /// A present context table must declare at least one constraint.
-    EmptyContext,
-    /// Domain name is not valid.
-    InvalidDomain(String),
-    /// World identifier is not valid.
-    InvalidWorld(String),
-    /// Custom context key is not valid.
-    InvalidCustomKey {
-        /// Invalid custom context key.
-        key: String,
-        /// Parse error.
-        source: PermissionContextKeyError,
-    },
-    /// Custom context value is empty.
-    InvalidCustomValue,
-    /// Domain context appears with multiple values in one rule context.
-    DuplicateDomain,
-    /// World context appears with multiple values in one rule context.
-    DuplicateWorld,
-    /// Custom context key appears with multiple values in the same rule context.
-    DuplicateCustomKey(String),
 }
 
 impl fmt::Display for PermissionConfigError {
@@ -3530,59 +3315,26 @@ impl fmt::Display for PermissionConfigError {
             Self::MissingRequiredGroup(group) => {
                 write!(f, "required permission group '{group}' is not configured")
             }
-            Self::InvalidPermissionKey { group, source } => {
+            Self::InvalidPermissionExpression { group, source } => {
                 write!(
                     f,
-                    "permission group '{group}' contains invalid key: {source}"
+                    "permission group '{group}' contains invalid permission expression: {source}"
                 )
             }
-            Self::InvalidValueKey { group, source } => {
+            Self::InvalidMetadataExpression { group, source } => {
                 write!(
                     f,
-                    "permission group '{group}' contains invalid metadata key: {source}"
+                    "permission group '{group}' contains invalid metadata expression: {source}"
                 )
             }
             Self::InvalidGroupName { group, source } => {
                 write!(f, "permission group name '{group}' is invalid: {source}")
-            }
-            Self::InvalidRuleContext { group, source } => {
-                write!(
-                    f,
-                    "permission group '{group}' contains invalid rule context: {source}"
-                )
-            }
-            Self::InvalidValueContext { group, source } => {
-                write!(
-                    f,
-                    "permission group '{group}' contains invalid value context: {source}"
-                )
             }
         }
     }
 }
 
 impl Error for PermissionConfigError {}
-
-impl fmt::Display for PermissionRuleContextConfigError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::EmptyContext => write!(f, "rule context must contain at least one constraint"),
-            Self::InvalidDomain(domain) => write!(f, "invalid domain context '{domain}'"),
-            Self::InvalidWorld(world) => write!(f, "invalid world context '{world}'"),
-            Self::InvalidCustomKey { key, source } => {
-                write!(f, "invalid custom context key '{key}': {source}")
-            }
-            Self::InvalidCustomValue => write!(f, "custom context value is empty"),
-            Self::DuplicateDomain => write!(f, "domain context cannot have multiple values"),
-            Self::DuplicateWorld => write!(f, "world context cannot have multiple values"),
-            Self::DuplicateCustomKey(key) => {
-                write!(f, "custom context key '{key}' cannot have multiple values")
-            }
-        }
-    }
-}
-
-impl Error for PermissionRuleContextConfigError {}
 
 #[cfg(test)]
 mod tests {
@@ -3669,8 +3421,7 @@ mod tests {
                 priority: 0,
                 allow: vec!["steel.build".to_owned()],
                 deny: Vec::new(),
-                rules: Vec::new(),
-                values: Vec::new(),
+                metadata: Vec::new(),
             },
         );
         config
@@ -4059,38 +3810,6 @@ mod tests {
     }
 
     #[test]
-    fn configured_chained_rule_contexts_are_canonicalized() {
-        let config = super::PermissionRuleContextConfig {
-            domain: Some("lobby".to_owned()),
-            world: Some("lobby:spawn".to_owned()),
-            custom: vec![
-                super::PermissionRuleCustomContextConfig {
-                    key: "region".to_owned(),
-                    value: "spawn".to_owned(),
-                },
-                super::PermissionRuleCustomContextConfig {
-                    key: "owner".to_owned(),
-                    value: "builders".to_owned(),
-                },
-            ],
-        };
-        let expected = PermissionRuleContext::all([
-            rule_custom_context("owner", "builders"),
-            PermissionRuleContext::world(Identifier::new("lobby", "spawn")),
-            rule_custom_context("region", "spawn"),
-            PermissionRuleContext::domain("lobby"),
-        ])
-        .expect("context chain is valid");
-
-        assert_eq!(
-            config
-                .into_rule_context()
-                .expect("configured context is valid"),
-            expected
-        );
-    }
-
-    #[test]
     fn contextual_exact_entry_overrides_global_exact_entry() {
         let fly = key("steel.fly");
         let permissions = PermissionSet::from_entries([
@@ -4451,11 +4170,12 @@ mod tests {
             .groups
             .get_mut("default")
             .expect("default group exists");
-        default_group.values.push(super::PermissionValueRuleConfig {
-            key: "plugin:homes".to_owned(),
-            value: PermissionValue::Integer(10),
-            context: None,
-        });
+        default_group
+            .metadata
+            .push(super::PermissionMetadataRuleConfig {
+                key: "plugin:homes".to_owned(),
+                value: PermissionValue::Integer(10),
+            });
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
         let mut catalog = PermissionMetadataCatalog::new();
 
@@ -4476,30 +4196,15 @@ mod tests {
             .groups
             .get_mut("default")
             .expect("default group exists");
-        default_group.rules.push(super::PermissionRuleConfig {
-            key: "plugin.region.build".to_owned(),
-            state: super::PermissionRuleStateConfig::Allow,
-            context: Some(super::PermissionRuleContextConfig {
-                domain: None,
-                world: None,
-                custom: vec![super::PermissionRuleCustomContextConfig {
-                    key: "region".to_owned(),
-                    value: "spawn".to_owned(),
-                }],
-            }),
-        });
-        default_group.values.push(super::PermissionValueRuleConfig {
-            key: "plugin:homes".to_owned(),
-            value: PermissionValue::Integer(5),
-            context: Some(super::PermissionRuleContextConfig {
-                domain: None,
-                world: None,
-                custom: vec![super::PermissionRuleCustomContextConfig {
-                    key: "region".to_owned(),
-                    value: "market".to_owned(),
-                }],
-            }),
-        });
+        default_group
+            .allow
+            .push("plugin.region.build{region=spawn}".to_owned());
+        default_group
+            .metadata
+            .push(super::PermissionMetadataRuleConfig {
+                key: "plugin:homes{region=market}".to_owned(),
+                value: PermissionValue::Integer(5),
+            });
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
         let mut catalog = PermissionContextCatalog::new();
 
@@ -4557,8 +4262,7 @@ mod tests {
                         priority: 0,
                         allow: vec!["steel.build".to_owned()],
                         deny: Vec::new(),
-                        rules: Vec::new(),
-                        values: Vec::new(),
+                        metadata: Vec::new(),
                     },
                 );
             })
@@ -4588,8 +4292,7 @@ mod tests {
                         priority: 0,
                         allow: vec!["steel.build".to_owned()],
                         deny: Vec::new(),
-                        rules: Vec::new(),
-                        values: Vec::new(),
+                        metadata: Vec::new(),
                     },
                 );
                 Ok::<_, &'static str>("builder")
@@ -4673,20 +4376,10 @@ mod tests {
             .groups
             .get_mut("default")
             .expect("default group exists");
-        default_group.rules.push(super::PermissionRuleConfig {
-            key: "steel.chat".to_owned(),
-            state: super::PermissionRuleStateConfig::Allow,
-            context: None,
-        });
-        default_group.rules.push(super::PermissionRuleConfig {
-            key: "steel.fly".to_owned(),
-            state: super::PermissionRuleStateConfig::Allow,
-            context: Some(super::PermissionRuleContextConfig {
-                domain: Some("lobby".to_owned()),
-                world: None,
-                custom: Vec::new(),
-            }),
-        });
+        default_group.allow.push("steel.chat".to_owned());
+        default_group
+            .allow
+            .push("steel.fly{domain=lobby}".to_owned());
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
         let effective = groups.effective_permissions(&[], &PermissionSet::new());
 
@@ -4705,20 +4398,18 @@ mod tests {
             .groups
             .get_mut("default")
             .expect("default group exists");
-        default_group.values.push(super::PermissionValueRuleConfig {
-            key: "steel:homes".to_owned(),
-            value: PermissionValue::Integer(5),
-            context: None,
-        });
-        default_group.values.push(super::PermissionValueRuleConfig {
-            key: "steel:homes".to_owned(),
-            value: PermissionValue::Integer(3),
-            context: Some(super::PermissionRuleContextConfig {
-                domain: Some("lobby".to_owned()),
-                world: None,
-                custom: Vec::new(),
-            }),
-        });
+        default_group
+            .metadata
+            .push(super::PermissionMetadataRuleConfig {
+                key: "steel:homes".to_owned(),
+                value: PermissionValue::Integer(5),
+            });
+        default_group
+            .metadata
+            .push(super::PermissionMetadataRuleConfig {
+                key: "steel:homes{domain=lobby}".to_owned(),
+                value: PermissionValue::Integer(3),
+            });
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
         let player_values = PermissionValueSet::from_entries([PermissionValueEntry::new(
             value_key("steel:homes"),
@@ -4764,8 +4455,7 @@ mod tests {
                 priority: 0,
                 allow: Vec::new(),
                 deny: vec!["steel.fly".to_owned()],
-                rules: Vec::new(),
-                values: Vec::new(),
+                metadata: Vec::new(),
             },
         );
         config.groups.insert(
@@ -4774,8 +4464,7 @@ mod tests {
                 priority: 50,
                 allow: vec!["steel.fly".to_owned()],
                 deny: Vec::new(),
-                rules: Vec::new(),
-                values: Vec::new(),
+                metadata: Vec::new(),
             },
         );
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
@@ -4802,8 +4491,7 @@ mod tests {
                 priority: 10,
                 allow: vec!["steel.fly".to_owned()],
                 deny: Vec::new(),
-                rules: Vec::new(),
-                values: Vec::new(),
+                metadata: Vec::new(),
             },
         );
         config.groups.insert(
@@ -4812,8 +4500,7 @@ mod tests {
                 priority: 10,
                 allow: Vec::new(),
                 deny: vec!["steel.fly".to_owned()],
-                rules: Vec::new(),
-                values: Vec::new(),
+                metadata: Vec::new(),
             },
         );
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
@@ -4834,8 +4521,7 @@ mod tests {
                 priority: 100,
                 allow: vec!["steel.*".to_owned()],
                 deny: Vec::new(),
-                rules: Vec::new(),
-                values: Vec::new(),
+                metadata: Vec::new(),
             },
         );
         config.groups.insert(
@@ -4844,8 +4530,7 @@ mod tests {
                 priority: 0,
                 allow: Vec::new(),
                 deny: vec!["steel.fly".to_owned()],
-                rules: Vec::new(),
-                values: Vec::new(),
+                metadata: Vec::new(),
             },
         );
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
@@ -4865,15 +4550,9 @@ mod tests {
             .get_mut("default")
             .expect("default group exists");
         default_group.priority = 100;
-        default_group.rules.push(super::PermissionRuleConfig {
-            key: "steel.fly".to_owned(),
-            state: super::PermissionRuleStateConfig::Deny,
-            context: Some(super::PermissionRuleContextConfig {
-                domain: Some("lobby".to_owned()),
-                world: None,
-                custom: Vec::new(),
-            }),
-        });
+        default_group
+            .deny
+            .push("steel.fly{domain=lobby}".to_owned());
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
         let player_permissions =
             PermissionSet::from_entries([PermissionEntry::allow(key("steel.fly"))]);
@@ -4900,11 +4579,9 @@ mod tests {
                 priority: 0,
                 allow: Vec::new(),
                 deny: Vec::new(),
-                rules: Vec::new(),
-                values: vec![super::PermissionValueRuleConfig {
+                metadata: vec![super::PermissionMetadataRuleConfig {
                     key: "steel:homes".to_owned(),
                     value: PermissionValue::Integer(5),
-                    context: None,
                 }],
             },
         );
@@ -4914,11 +4591,9 @@ mod tests {
                 priority: 50,
                 allow: Vec::new(),
                 deny: Vec::new(),
-                rules: Vec::new(),
-                values: vec![super::PermissionValueRuleConfig {
+                metadata: vec![super::PermissionMetadataRuleConfig {
                     key: "steel:homes".to_owned(),
                     value: PermissionValue::Integer(10),
-                    context: None,
                 }],
             },
         );
@@ -4948,17 +4623,21 @@ mod tests {
             .groups
             .get_mut("default")
             .expect("default group exists");
-        default_group.values.push(super::PermissionValueRuleConfig {
-            key: "steel:homes*".to_owned(),
-            value: PermissionValue::Integer(5),
-            context: None,
-        });
+        default_group
+            .metadata
+            .push(super::PermissionMetadataRuleConfig {
+                key: "steel:homes*".to_owned(),
+                value: PermissionValue::Integer(5),
+            });
 
         assert!(matches!(
             PermissionGroups::from_config(config),
-            Err(super::PermissionConfigError::InvalidValueKey {
+            Err(super::PermissionConfigError::InvalidMetadataExpression {
                 group,
-                source: PermissionValueKeyError::InvalidPath,
+                source: super::PermissionMetadataExpressionError::InvalidMetadataKey {
+                    source: PermissionValueKeyError::InvalidPath,
+                    ..
+                },
             }) if group == "default"
         ));
     }
@@ -4970,18 +4649,9 @@ mod tests {
             .groups
             .get_mut("default")
             .expect("default group exists");
-        default_group.rules.push(super::PermissionRuleConfig {
-            key: "steel.fly".to_owned(),
-            state: super::PermissionRuleStateConfig::Allow,
-            context: Some(super::PermissionRuleContextConfig {
-                domain: Some("lobby".to_owned()),
-                world: Some("lobby:spawn".to_owned()),
-                custom: vec![super::PermissionRuleCustomContextConfig {
-                    key: "region".to_owned(),
-                    value: "spawn".to_owned(),
-                }],
-            }),
-        });
+        default_group
+            .allow
+            .push("steel.fly{domain=lobby,world=lobby:spawn,region=spawn}".to_owned());
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
         let effective = groups.effective_permissions(&[], &PermissionSet::new());
         let matching_context = world_context("lobby", "spawn")
@@ -5003,18 +4673,12 @@ mod tests {
             .groups
             .get_mut("default")
             .expect("default group exists");
-        default_group.values.push(super::PermissionValueRuleConfig {
-            key: "steel:homes".to_owned(),
-            value: PermissionValue::Integer(5),
-            context: Some(super::PermissionRuleContextConfig {
-                domain: Some("lobby".to_owned()),
-                world: Some("lobby:spawn".to_owned()),
-                custom: vec![super::PermissionRuleCustomContextConfig {
-                    key: "region".to_owned(),
-                    value: "spawn".to_owned(),
-                }],
-            }),
-        });
+        default_group
+            .metadata
+            .push(super::PermissionMetadataRuleConfig {
+                key: "steel:homes{domain=lobby,world=lobby:spawn,region=spawn}".to_owned(),
+                value: PermissionValue::Integer(5),
+            });
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
         let effective = groups.effective_values(&[], &PermissionValueSet::new());
         let homes = value_key("steel:homes");
@@ -5043,17 +4707,13 @@ mod tests {
             .groups
             .get_mut("default")
             .expect("default group exists");
-        default_group.rules.push(super::PermissionRuleConfig {
-            key: "steel.fly".to_owned(),
-            state: super::PermissionRuleStateConfig::Allow,
-            context: Some(super::PermissionRuleContextConfig::default()),
-        });
+        default_group.allow.push("steel.fly{}".to_owned());
 
         assert!(matches!(
             PermissionGroups::from_config(config),
-            Err(super::PermissionConfigError::InvalidRuleContext {
+            Err(super::PermissionConfigError::InvalidPermissionExpression {
                 group,
-                source: super::PermissionRuleContextConfigError::EmptyContext,
+                source: super::PermissionRuleExpressionError::EmptyContext,
             }) if group == "default"
         ));
     }
@@ -5065,30 +4725,15 @@ mod tests {
             .groups
             .get_mut("default")
             .expect("default group exists");
-        default_group.rules.push(super::PermissionRuleConfig {
-            key: "steel.region.build".to_owned(),
-            state: super::PermissionRuleStateConfig::Allow,
-            context: Some(super::PermissionRuleContextConfig {
-                domain: None,
-                world: None,
-                custom: vec![
-                    super::PermissionRuleCustomContextConfig {
-                        key: "region".to_owned(),
-                        value: "spawn".to_owned(),
-                    },
-                    super::PermissionRuleCustomContextConfig {
-                        key: "region".to_owned(),
-                        value: "market".to_owned(),
-                    },
-                ],
-            }),
-        });
+        default_group
+            .allow
+            .push("steel.region.build{region=spawn,region=market}".to_owned());
 
         assert!(matches!(
             PermissionGroups::from_config(config),
-            Err(super::PermissionConfigError::InvalidRuleContext {
+            Err(super::PermissionConfigError::InvalidPermissionExpression {
                 group,
-                source: super::PermissionRuleContextConfigError::DuplicateCustomKey(key),
+                source: super::PermissionRuleExpressionError::DuplicateContextKey(key),
             }) if group == "default" && key == "region"
         ));
     }
@@ -5100,15 +4745,9 @@ mod tests {
             .groups
             .get_mut("default")
             .expect("default group exists");
-        default_group.rules.push(super::PermissionRuleConfig {
-            key: "steel.fly".to_owned(),
-            state: super::PermissionRuleStateConfig::Allow,
-            context: Some(super::PermissionRuleContextConfig {
-                domain: None,
-                world: Some("lobby:spawn".to_owned()),
-                custom: Vec::new(),
-            }),
-        });
+        default_group
+            .allow
+            .push("steel.fly{world=lobby:spawn}".to_owned());
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
         let effective = groups.effective_permissions(&[], &PermissionSet::new());
 
@@ -5123,18 +4762,9 @@ mod tests {
             .groups
             .get_mut("default")
             .expect("default group exists");
-        default_group.rules.push(super::PermissionRuleConfig {
-            key: "steel.region.build".to_owned(),
-            state: super::PermissionRuleStateConfig::Allow,
-            context: Some(super::PermissionRuleContextConfig {
-                domain: None,
-                world: None,
-                custom: vec![super::PermissionRuleCustomContextConfig {
-                    key: "region".to_owned(),
-                    value: "spawn".to_owned(),
-                }],
-            }),
-        });
+        default_group
+            .allow
+            .push("steel.region.build{region=spawn}".to_owned());
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
         let effective = groups.effective_permissions(&[], &PermissionSet::new());
         let context = super::PermissionContext::global()
@@ -5152,21 +4782,15 @@ mod tests {
             .groups
             .get_mut("default")
             .expect("default group exists");
-        default_group.rules.push(super::PermissionRuleConfig {
-            key: "steel.fly".to_owned(),
-            state: super::PermissionRuleStateConfig::Allow,
-            context: Some(super::PermissionRuleContextConfig {
-                domain: None,
-                world: Some("lobby:spawn/extra".to_owned()),
-                custom: Vec::new(),
-            }),
-        });
+        default_group
+            .allow
+            .push("steel.fly{world=lobby:spawn/extra}".to_owned());
 
         assert!(matches!(
             PermissionGroups::from_config(config),
-            Err(super::PermissionConfigError::InvalidRuleContext {
+            Err(super::PermissionConfigError::InvalidPermissionExpression {
                 group,
-                source: super::PermissionRuleContextConfigError::InvalidWorld(world),
+                source: super::PermissionRuleExpressionError::InvalidWorld(world),
             }) if group == "default" && world == "lobby:spawn/extra"
         ));
     }

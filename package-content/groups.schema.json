@@ -44,22 +44,20 @@
       "description": "Dotted permission key. Only a full trailing segment may be a wildcard.",
       "pattern": "^(\\*|[a-z0-9_-]+(\\.[a-z0-9_-]+)*(\\.\\*)?)$"
     },
+    "permission_rule_expression": {
+      "type": "string",
+      "description": "Permission key with optional context selector, such as steel.fly{domain=lobby}.",
+      "pattern": "^(\\*|[a-z0-9_-]+(\\.[a-z0-9_-]+)*(\\.\\*)?)(\\{([a-z0-9_-]+|[a-z0-9_-]+(\\.[a-z0-9_-]+)*:[a-z0-9_-]+([./][a-z0-9_-]+)*)=[^\\s{},=]+(,([a-z0-9_-]+|[a-z0-9_-]+(\\.[a-z0-9_-]+)*:[a-z0-9_-]+([./][a-z0-9_-]+)*)=[^\\s{},=]+)*\\})?$"
+    },
     "permission_value_key": {
       "type": "string",
       "description": "Namespaced permission metadata key.",
       "pattern": "^[a-z0-9_-]+(\\.[a-z0-9_-]+)*:[a-z0-9_-]+([./][a-z0-9_-]+)*$"
     },
-    "permission_context_key": {
-      "description": "Custom permission context key. Namespaced keys are preferred for plugin-owned contexts.",
-      "anyOf": [
-        {
-          "$ref": "#/definitions/group_name"
-        },
-        {
-          "type": "string",
-          "pattern": "^[a-z0-9_-]+(\\.[a-z0-9_-]+)*:[a-z0-9_-]+([./][a-z0-9_-]+)*$"
-        }
-      ]
+    "permission_metadata_expression": {
+      "type": "string",
+      "description": "Permission metadata key with optional context selector, such as plugin:homes{domain=survival}.",
+      "pattern": "^[a-z0-9_-]+(\\.[a-z0-9_-]+)*:[a-z0-9_-]+([./][a-z0-9_-]+)*(\\{([a-z0-9_-]+|[a-z0-9_-]+(\\.[a-z0-9_-]+)*:[a-z0-9_-]+([./][a-z0-9_-]+)*)=[^\\s{},=]+(,([a-z0-9_-]+|[a-z0-9_-]+(\\.[a-z0-9_-]+)*:[a-z0-9_-]+([./][a-z0-9_-]+)*)=[^\\s{},=]+)*\\})?$"
     },
     "permission_value": {
       "description": "Typed permission metadata value",
@@ -85,112 +83,41 @@
         },
         "allow": {
           "type": "array",
-          "description": "Permission keys explicitly allowed by this group",
+          "description": "Permission rule expressions explicitly allowed by this group",
           "items": {
-            "$ref": "#/definitions/permission_key"
+            "$ref": "#/definitions/permission_rule_expression"
           },
           "uniqueItems": true,
           "default": []
         },
         "deny": {
           "type": "array",
-          "description": "Permission keys explicitly denied by this group",
+          "description": "Permission rule expressions explicitly denied by this group",
           "items": {
-            "$ref": "#/definitions/permission_key"
+            "$ref": "#/definitions/permission_rule_expression"
           },
           "uniqueItems": true,
           "default": []
         },
-        "rules": {
+        "metadata": {
           "type": "array",
-          "description": "Structured permission rules with optional contexts",
+          "description": "Ordered permission metadata rules with expression keys",
           "items": {
-            "$ref": "#/definitions/rule"
-          },
-          "default": []
-        },
-        "values": {
-          "type": "array",
-          "description": "Structured permission values with optional contexts",
-          "items": {
-            "$ref": "#/definitions/value_rule"
+            "$ref": "#/definitions/metadata_rule"
           },
           "default": []
         }
       },
       "additionalProperties": false
     },
-    "rule": {
+    "metadata_rule": {
       "type": "object",
       "properties": {
         "key": {
-          "$ref": "#/definitions/permission_key"
-        },
-        "state": {
-          "type": "string",
-          "enum": ["allow", "deny"]
-        },
-        "context": {
-          "$ref": "#/definitions/rule_context"
-        }
-      },
-      "required": ["key", "state"],
-      "additionalProperties": false
-    },
-    "value_rule": {
-      "type": "object",
-      "properties": {
-        "key": {
-          "$ref": "#/definitions/permission_value_key"
+          "$ref": "#/definitions/permission_metadata_expression"
         },
         "value": {
           "$ref": "#/definitions/permission_value"
-        },
-        "context": {
-          "$ref": "#/definitions/rule_context"
-        }
-      },
-      "required": ["key", "value"],
-      "additionalProperties": false
-    },
-    "rule_context": {
-      "type": "object",
-      "description": "Rule-side context where this permission applies. Multiple selectors are combined with AND.",
-      "properties": {
-        "domain": {
-          "$ref": "#/definitions/domain_name"
-        },
-        "world": {
-          "$ref": "#/definitions/world_identifier"
-        },
-        "custom": {
-          "oneOf": [
-            {
-              "$ref": "#/definitions/custom_context"
-            },
-            {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/custom_context"
-              },
-              "minItems": 1
-            }
-          ]
-        }
-      },
-      "minProperties": 1,
-      "additionalProperties": false
-    },
-    "custom_context": {
-      "type": "object",
-      "description": "Plugin or subsystem-defined permission context",
-      "properties": {
-        "key": {
-          "$ref": "#/definitions/permission_context_key"
-        },
-        "value": {
-          "type": "string",
-          "minLength": 1
         }
       },
       "required": ["key", "value"],

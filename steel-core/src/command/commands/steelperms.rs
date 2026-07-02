@@ -31,9 +31,8 @@ mod tree;
 
 use self::access::{
     can_manage_group, manageable_assigned_groups, manageable_group_metadata_rules,
-    manageable_group_permission_keys, manageable_group_permission_rules,
-    manageable_metadata_entries, manageable_permission_entries, require_group_management,
-    require_metadata_management, require_permission_management,
+    manageable_group_permission_keys, manageable_metadata_entries, manageable_permission_entries,
+    require_group_management, require_metadata_management, require_permission_management,
 };
 #[cfg(test)]
 use self::access::{
@@ -47,8 +46,8 @@ use self::arguments::{
     permission_rule_context, targets,
 };
 use self::messages::{
-    command_result, group_list_text, group_metadata_list_text, group_rule_list_text,
-    permission_key_list_text, send_add_default_group_summary, send_background_error,
+    command_result, group_list_text, group_metadata_list_text, permission_key_list_text,
+    send_add_default_group_summary, send_background_error,
     send_default_group_already_set_summary, send_default_group_not_set_summary,
     send_group_metadata_not_set_summary, send_group_metadata_unchanged_summary,
     send_group_permission_not_set_summary, send_group_permission_unchanged_summary,
@@ -227,19 +226,15 @@ fn group_info(
     };
 
     context.sender.send_message(&TextComponent::plain(format!(
-        "Group '{group}': priority {}, allow [{}], deny [{}], contextual [{}], metadata [{}]",
+        "Group '{group}': priority {}, allow [{}], deny [{}], metadata [{}]",
         group_config.priority,
         permission_key_list_text(&manageable_group_permission_keys(
             &group_config.allow,
             context
         )),
         permission_key_list_text(&manageable_group_permission_keys(&group_config.deny, context)),
-        group_rule_list_text(&manageable_group_permission_rules(
-            &group_config.rules,
-            context
-        )),
         group_metadata_list_text(&manageable_group_metadata_rules(
-            &group_config.values,
+            &group_config.metadata,
             context
         ))
     )));
