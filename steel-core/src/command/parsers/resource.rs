@@ -1,18 +1,92 @@
 //! Registry resource command argument parsers.
 
 use steel_protocol::packets::game::{ArgumentType, SuggestionEntry, SuggestionType};
-use steel_registry::{REGISTRY, RegistryExt, TaggedRegistryExt, entity_type::EntityTypeRef};
+use steel_registry::{
+    REGISTRY, RegistryExt, TaggedRegistryExt, biome::BiomeRef, entity_type::EntityTypeRef,
+    structure::StructureRef,
+};
 use steel_utils::Identifier;
 
 use crate::command::{
     graph::{
-        BiomeArgumentValue, CommandArgumentClientParser, CommandArgumentParser, CommandParseError,
-        CommandParseErrorKind, ParsedArgument, ParsedArguments, StructureArgumentValue,
+        CommandArgumentClientParser, CommandArgumentParser, CommandParseError,
+        CommandParseErrorKind, ParsedArgument, ParsedArguments,
     },
     reader::CommandReader,
     requirement::CommandInputContext,
     suggestions::matches_suggestion_substr,
 };
+
+/// Biome command argument value: either one biome or a biome tag.
+#[derive(Clone, Debug)]
+pub enum BiomeArgumentValue {
+    /// A single biome key.
+    Biome(BiomeRef),
+    /// A biome tag and its resolved entries.
+    Tag {
+        /// Tag key without the leading `#`.
+        key: Identifier,
+        /// Biomes in the tag.
+        biomes: Vec<BiomeRef>,
+    },
+}
+
+/// Structure command argument value: either one structure or a structure tag.
+#[derive(Clone, Debug)]
+pub enum StructureArgumentValue {
+    /// A single structure key.
+    Structure(StructureRef),
+    /// A structure tag and its resolved entries.
+    Tag {
+        /// Tag key without the leading `#`.
+        key: Identifier,
+        /// Structures in the tag.
+        structures: Vec<StructureRef>,
+    },
+}
+
+impl StructureArgumentValue {
+    /// Structure keys to scan.
+    #[must_use]
+    pub fn structure_keys(&self) -> Vec<Identifier> {
+        match self {
+            Self::Structure(structure) => vec![structure.key.clone()],
+            Self::Tag { structures, .. } => structures
+                .iter()
+                .map(|structure| structure.key.clone())
+                .collect(),
+        }
+    }
+
+    /// Printable command target name.
+    #[must_use]
+    pub fn printable_name(&self, found_structure: &Identifier) -> String {
+        match self {
+            Self::Structure(structure) => structure.key.to_string(),
+            Self::Tag { key, .. } => format!("#{key} ({found_structure})"),
+        }
+    }
+
+    /// Printable command target without resolved found entry.
+    #[must_use]
+    pub fn query_name(&self) -> String {
+        match self {
+            Self::Structure(structure) => structure.key.to_string(),
+            Self::Tag { key, .. } => format!("#{key}"),
+        }
+    }
+}
+
+impl BiomeArgumentValue {
+    /// Returns whether this value matches `biome`.
+    #[must_use]
+    pub fn matches_biome(&self, biome: BiomeRef) -> bool {
+        match self {
+            Self::Biome(expected) => expected.key == biome.key,
+            Self::Tag { biomes, .. } => biomes.iter().any(|entry| entry.key == biome.key),
+        }
+    }
+}
 
 /// Summonable entity type argument parser.
 #[derive(Clone, Copy, Debug, Default)]

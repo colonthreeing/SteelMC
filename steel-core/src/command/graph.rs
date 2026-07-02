@@ -21,13 +21,16 @@ mod node;
 mod primitive_parsers;
 mod traversal;
 
-pub use arguments::{
+pub use crate::command::parsers::{
     BiomeArgumentValue, BlockPredicateArgumentValue, CommandFunctionArgumentValue,
-    CommandPermissionArgument, DoubleRangeArgumentValue, FromParsedArgument, IntRangeArgumentValue,
-    ItemPredicateArgumentValue, ItemPredicateCondition, ItemPredicateMatchError,
-    ItemPredicateTarget, ItemPredicateTerm, ItemSlotRangeArgumentValue, LootPredicateArgumentValue,
+    DoubleRangeArgumentValue, IntRangeArgumentValue, ItemSlotRangeArgumentValue,
+    LootPredicateArgumentValue, ScoreHolderArgumentValue, ScoreboardObjectiveName,
+    StructureArgumentValue,
+};
+pub use arguments::{
+    CommandPermissionArgument, FromParsedArgument, ItemPredicateArgumentValue,
+    ItemPredicateCondition, ItemPredicateMatchError, ItemPredicateTarget, ItemPredicateTerm,
     ParsedArgument, ParsedArgumentError, ParsedArguments, PermissionTarget,
-    ScoreHolderArgumentValue, ScoreboardObjectiveName, StructureArgumentValue,
 };
 pub use builder::{CommandNodeBuilder, argument, literal};
 use node::{CommandNode, CommandNodeKind, collect_ambiguities, merge_or_push_node};

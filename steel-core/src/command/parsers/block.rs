@@ -1,17 +1,92 @@
 //! Block command argument parsers.
 
+use simdnbt::owned::NbtCompound;
 use steel_protocol::packets::game::{ArgumentType, SuggestionEntry};
 use steel_registry::{REGISTRY, RegistryExt, TaggedRegistryExt, blocks::BlockRef};
-use steel_utils::{Identifier, nbt::parse_snbt_compound_argument};
+use steel_utils::{BlockStateId, Identifier, nbt::parse_snbt_compound_argument};
 
 use crate::command::{
     graph::{
-        BlockPredicateArgumentValue, CommandArgumentClientParser, CommandArgumentParser,
-        CommandParseError, CommandParseErrorKind, ParsedArgument, ParsedArguments,
+        CommandArgumentClientParser, CommandArgumentParser, CommandParseError,
+        CommandParseErrorKind, ParsedArgument, ParsedArguments,
     },
     reader::{CommandReader, StringMode},
     requirement::CommandInputContext,
 };
+
+/// Block predicate command argument value.
+#[derive(Clone, Debug)]
+pub enum BlockPredicateArgumentValue {
+    /// A concrete block plus the explicitly selected state properties.
+    Block {
+        /// Block type to match.
+        block: BlockRef,
+        /// Block state after applying selected properties over the block default.
+        state: BlockStateId,
+        /// Explicitly selected properties.
+        properties: Vec<(String, String)>,
+        /// Optional block entity NBT predicate.
+        nbt: Option<NbtCompound>,
+    },
+    /// A block tag plus vague properties validated against each matched block.
+    Tag {
+        /// Tag key without the leading `#`.
+        key: Identifier,
+        /// Blocks in the tag.
+        blocks: Vec<BlockRef>,
+        /// Properties to test against each matched block.
+        properties: Vec<(String, String)>,
+        /// Optional block entity NBT predicate.
+        nbt: Option<NbtCompound>,
+    },
+}
+
+impl BlockPredicateArgumentValue {
+    /// Returns the optional block entity NBT predicate.
+    #[must_use]
+    pub const fn nbt(&self) -> Option<&NbtCompound> {
+        match self {
+            Self::Block { nbt, .. } | Self::Tag { nbt, .. } => nbt.as_ref(),
+        }
+    }
+
+    /// Returns whether this predicate has an NBT component.
+    #[must_use]
+    pub const fn requires_nbt(&self) -> bool {
+        self.nbt().is_some()
+    }
+
+    /// Returns whether this predicate matches the given block state, ignoring NBT.
+    #[must_use]
+    pub fn matches_state(&self, state: BlockStateId) -> bool {
+        match self {
+            Self::Block {
+                block, properties, ..
+            } => REGISTRY.blocks.by_state_id(state).is_some_and(|actual| {
+                actual == *block && state_properties_match(state, properties)
+            }),
+            Self::Tag {
+                blocks, properties, ..
+            } => REGISTRY.blocks.by_state_id(state).is_some_and(|actual| {
+                blocks.iter().any(|block| *block == actual)
+                    && state_properties_match(state, properties)
+            }),
+        }
+    }
+}
+
+fn state_properties_match(state: BlockStateId, expected: &[(String, String)]) -> bool {
+    if expected.is_empty() {
+        return true;
+    }
+
+    let properties = REGISTRY.blocks.get_properties(state);
+    expected.iter().all(|(name, value)| {
+        properties
+            .iter()
+            .any(|(actual_name, actual_value)| actual_name == name && actual_value == value)
+    })
+}
 
 /// Block predicate argument parser.
 #[derive(Clone, Copy, Debug, Default)]

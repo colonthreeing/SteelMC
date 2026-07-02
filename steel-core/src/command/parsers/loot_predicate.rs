@@ -2,17 +2,26 @@
 
 use steel_protocol::packets::game::{ArgumentType, SuggestionType};
 use steel_registry::loot_table::RuntimeLootCondition;
-use steel_utils::nbt::parse_snbt_argument;
+use steel_utils::{Identifier, nbt::parse_snbt_argument};
 
 use crate::command::{
     graph::{
         CommandArgumentClientParser, CommandArgumentParser, CommandParseError,
-        CommandParseErrorKind, LootPredicateArgumentValue, ParsedArgument,
+        CommandParseErrorKind, ParsedArgument,
     },
     parsers::parse_resource_identifier,
     reader::CommandReader,
     requirement::CommandInputContext,
 };
+
+/// Loot predicate command argument value.
+#[derive(Clone, Debug)]
+pub enum LootPredicateArgumentValue {
+    /// A named predicate in the predicate registry.
+    Reference(Identifier),
+    /// An inline predicate value, decoded by the runtime evaluator.
+    Inline(RuntimeLootCondition),
+}
 
 /// Vanilla loot predicate resource-or-inline argument parser.
 #[derive(Clone, Copy, Debug, Default)]

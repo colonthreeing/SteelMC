@@ -5,11 +5,41 @@ use steel_protocol::packets::game::{ArgumentType, SuggestionEntry};
 use crate::command::{
     graph::{
         CommandArgumentClientParser, CommandArgumentParser, CommandParseError,
-        CommandParseErrorKind, ItemSlotRangeArgumentValue, ParsedArgument, ParsedArguments,
+        CommandParseErrorKind, ParsedArgument, ParsedArguments,
     },
     reader::CommandReader,
     requirement::CommandInputContext,
 };
+
+/// Item slot range command argument value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ItemSlotRangeArgumentValue {
+    name: String,
+    slots: Vec<i32>,
+}
+
+impl ItemSlotRangeArgumentValue {
+    /// Creates an item slot range value.
+    #[must_use]
+    pub fn new(name: impl Into<String>, slots: Vec<i32>) -> Self {
+        Self {
+            name: name.into(),
+            slots,
+        }
+    }
+
+    /// Returns the vanilla slot range name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the vanilla slot IDs in this range.
+    #[must_use]
+    pub fn slots(&self) -> &[i32] {
+        &self.slots
+    }
+}
 
 /// Item slot range argument parser.
 #[derive(Clone, Copy, Debug, Default)]

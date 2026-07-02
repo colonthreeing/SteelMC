@@ -5,26 +5,25 @@ use simdnbt::owned::{NbtCompound, NbtList, NbtTag};
 use steel_registry::{
     REGISTRY, RegistryExt, TaggedRegistryExt,
     attribute::{AttributeModifierOperation, AttributeRef},
-    biome::BiomeRef,
-    blocks::BlockRef,
     data_components::{ComponentData, vanilla_components},
     enchantment::EnchantmentRef,
     entity_type::EntityTypeRef,
     equipment::EquipmentSlotGroup,
     item_stack::ItemStack,
     items::ItemRef,
-    loot_table::RuntimeLootCondition,
-    structure::StructureRef,
 };
-use steel_utils::{BlockPos, BlockStateId, Identifier, nbt::NbtPath, types::GameType};
+use steel_utils::{BlockPos, Identifier, nbt::NbtPath, types::GameType};
 use text_components::TextComponent;
 use uuid::Uuid;
 
 use crate::chunk::heightmap::HeightmapType;
 use crate::command::context::EntityAnchor;
 use crate::command::parsers::{
-    EntityTargetArgumentValue, PermissionTargetArgumentValue, PlayerTargetArgumentValue,
-    WorldArgumentValue,
+    BiomeArgumentValue, BlockPredicateArgumentValue, CommandFunctionArgumentValue,
+    DoubleRangeArgumentValue, EntityTargetArgumentValue, IntRangeArgumentValue,
+    ItemSlotRangeArgumentValue, LootPredicateArgumentValue, PermissionTargetArgumentValue,
+    PlayerTargetArgumentValue, ScoreHolderArgumentValue, ScoreboardObjectiveName,
+    StructureArgumentValue, WorldArgumentValue,
 };
 use crate::entity::SharedEntity;
 use crate::permission::{
@@ -118,91 +117,11 @@ pub enum ParsedArgument {
     DoubleRange(DoubleRangeArgumentValue),
 }
 
-/// Biome command argument value: either one biome or a biome tag.
-#[derive(Clone, Debug)]
-pub enum BiomeArgumentValue {
-    /// A single biome key.
-    Biome(BiomeRef),
-    /// A biome tag and its resolved entries.
-    Tag {
-        /// Tag key without the leading `#`.
-        key: Identifier,
-        /// Biomes in the tag.
-        biomes: Vec<BiomeRef>,
-    },
-}
-
-/// Block predicate command argument value.
-#[derive(Clone, Debug)]
-pub enum BlockPredicateArgumentValue {
-    /// A concrete block plus the explicitly selected state properties.
-    Block {
-        /// Block type to match.
-        block: BlockRef,
-        /// Block state after applying selected properties over the block default.
-        state: BlockStateId,
-        /// Explicitly selected properties.
-        properties: Vec<(String, String)>,
-        /// Optional block entity NBT predicate.
-        nbt: Option<NbtCompound>,
-    },
-    /// A block tag plus vague properties validated against each matched block.
-    Tag {
-        /// Tag key without the leading `#`.
-        key: Identifier,
-        /// Blocks in the tag.
-        blocks: Vec<BlockRef>,
-        /// Properties to test against each matched block.
-        properties: Vec<(String, String)>,
-        /// Optional block entity NBT predicate.
-        nbt: Option<NbtCompound>,
-    },
-}
-
-/// Structure command argument value: either one structure or a structure tag.
-#[derive(Clone, Debug)]
-pub enum StructureArgumentValue {
-    /// A single structure key.
-    Structure(StructureRef),
-    /// A structure tag and its resolved entries.
-    Tag {
-        /// Tag key without the leading `#`.
-        key: Identifier,
-        /// Structures in the tag.
-        structures: Vec<StructureRef>,
-    },
-}
-
-/// Item slot range command argument value.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ItemSlotRangeArgumentValue {
-    name: String,
-    slots: Vec<i32>,
-}
-
 /// Item predicate command argument value.
 #[derive(Clone, Debug)]
 pub struct ItemPredicateArgumentValue {
     target: ItemPredicateTarget,
     conditions: Vec<ItemPredicateCondition>,
-}
-
-/// Loot predicate command argument value.
-#[derive(Clone, Debug)]
-pub enum LootPredicateArgumentValue {
-    /// A named predicate in the predicate registry.
-    Reference(Identifier),
-    /// An inline predicate value, decoded by the runtime evaluator.
-    Inline(RuntimeLootCondition),
-}
-
-/// Command function argument value.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CommandFunctionArgumentValue {
-    /// A single command function ID.
-    Function(Identifier),
-    /// A command function tag ID, parsed without the leading `#`.
-    Tag(Identifier),
 }
 
 /// Item predicate target selector.
@@ -273,130 +192,6 @@ pub struct PermissionTarget {
     name: String,
 }
 
-/// Score holder command argument value.
-#[derive(Clone, Debug)]
-pub enum ScoreHolderArgumentValue {
-    /// A direct holder name, resolved against online players at execution time.
-    Name(String),
-    /// A UUID holder, resolved against live entities at execution time.
-    Uuid {
-        /// Parsed UUID.
-        uuid: Uuid,
-        /// Original token, used as the fallback holder name.
-        raw: String,
-    },
-    /// Entity selector resolved to scoreboard holders at execution time.
-    Selector(EntityTargetArgumentValue),
-    /// Wildcard holder expansion.
-    Wildcard,
-}
-
-impl ScoreHolderArgumentValue {
-    /// Returns whether this argument is a wildcard.
-    #[must_use]
-    pub const fn is_wildcard(&self) -> bool {
-        matches!(self, Self::Wildcard)
-    }
-}
-
-/// Scoreboard objective name command argument value.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ScoreboardObjectiveName(String);
-
-impl ScoreboardObjectiveName {
-    /// Creates an objective name value.
-    #[must_use]
-    pub fn new(name: impl Into<String>) -> Self {
-        Self(name.into())
-    }
-
-    /// Returns the objective name.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-/// Inclusive integer range command argument value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct IntRangeArgumentValue {
-    min: Option<i32>,
-    max: Option<i32>,
-}
-
-impl IntRangeArgumentValue {
-    /// Creates an integer range.
-    #[must_use]
-    pub const fn new(min: Option<i32>, max: Option<i32>) -> Self {
-        Self { min, max }
-    }
-
-    /// Creates an exact-value range.
-    #[must_use]
-    pub const fn exactly(value: i32) -> Self {
-        Self {
-            min: Some(value),
-            max: Some(value),
-        }
-    }
-
-    /// Returns whether `value` matches this range.
-    #[must_use]
-    pub fn matches(self, value: i32) -> bool {
-        if let Some(min) = self.min
-            && value < min
-        {
-            return false;
-        }
-        if let Some(max) = self.max
-            && value > max
-        {
-            return false;
-        }
-        true
-    }
-}
-
-/// Inclusive double range command argument value.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct DoubleRangeArgumentValue {
-    min: Option<f64>,
-    max: Option<f64>,
-}
-
-impl DoubleRangeArgumentValue {
-    /// Creates a double range.
-    #[must_use]
-    pub const fn new(min: Option<f64>, max: Option<f64>) -> Self {
-        Self { min, max }
-    }
-
-    /// Creates an exact-value range.
-    #[must_use]
-    pub const fn exactly(value: f64) -> Self {
-        Self {
-            min: Some(value),
-            max: Some(value),
-        }
-    }
-
-    /// Returns whether `value` matches this range.
-    #[must_use]
-    pub fn matches(self, value: f64) -> bool {
-        if let Some(min) = self.min
-            && value < min
-        {
-            return false;
-        }
-        if let Some(max) = self.max
-            && value > max
-        {
-            return false;
-        }
-        true
-    }
-}
-
 impl PermissionTarget {
     /// Creates a target from an online player.
     #[must_use]
@@ -450,61 +245,6 @@ impl fmt::Debug for PermissionTarget {
             .field("uuid", &self.uuid)
             .field("name", &self.name)
             .finish()
-    }
-}
-
-impl StructureArgumentValue {
-    /// Structure keys to scan.
-    #[must_use]
-    pub fn structure_keys(&self) -> Vec<Identifier> {
-        match self {
-            Self::Structure(structure) => vec![structure.key.clone()],
-            Self::Tag { structures, .. } => structures
-                .iter()
-                .map(|structure| structure.key.clone())
-                .collect(),
-        }
-    }
-
-    /// Printable command target name.
-    #[must_use]
-    pub fn printable_name(&self, found_structure: &Identifier) -> String {
-        match self {
-            Self::Structure(structure) => structure.key.to_string(),
-            Self::Tag { key, .. } => format!("#{key} ({found_structure})"),
-        }
-    }
-
-    /// Printable command target without resolved found entry.
-    #[must_use]
-    pub fn query_name(&self) -> String {
-        match self {
-            Self::Structure(structure) => structure.key.to_string(),
-            Self::Tag { key, .. } => format!("#{key}"),
-        }
-    }
-}
-
-impl ItemSlotRangeArgumentValue {
-    /// Creates an item slot range value.
-    #[must_use]
-    pub fn new(name: impl Into<String>, slots: Vec<i32>) -> Self {
-        Self {
-            name: name.into(),
-            slots,
-        }
-    }
-
-    /// Returns the vanilla slot range name.
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Returns the vanilla slot IDs in this range.
-    #[must_use]
-    pub fn slots(&self) -> &[i32] {
-        &self.slots
     }
 }
 
@@ -1352,64 +1092,6 @@ fn nbt_number(value: &NbtTag) -> Option<f64> {
         NbtTag::Double(value) => Some(*value),
         _ => None,
     }
-}
-
-impl BiomeArgumentValue {
-    /// Returns whether this value matches `biome`.
-    #[must_use]
-    pub fn matches_biome(&self, biome: BiomeRef) -> bool {
-        match self {
-            Self::Biome(expected) => expected.key == biome.key,
-            Self::Tag { biomes, .. } => biomes.iter().any(|entry| entry.key == biome.key),
-        }
-    }
-}
-
-impl BlockPredicateArgumentValue {
-    /// Returns the optional block entity NBT predicate.
-    #[must_use]
-    pub const fn nbt(&self) -> Option<&NbtCompound> {
-        match self {
-            Self::Block { nbt, .. } | Self::Tag { nbt, .. } => nbt.as_ref(),
-        }
-    }
-
-    /// Returns whether this predicate has an NBT component.
-    #[must_use]
-    pub const fn requires_nbt(&self) -> bool {
-        self.nbt().is_some()
-    }
-
-    /// Returns whether this predicate matches the given block state, ignoring NBT.
-    #[must_use]
-    pub fn matches_state(&self, state: BlockStateId) -> bool {
-        match self {
-            Self::Block {
-                block, properties, ..
-            } => REGISTRY.blocks.by_state_id(state).is_some_and(|actual| {
-                actual == *block && state_properties_match(state, properties)
-            }),
-            Self::Tag {
-                blocks, properties, ..
-            } => REGISTRY.blocks.by_state_id(state).is_some_and(|actual| {
-                blocks.iter().any(|block| *block == actual)
-                    && state_properties_match(state, properties)
-            }),
-        }
-    }
-}
-
-fn state_properties_match(state: BlockStateId, expected: &[(String, String)]) -> bool {
-    if expected.is_empty() {
-        return true;
-    }
-
-    let properties = REGISTRY.blocks.get_properties(state);
-    expected.iter().all(|(name, value)| {
-        properties
-            .iter()
-            .any(|(actual_name, actual_value)| actual_name == name && actual_value == value)
-    })
 }
 
 impl fmt::Debug for ParsedArgument {

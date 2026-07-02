@@ -10,8 +10,7 @@ use crate::{
         error::CommandError,
         graph::{
             CommandArgumentClientParser, CommandArgumentParser, CommandParseError,
-            CommandParseErrorKind, DoubleRangeArgumentValue, IntRangeArgumentValue, ParsedArgument,
-            ParsedArguments, ScoreHolderArgumentValue,
+            CommandParseErrorKind, ParsedArgument, ParsedArguments,
         },
         parsers::{
             EntityTargetArgumentValue,
@@ -23,6 +22,130 @@ use crate::{
     entity::Entity,
     scoreboard::ScoreHolder,
 };
+
+/// Score holder command argument value.
+#[derive(Clone, Debug)]
+pub enum ScoreHolderArgumentValue {
+    /// A direct holder name, resolved against online players at execution time.
+    Name(String),
+    /// A UUID holder, resolved against live entities at execution time.
+    Uuid {
+        /// Parsed UUID.
+        uuid: Uuid,
+        /// Original token, used as the fallback holder name.
+        raw: String,
+    },
+    /// Entity selector resolved to scoreboard holders at execution time.
+    Selector(EntityTargetArgumentValue),
+    /// Wildcard holder expansion.
+    Wildcard,
+}
+
+impl ScoreHolderArgumentValue {
+    /// Returns whether this argument is a wildcard.
+    #[must_use]
+    pub const fn is_wildcard(&self) -> bool {
+        matches!(self, Self::Wildcard)
+    }
+}
+
+/// Scoreboard objective name command argument value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScoreboardObjectiveName(String);
+
+impl ScoreboardObjectiveName {
+    /// Creates an objective name value.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+
+    /// Returns the objective name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Inclusive integer range command argument value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IntRangeArgumentValue {
+    min: Option<i32>,
+    max: Option<i32>,
+}
+
+impl IntRangeArgumentValue {
+    /// Creates an integer range.
+    #[must_use]
+    pub const fn new(min: Option<i32>, max: Option<i32>) -> Self {
+        Self { min, max }
+    }
+
+    /// Creates an exact-value range.
+    #[must_use]
+    pub const fn exactly(value: i32) -> Self {
+        Self {
+            min: Some(value),
+            max: Some(value),
+        }
+    }
+
+    /// Returns whether `value` matches this range.
+    #[must_use]
+    pub fn matches(self, value: i32) -> bool {
+        if let Some(min) = self.min
+            && value < min
+        {
+            return false;
+        }
+        if let Some(max) = self.max
+            && value > max
+        {
+            return false;
+        }
+        true
+    }
+}
+
+/// Inclusive double range command argument value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DoubleRangeArgumentValue {
+    min: Option<f64>,
+    max: Option<f64>,
+}
+
+impl DoubleRangeArgumentValue {
+    /// Creates a double range.
+    #[must_use]
+    pub const fn new(min: Option<f64>, max: Option<f64>) -> Self {
+        Self { min, max }
+    }
+
+    /// Creates an exact-value range.
+    #[must_use]
+    pub const fn exactly(value: f64) -> Self {
+        Self {
+            min: Some(value),
+            max: Some(value),
+        }
+    }
+
+    /// Returns whether `value` matches this range.
+    #[must_use]
+    pub fn matches(self, value: f64) -> bool {
+        if let Some(min) = self.min
+            && value < min
+        {
+            return false;
+        }
+        if let Some(max) = self.max
+            && value > max
+        {
+            return false;
+        }
+        true
+    }
+}
 
 /// Score holder argument parser.
 #[derive(Clone, Copy, Debug)]

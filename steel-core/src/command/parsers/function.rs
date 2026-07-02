@@ -1,17 +1,27 @@
 //! Command function argument parser.
 
 use steel_protocol::packets::game::{ArgumentType, SuggestionEntry, SuggestionType};
+use steel_utils::Identifier;
 
 use crate::command::{
     graph::{
-        CommandArgumentClientParser, CommandArgumentParser, CommandFunctionArgumentValue,
-        CommandParseError, CommandParseErrorKind, ParsedArgument, ParsedArguments,
+        CommandArgumentClientParser, CommandArgumentParser, CommandParseError,
+        CommandParseErrorKind, ParsedArgument, ParsedArguments,
     },
     parsers::parse_resource_identifier,
     reader::CommandReader,
     requirement::CommandInputContext,
     suggestions::matches_suggestion_substr,
 };
+
+/// Command function argument value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommandFunctionArgumentValue {
+    /// A single command function ID.
+    Function(Identifier),
+    /// A command function tag ID, parsed without the leading `#`.
+    Tag(Identifier),
+}
 
 /// Vanilla command function resource-or-tag argument parser.
 #[derive(Clone, Copy, Debug, Default)]

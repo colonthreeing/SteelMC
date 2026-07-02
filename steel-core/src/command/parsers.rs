@@ -17,23 +17,27 @@ mod target;
 mod text;
 mod world;
 
-pub use block::BlockPredicateParser;
-pub use function::CommandFunctionParser;
+pub use block::{BlockPredicateArgumentValue, BlockPredicateParser};
+pub use function::{CommandFunctionArgumentValue, CommandFunctionParser};
 pub use game::GameModeParser;
 pub use item_predicate::ItemPredicateParser;
 pub use item_stack::ItemStackParser;
-pub use loot_predicate::LootPredicateParser;
+pub use loot_predicate::{LootPredicateArgumentValue, LootPredicateParser};
 pub use nbt::{NbtCompoundParser, NbtPathParser};
 pub(crate) use permission::permission_rule_expression_suggestions;
 pub use permission::{PermissionGroupParser, PermissionKeyParser, PermissionRuleExpressionParser};
 pub use position::{BlockPosParser, HeightmapParser, RotationParser, Vec3Parser};
 pub(crate) use resource::parse_resource_identifier;
 pub use resource::{
-    BiomeParser, EnchantmentParser, EntitySummonParser, ItemParser, StructureParser,
+    BiomeArgumentValue, BiomeParser, EnchantmentParser, EntitySummonParser, ItemParser,
+    StructureArgumentValue, StructureParser,
 };
-pub use scoreboard::{DoubleRangeParser, IntRangeParser, ObjectiveParser, ScoreHolderParser};
+pub use scoreboard::{
+    DoubleRangeArgumentValue, DoubleRangeParser, IntRangeArgumentValue, IntRangeParser,
+    ObjectiveParser, ScoreHolderArgumentValue, ScoreHolderParser, ScoreboardObjectiveName,
+};
 pub(crate) use scoreboard::{ScoreHolderWildcardExpansion, resolve_score_holders};
-pub use slot::ItemSlotsParser;
+pub use slot::{ItemSlotRangeArgumentValue, ItemSlotsParser};
 pub use target::{
     EntityParser, EntityTargetArgumentValue, PermissionTargetArgumentValue, PermissionTargetParser,
     PlayerParser, PlayerTargetArgumentValue,
