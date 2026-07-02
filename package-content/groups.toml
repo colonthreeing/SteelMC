@@ -44,6 +44,8 @@ metadata = []
 
 [groups.op]
 priority = 0
-allow = ["*"]
+allow = [
+    "*",
+]
 deny = []
 metadata = []

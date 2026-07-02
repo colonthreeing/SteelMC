@@ -118,9 +118,31 @@ fn push_group_config(
     group: &PermissionGroupConfig,
 ) -> Result<(), toml::ser::Error> {
     push_toml_field(output, "priority", &group.priority)?;
-    push_toml_field(output, "allow", &group.allow)?;
-    push_toml_field(output, "deny", &group.deny)?;
+    push_string_array_field(output, "allow", &group.allow)?;
+    push_string_array_field(output, "deny", &group.deny)?;
     push_metadata_rules(output, &group.metadata)?;
+    Ok(())
+}
+
+fn push_string_array_field(
+    output: &mut String,
+    key: &str,
+    values: &[String],
+) -> Result<(), toml::ser::Error> {
+    if values.is_empty() {
+        output.push_str(key);
+        output.push_str(" = []\n");
+        return Ok(());
+    }
+
+    output.push_str(key);
+    output.push_str(" = [\n");
+    for value in values {
+        output.push_str("    ");
+        output.push_str(&toml_value(value)?);
+        output.push_str(",\n");
+    }
+    output.push_str("]\n");
     Ok(())
 }
 
@@ -601,6 +623,7 @@ mod tests {
         let parsed: PermissionGroupsConfig =
             toml::from_str(&written).expect("written groups config should parse");
         assert_eq!(parsed, config);
+        assert!(written.contains("allow = [\n    \"steel.build\",\n]"));
         assert!(written.contains("metadata = []"));
 
         let _ = tokio::fs::remove_dir_all(root).await;
