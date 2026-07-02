@@ -1,12 +1,14 @@
 //! Player data storage for global and domain-specific player state.
 
 use std::{
+    collections::BTreeMap,
     io::Cursor,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use rustc_hash::FxHashMap;
+use serde::{Deserialize, Serialize};
 use simdnbt::{ToNbtTag, borrow::read_compound as read_borrowed_compound, owned::NbtTag};
 use tokio::{fs, io};
 use uuid::Uuid;
@@ -19,10 +21,9 @@ use super::player_data::{
 use crate::chunk_saver::PersistentEntity;
 use crate::config::StorageSelection;
 use crate::permission::{
-    PermissionContextKey, PermissionEntry, PermissionKey, PermissionRuleContext,
-    PermissionRuleContextError, PermissionSet, PermissionState, PermissionSubjectIndex,
-    PermissionSubjectState, PermissionValue, PermissionValueEntry, PermissionValueSet,
-    parse_permission_value_key,
+    PermissionEntry, PermissionMetadataExpression, PermissionRuleExpression, PermissionSet,
+    PermissionState, PermissionSubjectIndex, PermissionSubjectState, PermissionValue,
+    PermissionValueEntry, PermissionValueSet,
 };
 use crate::player::Player;
 use crate::player::known_players::{KnownPlayer, KnownPlayers};
@@ -34,9 +35,9 @@ const PLAYER_MAGIC: [u8; 4] = *b"STLP";
 const GLOBAL_MAGIC: [u8; 4] = *b"STLG";
 const KNOWN_PLAYERS_MAGIC: [u8; 4] = *b"STLK";
 const PLAYER_STORAGE_VERSION: u16 = 7;
-const GLOBAL_STORAGE_VERSION: u16 = 6;
+const GLOBAL_STORAGE_VERSION: u16 = 7;
 const KNOWN_PLAYERS_STORAGE_VERSION: u16 = 1;
-const GLOBAL_PLAYER_DATA_VERSION: i32 = 6;
+const GLOBAL_PLAYER_DATA_VERSION: i32 = 7;
 const KNOWN_PLAYERS_DATA_VERSION: i32 = 1;
 
 /// Server-wide player data.
@@ -44,12 +45,27 @@ const KNOWN_PLAYERS_DATA_VERSION: i32 = 1;
 pub struct GlobalPlayerData {
     /// Last active domain for reconnects.
     pub last_active_domain: String,
+}
+
+/// Server-wide player permission data.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlayerPermissionData {
     /// Assigned permission groups.
     pub groups: Vec<String>,
     /// Player-level permission overrides.
     pub permissions: PermissionSet,
     /// Player-level permission value overrides.
     pub values: PermissionValueSet,
+}
+
+impl PlayerPermissionData {
+    /// Returns whether this player has any persisted permission state.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.groups.is_empty()
+            && self.permissions.entries().is_empty()
+            && self.values.entries().is_empty()
+    }
 }
 
 /// Manages player data persistence.
@@ -125,39 +141,28 @@ struct SlotFile {
 struct GlobalPlayerDataFile {
     data_version: i32,
     last_active_domain: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+struct PlayerPermissionsFile {
+    players: BTreeMap<String, PlayerPermissionEntryFile>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+struct PlayerPermissionEntryFile {
     groups: Vec<String>,
-    permissions: Vec<PermissionEntryFile>,
-    values: Vec<PermissionValueEntryFile>,
+    allow: Vec<String>,
+    deny: Vec<String>,
+    metadata: Vec<PlayerPermissionMetadataEntryFile>,
 }
 
-#[derive(SchemaWrite, SchemaRead)]
-struct PermissionEntryFile {
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct PlayerPermissionMetadataEntryFile {
     key: String,
-    context: Option<PermissionRuleContextFile>,
-    allow: bool,
-}
-
-#[derive(SchemaWrite, SchemaRead)]
-struct PermissionValueEntryFile {
-    key: String,
-    context: Option<PermissionRuleContextFile>,
-    value_kind: String,
-    bool_value: Option<bool>,
-    integer_value: Option<i64>,
-    string_value: Option<String>,
-}
-
-#[derive(SchemaWrite, SchemaRead)]
-struct PermissionRuleContextFile {
-    domain: Option<String>,
-    world: Option<String>,
-    custom: Vec<PermissionRuleCustomContextFile>,
-}
-
-#[derive(SchemaWrite, SchemaRead)]
-struct PermissionRuleCustomContextFile {
-    key: String,
-    value: String,
+    value: PermissionValue,
 }
 
 #[derive(SchemaWrite, SchemaRead)]
@@ -189,15 +194,9 @@ impl PlayerDataStorage {
     pub async fn save(&self, player: &Player) -> io::Result<()> {
         let domain = player.get_world().domain().to_owned();
         self.save_domain(&domain, player).await?;
-        let groups = player.permission_groups();
-        let permissions = player.permission_overrides();
-        let values = player.permission_value_overrides();
         self.update_global(player.gameprofile.id, move |global| {
             let mut global = global.unwrap_or(GlobalPlayerData {
                 last_active_domain: domain.clone(),
-                groups,
-                permissions,
-                values,
             });
             global.last_active_domain = domain;
             Ok::<_, io::Error>(global)
@@ -245,12 +244,22 @@ impl PlayerDataStorage {
         }
     }
 
-    /// Loads cached permission state for all persisted global player data.
+    /// Loads cached permission state for all persisted player permission data.
     pub async fn load_global_permission_states(&self) -> io::Result<PermissionSubjectIndex> {
         match &self.backend {
             PlayerDataStorageBackend::File(storage) => {
                 storage.load_global_permission_states().await
             }
+        }
+    }
+
+    /// Loads one player's persisted permission state.
+    pub async fn load_player_permissions(
+        &self,
+        uuid: Uuid,
+    ) -> io::Result<Option<PlayerPermissionData>> {
+        match &self.backend {
+            PlayerDataStorageBackend::File(storage) => storage.load_player_permissions(uuid).await,
         }
     }
 
@@ -285,6 +294,41 @@ impl PlayerDataStorage {
     {
         match &self.backend {
             PlayerDataStorageBackend::File(storage) => storage.update_global(uuid, update).await,
+        }
+    }
+
+    /// Saves one player's permission data if `is_current` still returns true
+    /// while holding the shared permission file lock.
+    pub async fn save_player_permissions_if_current(
+        &self,
+        uuid: Uuid,
+        data: &PlayerPermissionData,
+        is_current: impl FnOnce() -> bool + Send,
+    ) -> io::Result<bool> {
+        match &self.backend {
+            PlayerDataStorageBackend::File(storage) => {
+                storage
+                    .save_player_permissions_if_current(uuid, data, is_current)
+                    .await
+            }
+        }
+    }
+
+    /// Atomically loads, updates, and saves one player's permission data while
+    /// holding the shared permission file lock.
+    pub async fn update_player_permissions<F, E>(
+        &self,
+        uuid: Uuid,
+        update: F,
+    ) -> Result<PlayerPermissionData, E>
+    where
+        F: FnOnce(Option<PlayerPermissionData>) -> Result<PlayerPermissionData, E> + Send,
+        E: From<io::Error>,
+    {
+        match &self.backend {
+            PlayerDataStorageBackend::File(storage) => {
+                storage.update_player_permissions(uuid, update).await
+            }
         }
     }
 
@@ -394,38 +438,25 @@ impl FilePlayerDataStorage {
 
     async fn load_global_permission_states(&self) -> io::Result<PermissionSubjectIndex> {
         let mut states = PermissionSubjectIndex::new();
-        let mut entries = fs::read_dir(self.global_players_dir()).await?;
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            if path.extension().and_then(|extension| extension.to_str()) != Some("dat") {
-                continue;
-            }
-            let Some(file_stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("invalid global playerdata filename {}", path.display()),
-                ));
-            };
-            let uuid = Uuid::parse_str(file_stem).map_err(|error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "invalid global playerdata UUID in {}: {error}",
-                        path.display()
-                    ),
-                )
-            })?;
-
-            let lock = self.file_lock(&path);
-            let _guard = lock.lock().await;
-            let bytes = fs::read(&path).await?;
-            let data = decode_global_file(&bytes)?.into_global_data()?;
+        let file = self.load_player_permissions_file().await?;
+        for (uuid, data) in file.into_player_permission_data()? {
             states.set(
                 uuid,
                 PermissionSubjectState::new_with_values(data.groups, data.permissions, data.values),
             );
         }
         Ok(states)
+    }
+
+    async fn load_player_permissions(
+        &self,
+        uuid: Uuid,
+    ) -> io::Result<Option<PlayerPermissionData>> {
+        let file = self.load_player_permissions_file().await?;
+        let Some(entry) = file.players.get(&uuid.to_string()) else {
+            return Ok(None);
+        };
+        entry.clone().into_player_permission_data(uuid).map(Some)
     }
 
     async fn save_global(&self, uuid: Uuid, data: &GlobalPlayerData) -> io::Result<()> {
@@ -479,6 +510,62 @@ impl FilePlayerDataStorage {
         Ok(updated)
     }
 
+    async fn save_player_permissions_if_current(
+        &self,
+        uuid: Uuid,
+        data: &PlayerPermissionData,
+        is_current: impl FnOnce() -> bool + Send,
+    ) -> io::Result<bool> {
+        let path = self.player_permissions_file();
+        let lock = self.file_lock(&path);
+        let _guard = lock.lock().await;
+
+        if !is_current() {
+            return Ok(false);
+        }
+
+        let mut file = self.read_player_permissions_file_locked(&path).await?;
+        set_player_permission_entry(&mut file, uuid, data);
+        self.write_player_permissions_file_locked(&path, &file)
+            .await?;
+        Ok(true)
+    }
+
+    async fn update_player_permissions<F, E>(
+        &self,
+        uuid: Uuid,
+        update: F,
+    ) -> Result<PlayerPermissionData, E>
+    where
+        F: FnOnce(Option<PlayerPermissionData>) -> Result<PlayerPermissionData, E> + Send,
+        E: From<io::Error>,
+    {
+        let path = self.player_permissions_file();
+        let lock = self.file_lock(&path);
+        let _guard = lock.lock().await;
+
+        let mut file = self
+            .read_player_permissions_file_locked(&path)
+            .await
+            .map_err(E::from)?;
+        let current = match file.players.get(&uuid.to_string()) {
+            Some(entry) => Some(
+                entry
+                    .clone()
+                    .into_player_permission_data(uuid)
+                    .map_err(E::from)?,
+            ),
+            None => None,
+        };
+
+        let updated = update(current)?;
+        set_player_permission_entry(&mut file, uuid, &updated);
+        self.write_player_permissions_file_locked(&path, &file)
+            .await
+            .map_err(E::from)?;
+        Ok(updated)
+    }
+
     async fn load_known_players(&self) -> io::Result<KnownPlayers> {
         let path = self.known_players_file();
         let lock = self.file_lock(&path);
@@ -510,6 +597,49 @@ impl FilePlayerDataStorage {
             .await
     }
 
+    async fn load_player_permissions_file(&self) -> io::Result<PlayerPermissionsFile> {
+        let path = self.player_permissions_file();
+        let lock = self.file_lock(&path);
+        let _guard = lock.lock().await;
+        self.read_player_permissions_file_locked(&path).await
+    }
+
+    async fn read_player_permissions_file_locked(
+        &self,
+        path: &Path,
+    ) -> io::Result<PlayerPermissionsFile> {
+        if !path.exists() {
+            return Ok(PlayerPermissionsFile::default());
+        }
+
+        let contents = fs::read_to_string(path).await?;
+        let file = toml::from_str::<PlayerPermissionsFile>(&contents).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "invalid player permissions TOML in {}: {error}",
+                    path.display()
+                ),
+            )
+        })?;
+        file.validate()?;
+        Ok(file)
+    }
+
+    async fn write_player_permissions_file_locked(
+        &self,
+        path: &Path,
+        file: &PlayerPermissionsFile,
+    ) -> io::Result<()> {
+        let contents = serialize_player_permissions_file(file).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to serialize player permissions TOML: {error}"),
+            )
+        })?;
+        Self::write_atomic_path_locked(path, contents.into_bytes()).await
+    }
+
     fn global_dir(&self) -> PathBuf {
         self.save_root.join("global")
     }
@@ -520,6 +650,10 @@ impl FilePlayerDataStorage {
 
     fn known_players_file(&self) -> PathBuf {
         self.global_dir().join("known_players.dat")
+    }
+
+    fn player_permissions_file(&self) -> PathBuf {
+        self.global_dir().join("player_permissions.toml")
     }
 
     fn domain_players_dir(&self, domain: &str) -> PathBuf {
@@ -599,6 +733,18 @@ impl FilePlayerDataStorage {
         bytes: Vec<u8>,
         is_current: impl FnOnce() -> bool + Send,
     ) -> io::Result<bool> {
+        let lock = self.file_lock(final_path);
+        let _guard = lock.lock().await;
+
+        if !is_current() {
+            return Ok(false);
+        }
+
+        Self::write_atomic_path_locked(final_path, bytes).await?;
+        Ok(true)
+    }
+
+    async fn write_atomic_path_locked(final_path: &Path, bytes: Vec<u8>) -> io::Result<()> {
         let Some(parent) = final_path.parent() else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -607,14 +753,17 @@ impl FilePlayerDataStorage {
         };
         fs::create_dir_all(parent).await?;
 
-        let temp_path = final_path.with_extension("dat.tmp");
-        let backup_path = final_path.with_extension("dat_old");
-        let lock = self.file_lock(final_path);
-        let _guard = lock.lock().await;
-
-        if !is_current() {
-            return Ok(false);
-        }
+        let extension = final_path
+            .extension()
+            .and_then(|extension| extension.to_str());
+        let temp_path = final_path.with_extension(match extension {
+            Some(extension) => format!("{extension}.tmp"),
+            None => "tmp".to_owned(),
+        });
+        let backup_path = final_path.with_extension(match extension {
+            Some(extension) => format!("{extension}_old"),
+            None => "old".to_owned(),
+        });
 
         fs::write(&temp_path, bytes).await?;
         if final_path.exists() {
@@ -624,7 +773,7 @@ impl FilePlayerDataStorage {
             fs::rename(final_path, &backup_path).await?;
         }
         fs::rename(&temp_path, final_path).await?;
-        Ok(true)
+        Ok(())
     }
 }
 
@@ -633,34 +782,6 @@ impl GlobalPlayerDataFile {
         Self {
             data_version: GLOBAL_PLAYER_DATA_VERSION,
             last_active_domain: data.last_active_domain.clone(),
-            groups: data.groups.clone(),
-            permissions: data
-                .permissions
-                .entries()
-                .iter()
-                .map(|entry| PermissionEntryFile {
-                    key: entry.key().as_str().to_owned(),
-                    context: permission_context_file(entry.context()),
-                    allow: entry.state() == PermissionState::Allow,
-                })
-                .collect(),
-            values: data
-                .values
-                .entries()
-                .iter()
-                .map(|entry| {
-                    let (value_kind, bool_value, integer_value, string_value) =
-                        permission_value_file(entry.value());
-                    PermissionValueEntryFile {
-                        key: entry.key().to_string(),
-                        context: permission_context_file(entry.context()),
-                        value_kind,
-                        bool_value,
-                        integer_value,
-                        string_value,
-                    }
-                })
-                .collect(),
         }
     }
 
@@ -675,50 +796,113 @@ impl GlobalPlayerDataFile {
             ));
         }
 
-        let mut permissions = PermissionSet::new();
-        for entry in self.permissions {
-            let key = PermissionKey::parse(entry.key).map_err(|error| {
+        Ok(GlobalPlayerData {
+            last_active_domain: self.last_active_domain,
+        })
+    }
+}
+
+impl PlayerPermissionsFile {
+    fn validate(&self) -> io::Result<()> {
+        for (uuid, entry) in &self.players {
+            let uuid = Uuid::parse_str(uuid).map_err(|error| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("invalid permission key in global player data: {error:?}"),
+                    format!("invalid player permission UUID '{uuid}': {error}"),
                 )
             })?;
-            let rule_context = permission_context_from_file(entry.context)?;
-            permissions.push(PermissionEntry::new_with_context(
-                key,
-                rule_context,
-                if entry.allow {
-                    PermissionState::Allow
-                } else {
-                    PermissionState::Deny
-                },
-            ));
+            entry.validate(uuid)?;
+        }
+        Ok(())
+    }
+
+    fn into_player_permission_data(self) -> io::Result<Vec<(Uuid, PlayerPermissionData)>> {
+        let mut entries = Vec::with_capacity(self.players.len());
+        for (uuid, entry) in self.players {
+            let uuid = Uuid::parse_str(&uuid).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("invalid player permission UUID '{uuid}': {error}"),
+                )
+            })?;
+            entries.push((uuid, entry.into_player_permission_data(uuid)?));
+        }
+        Ok(entries)
+    }
+}
+
+impl PlayerPermissionEntryFile {
+    fn validate(&self, uuid: Uuid) -> io::Result<()> {
+        for permission in &self.allow {
+            parse_player_permission_expression(uuid, permission, "allow")?;
+        }
+        for permission in &self.deny {
+            parse_player_permission_expression(uuid, permission, "deny")?;
+        }
+        for entry in &self.metadata {
+            parse_player_metadata_expression(uuid, &entry.key)?;
+        }
+        Ok(())
+    }
+
+    fn from_player_permission_data(data: &PlayerPermissionData) -> Self {
+        let mut allow = Vec::new();
+        let mut deny = Vec::new();
+        for entry in data.permissions.entries() {
+            let expression =
+                PermissionRuleExpression::new(entry.key().clone(), entry.context().clone())
+                    .to_string();
+            match entry.state() {
+                PermissionState::Allow => allow.push(expression),
+                PermissionState::Deny => deny.push(expression),
+            }
+        }
+
+        Self {
+            groups: data.groups.clone(),
+            allow,
+            deny,
+            metadata: data
+                .values
+                .entries()
+                .iter()
+                .map(|entry| PlayerPermissionMetadataEntryFile {
+                    key: PermissionMetadataExpression::new(
+                        entry.key().clone(),
+                        entry.context().clone(),
+                    )
+                    .to_string(),
+                    value: entry.value().clone(),
+                })
+                .collect(),
+        }
+    }
+
+    fn into_player_permission_data(self, uuid: Uuid) -> io::Result<PlayerPermissionData> {
+        let mut permissions = PermissionSet::new();
+        for permission in self.allow {
+            let expression = parse_player_permission_expression(uuid, &permission, "allow")?;
+            let (key, context) = expression.into_parts();
+            permissions.push(PermissionEntry::allow_with_context(key, context));
+        }
+        for permission in self.deny {
+            let expression = parse_player_permission_expression(uuid, &permission, "deny")?;
+            let (key, context) = expression.into_parts();
+            permissions.push(PermissionEntry::deny_with_context(key, context));
         }
 
         let mut values = PermissionValueSet::new();
-        for entry in self.values {
-            let key = parse_permission_value_key(entry.key).map_err(|error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("invalid permission metadata key in global player data: {error}"),
-                )
-            })?;
-            let rule_context = permission_context_from_file(entry.context)?;
-            let value = permission_value_from_file(
-                entry.value_kind,
-                entry.bool_value,
-                entry.integer_value,
-                entry.string_value,
-            )?;
+        for entry in self.metadata {
+            let expression = parse_player_metadata_expression(uuid, &entry.key)?;
+            let (key, context) = expression.into_parts();
             values.push(PermissionValueEntry::new_with_context(
                 key,
-                rule_context,
-                value,
+                context,
+                entry.value,
             ));
         }
 
-        Ok(GlobalPlayerData {
-            last_active_domain: self.last_active_domain,
+        Ok(PlayerPermissionData {
             groups: self.groups,
             permissions,
             values,
@@ -726,133 +910,140 @@ impl GlobalPlayerDataFile {
     }
 }
 
-fn permission_value_file(
-    value: &PermissionValue,
-) -> (String, Option<bool>, Option<i64>, Option<String>) {
-    match value {
-        PermissionValue::Bool(value) => ("bool".to_owned(), Some(*value), None, None),
-        PermissionValue::Integer(value) => ("integer".to_owned(), None, Some(*value), None),
-        PermissionValue::String(value) => ("string".to_owned(), None, None, Some(value.clone())),
-    }
-}
-
-fn permission_value_from_file(
-    kind: String,
-    bool_value: Option<bool>,
-    integer_value: Option<i64>,
-    string_value: Option<String>,
-) -> io::Result<PermissionValue> {
-    match (kind.as_str(), bool_value, integer_value, string_value) {
-        ("bool", Some(value), None, None) => Ok(PermissionValue::Bool(value)),
-        ("integer", None, Some(value), None) => Ok(PermissionValue::Integer(value)),
-        ("string", None, None, Some(value)) => Ok(PermissionValue::String(value)),
-        ("bool" | "integer" | "string", _, _, _) => Err(io::Error::new(
+fn parse_player_permission_expression(
+    uuid: Uuid,
+    permission: &str,
+    state: &str,
+) -> io::Result<PermissionRuleExpression> {
+    PermissionRuleExpression::parse(permission).map_err(|error| {
+        io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("invalid permission value payload for kind '{kind}'"),
-        )),
-        _ => Err(io::Error::new(
+            format!("invalid {state} permission expression for {uuid}: {error}"),
+        )
+    })
+}
+
+fn parse_player_metadata_expression(
+    uuid: Uuid,
+    key: &str,
+) -> io::Result<PermissionMetadataExpression> {
+    PermissionMetadataExpression::parse(key).map_err(|error| {
+        io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("unknown permission value kind '{kind}'"),
-        )),
-    }
+            format!("invalid permission metadata expression for {uuid}: {error}"),
+        )
+    })
 }
 
-fn permission_context_file(
-    rule_context: &PermissionRuleContext,
-) -> Option<PermissionRuleContextFile> {
-    let mut file = PermissionRuleContextFile {
-        domain: None,
-        world: None,
-        custom: Vec::new(),
-    };
-    append_permission_context_file(&mut file, rule_context);
-    if file.domain.is_none() && file.world.is_none() && file.custom.is_empty() {
-        None
-    } else {
-        Some(file)
-    }
-}
-
-fn append_permission_context_file(
-    file: &mut PermissionRuleContextFile,
-    rule_context: &PermissionRuleContext,
+fn set_player_permission_entry(
+    file: &mut PlayerPermissionsFile,
+    uuid: Uuid,
+    data: &PlayerPermissionData,
 ) {
-    match rule_context {
-        PermissionRuleContext::Global => {}
-        PermissionRuleContext::Domain(domain) => file.domain = Some(domain.clone()),
-        PermissionRuleContext::World(world) => file.world = Some(world.to_string()),
-        PermissionRuleContext::Custom { key, value } => {
-            file.custom.push(PermissionRuleCustomContextFile {
-                key: key.as_str().to_owned(),
-                value: value.clone(),
-            });
-        }
-        PermissionRuleContext::All(contexts) => {
-            for context in contexts.iter() {
-                append_permission_context_file(file, context);
-            }
-        }
+    if data.is_empty() {
+        file.players.remove(&uuid.to_string());
+        return;
     }
+
+    file.players.insert(
+        uuid.to_string(),
+        PlayerPermissionEntryFile::from_player_permission_data(data),
+    );
 }
 
-fn permission_context_from_file(
-    context: Option<PermissionRuleContextFile>,
-) -> io::Result<PermissionRuleContext> {
-    let Some(context) = context else {
-        return Ok(PermissionRuleContext::Global);
-    };
-
-    let mut contexts = Vec::new();
-    if let Some(domain) = context.domain {
-        if domain.is_empty() || !Identifier::validate_namespace(&domain) {
-            return Err(invalid_permission_context("invalid domain context"));
-        }
-        contexts.push(PermissionRuleContext::domain(domain));
-    }
-    if let Some(world) = context.world {
-        contexts.push(permission_world_context_from_file(world)?);
-    }
-    for custom in context.custom {
-        let key = PermissionContextKey::parse(custom.key).map_err(|error| {
-            invalid_permission_context(format!("invalid custom context key: {error}"))
-        })?;
-        contexts.push(
-            PermissionRuleContext::custom(key, custom.value).map_err(permission_context_error)?,
-        );
-    }
-    if contexts.is_empty() {
-        return Err(invalid_permission_context("permission context is empty"));
+fn serialize_player_permissions_file(
+    file: &PlayerPermissionsFile,
+) -> Result<String, toml::ser::Error> {
+    let mut output = String::new();
+    if file.players.is_empty() {
+        output.push_str("players = {}\n");
+        return Ok(output);
     }
 
-    PermissionRuleContext::all(contexts).map_err(permission_context_error)
+    for (uuid, entry) in &file.players {
+        output.push_str("[players.");
+        output.push_str(&toml_value(uuid)?);
+        output.push_str("]\n");
+        push_player_permission_entry(&mut output, entry)?;
+        output.push('\n');
+    }
+    Ok(output)
 }
 
-fn permission_context_error(error: PermissionRuleContextError) -> io::Error {
-    invalid_permission_context(error.to_string())
+fn push_player_permission_entry(
+    output: &mut String,
+    entry: &PlayerPermissionEntryFile,
+) -> Result<(), toml::ser::Error> {
+    push_string_array_field(output, "groups", &entry.groups)?;
+    push_string_array_field(output, "allow", &entry.allow)?;
+    push_string_array_field(output, "deny", &entry.deny)?;
+    push_permission_metadata_entries(output, &entry.metadata)?;
+    Ok(())
 }
 
-fn permission_world_context_from_file(value: String) -> io::Result<PermissionRuleContext> {
-    let Some((domain, world)) = value.split_once(':') else {
-        return Err(invalid_permission_context("invalid world context"));
-    };
-    if domain.is_empty()
-        || world.is_empty()
-        || world.contains(':')
-        || world.contains('/')
-        || !Identifier::validate_namespace(domain)
-        || !Identifier::validate_path(world)
-    {
-        return Err(invalid_permission_context("invalid world context"));
+fn push_string_array_field(
+    output: &mut String,
+    key: &str,
+    values: &[String],
+) -> Result<(), toml::ser::Error> {
+    if values.is_empty() {
+        output.push_str(key);
+        output.push_str(" = []\n");
+        return Ok(());
     }
 
-    Ok(PermissionRuleContext::world(Identifier::new(
-        domain.to_owned(),
-        world.to_owned(),
-    )))
+    output.push_str(key);
+    output.push_str(" = [\n");
+    for value in values {
+        output.push_str("    ");
+        output.push_str(&toml_value(value)?);
+        output.push_str(",\n");
+    }
+    output.push_str("]\n");
+    Ok(())
 }
 
-fn invalid_permission_context(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.into())
+fn push_permission_metadata_entries(
+    output: &mut String,
+    metadata: &[PlayerPermissionMetadataEntryFile],
+) -> Result<(), toml::ser::Error> {
+    if metadata.is_empty() {
+        output.push_str("metadata = []\n");
+        return Ok(());
+    }
+
+    output.push_str("metadata = [\n");
+    for entry in metadata {
+        output.push_str("    { key = ");
+        output.push_str(&toml_value(&entry.key)?);
+        output.push_str(", value = ");
+        output.push_str(&permission_value_toml(&entry.value)?);
+        output.push_str(" },\n");
+    }
+    output.push_str("]\n");
+    Ok(())
+}
+
+fn toml_value<T: Serialize + ?Sized>(value: &T) -> Result<String, toml::ser::Error> {
+    #[derive(Serialize)]
+    struct Field<'a, T: Serialize + ?Sized> {
+        value: &'a T,
+    }
+
+    let serialized = toml::to_string(&Field { value })?;
+    Ok(serialized
+        .trim_end()
+        .strip_prefix("value = ")
+        .unwrap_or(serialized.trim_end())
+        .to_owned())
+}
+
+fn permission_value_toml(value: &PermissionValue) -> Result<String, toml::ser::Error> {
+    match value {
+        PermissionValue::Bool(value) => toml_value(value),
+        PermissionValue::Integer(value) => toml_value(value),
+        PermissionValue::String(value) => toml_value(value),
+    }
 }
 
 impl KnownPlayersFile {
@@ -1129,6 +1320,9 @@ mod tests {
 
     use super::*;
     use crate::entity::DEFAULT_MAX_AIR_SUPPLY;
+    use crate::permission::{
+        PermissionContextKey, PermissionKey, PermissionRuleContext, parse_permission_value_key,
+    };
     use steel_registry::test_support::init_test_registry;
     use steel_registry::vanilla_items::ITEMS;
 
@@ -1270,9 +1464,6 @@ mod tests {
         let file = GlobalPlayerDataFile {
             data_version: GLOBAL_PLAYER_DATA_VERSION,
             last_active_domain: "minecraft".to_owned(),
-            groups: Vec::new(),
-            permissions: Vec::new(),
-            values: Vec::new(),
         };
 
         let encoded = encode_global_file(&file).expect("global file should encode");
@@ -1286,17 +1477,24 @@ mod tests {
     }
 
     #[test]
-    fn global_file_roundtrip_preserves_permissions() {
-        let data = GlobalPlayerData {
-            last_active_domain: "minecraft".to_owned(),
+    fn player_permissions_file_roundtrip_preserves_permissions() {
+        let uuid = Uuid::from_u128(1);
+        let values = PermissionValueSet::from_entries([
+            PermissionValueEntry::new(
+                parse_permission_value_key("steel:homes").expect("metadata key parses"),
+                PermissionValue::Integer(10),
+            ),
+            PermissionValueEntry::new_with_context(
+                parse_permission_value_key("steel:chat_color").expect("metadata key parses"),
+                PermissionRuleContext::domain("lobby"),
+                PermissionValue::String("green".to_owned()),
+            ),
+        ]);
+        let data = PlayerPermissionData {
             groups: vec!["op".to_owned()],
             permissions: PermissionSet::from_entries([
                 PermissionEntry::allow(
                     PermissionKey::parse("minecraft.command.give").expect("key parses"),
-                ),
-                PermissionEntry::deny_with_context(
-                    PermissionKey::parse("minecraft.command.stop").expect("key parses"),
-                    PermissionRuleContext::world(Identifier::new("lobby", "spawn")),
                 ),
                 PermissionEntry::allow_with_context(
                     PermissionKey::parse("steel.region.build").expect("key parses"),
@@ -1310,97 +1508,68 @@ mod tests {
                     ])
                     .expect("context chain parses"),
                 ),
+                PermissionEntry::deny_with_context(
+                    PermissionKey::parse("minecraft.command.stop").expect("key parses"),
+                    PermissionRuleContext::world(Identifier::new("lobby", "spawn")),
+                ),
             ]),
-            values: PermissionValueSet::default(),
+            values,
         };
 
-        let file = GlobalPlayerDataFile::from_global_data(&data);
-        let encoded = encode_global_file(&file).expect("global file should encode");
-        let decoded = decode_global_file(&encoded).expect("global file should decode");
-        let decoded = decoded
-            .into_global_data()
-            .expect("global file should convert");
+        let mut file = PlayerPermissionsFile::default();
+        set_player_permission_entry(&mut file, uuid, &data);
+        let written =
+            serialize_player_permissions_file(&file).expect("player permissions should serialize");
+        assert!(written.contains("[players.\"00000000-0000-0000-0000-000000000001\"]"));
+        assert!(written.contains("allow = [\n    \"minecraft.command.give\","));
+        assert!(written.contains("deny = [\n    \"minecraft.command.stop{world=lobby:spawn}\","));
+        assert!(
+            written
+                .contains("    { key = \"steel:chat_color{domain=lobby}\", value = \"green\" },")
+        );
 
-        assert_eq!(decoded.permissions, data.permissions);
-        assert_eq!(decoded.groups, data.groups);
+        let parsed: PlayerPermissionsFile =
+            toml::from_str(&written).expect("written player permissions should parse");
+        let decoded = parsed
+            .into_player_permission_data()
+            .expect("player permissions should convert");
+
+        assert_eq!(decoded, vec![(uuid, data)]);
     }
 
     #[test]
-    fn global_file_roundtrip_preserves_permission_values() {
-        let values = PermissionValueSet::from_entries([
-            PermissionValueEntry::new(
-                parse_permission_value_key("steel:homes").expect("metadata key parses"),
-                PermissionValue::Integer(10),
-            ),
-            PermissionValueEntry::new_with_context(
-                parse_permission_value_key("steel:chat_color").expect("metadata key parses"),
-                PermissionRuleContext::domain("lobby"),
-                PermissionValue::String("green".to_owned()),
-            ),
-        ]);
-        let data = GlobalPlayerData {
-            last_active_domain: "minecraft".to_owned(),
-            groups: vec!["op".to_owned()],
-            permissions: PermissionSet::default(),
-            values: values.clone(),
-        };
-
-        let file = GlobalPlayerDataFile::from_global_data(&data);
-        let encoded = encode_global_file(&file).expect("global file should encode");
-        let decoded = decode_global_file(&encoded).expect("global file should decode");
-        let decoded = decoded
-            .into_global_data()
-            .expect("global file should convert");
-
-        assert_eq!(decoded.values, values);
-        assert_eq!(decoded.groups, data.groups);
-    }
-
-    #[test]
-    fn global_file_rejects_invalid_permission_world_context() {
-        let file = GlobalPlayerDataFile {
-            data_version: GLOBAL_PLAYER_DATA_VERSION,
-            last_active_domain: "minecraft".to_owned(),
+    fn player_permissions_file_rejects_invalid_permission_expression() {
+        let uuid = Uuid::from_u128(1);
+        let file = PlayerPermissionEntryFile {
             groups: Vec::new(),
-            permissions: vec![PermissionEntryFile {
-                key: "minecraft.command.stop".to_owned(),
-                context: Some(PermissionRuleContextFile {
-                    domain: None,
-                    world: Some("lobby:spawn/extra".to_owned()),
-                    custom: Vec::new(),
-                }),
-                allow: false,
-            }],
-            values: Vec::new(),
+            allow: vec!["minecraft.command.stop{world=lobby:spawn/extra}".to_owned()],
+            deny: Vec::new(),
+            metadata: Vec::new(),
         };
 
         let error = file
-            .into_global_data()
+            .into_player_permission_data(uuid)
             .expect_err("invalid loaded world context should be rejected");
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]
-    fn global_file_rejects_invalid_permission_value_payload() {
-        let file = GlobalPlayerDataFile {
-            data_version: GLOBAL_PLAYER_DATA_VERSION,
-            last_active_domain: "minecraft".to_owned(),
+    fn player_permissions_file_rejects_invalid_metadata_expression() {
+        let uuid = Uuid::from_u128(1);
+        let file = PlayerPermissionEntryFile {
             groups: Vec::new(),
-            permissions: Vec::new(),
-            values: vec![PermissionValueEntryFile {
-                key: "steel:homes".to_owned(),
-                context: None,
-                value_kind: "integer".to_owned(),
-                bool_value: None,
-                integer_value: None,
-                string_value: Some("10".to_owned()),
+            allow: Vec::new(),
+            deny: Vec::new(),
+            metadata: vec![PlayerPermissionMetadataEntryFile {
+                key: "steel:homes:limit".to_owned(),
+                value: PermissionValue::Integer(10),
             }],
         };
 
         let error = file
-            .into_global_data()
-            .expect_err("invalid permission value payload should be rejected");
+            .into_player_permission_data(uuid)
+            .expect_err("invalid metadata expression should be rejected");
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
@@ -1412,18 +1581,12 @@ mod tests {
             .await
             .expect("storage should initialize");
         let uuid = Uuid::from_u128(1);
-        let permissions = PermissionSet::from_entries([PermissionEntry::allow(
-            PermissionKey::parse("minecraft.command.give").expect("permission key parses"),
-        )]);
 
         storage
             .save_global(
                 uuid,
                 &GlobalPlayerData {
                     last_active_domain: "overworld".to_owned(),
-                    groups: vec!["op".to_owned()],
-                    permissions: permissions.clone(),
-                    values: PermissionValueSet::default(),
                 },
             )
             .await
@@ -1444,8 +1607,6 @@ mod tests {
             .expect("global data should load")
             .expect("global data should exist");
         assert_eq!(data.last_active_domain, "nether");
-        assert_eq!(data.groups, vec!["op"]);
-        assert_eq!(data.permissions, permissions);
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1463,10 +1624,9 @@ mod tests {
         )]);
 
         storage
-            .save_global(
+            .save_player_permissions_if_current(
                 op_uuid,
-                &GlobalPlayerData {
-                    last_active_domain: "minecraft".to_owned(),
+                &PlayerPermissionData {
                     groups: vec!["op".to_owned()],
                     permissions: op_permissions.clone(),
                     values: PermissionValueSet::from_entries([PermissionValueEntry::new(
@@ -1475,21 +1635,22 @@ mod tests {
                         PermissionValue::Integer(10),
                     )]),
                 },
+                || true,
             )
             .await
-            .expect("op global data should save");
+            .expect("op player permissions should save");
         storage
-            .save_global(
+            .save_player_permissions_if_current(
                 default_uuid,
-                &GlobalPlayerData {
-                    last_active_domain: "minecraft".to_owned(),
+                &PlayerPermissionData {
                     groups: Vec::new(),
                     permissions: PermissionSet::default(),
                     values: PermissionValueSet::default(),
                 },
+                || true,
             )
             .await
-            .expect("default global data should save");
+            .expect("default player permissions should save");
 
         let index = storage
             .load_global_permission_states()
@@ -1509,10 +1670,7 @@ mod tests {
                 .and_then(PermissionValue::as_i64),
             Some(10)
         );
-        let default_state = index
-            .get(default_uuid)
-            .expect("default state should be indexed");
-        assert!(default_state.groups().is_empty());
+        assert!(index.get(default_uuid).is_none());
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1548,15 +1706,9 @@ mod tests {
         let uuid = Uuid::new_v4();
         let current = GlobalPlayerData {
             last_active_domain: "minecraft".to_owned(),
-            groups: vec!["default".to_owned()],
-            permissions: PermissionSet::default(),
-            values: PermissionValueSet::default(),
         };
         let stale = GlobalPlayerData {
             last_active_domain: "lobby".to_owned(),
-            groups: vec!["op".to_owned()],
-            permissions: PermissionSet::default(),
-            values: PermissionValueSet::default(),
         };
 
         assert!(
@@ -1578,7 +1730,47 @@ mod tests {
             .expect("global data should load")
             .expect("global data should exist");
         assert_eq!(loaded.last_active_domain, current.last_active_domain);
-        assert_eq!(loaded.groups, current.groups);
+
+        let _ = fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn stale_player_permissions_save_is_skipped() {
+        let root = temp_storage_root("permissions");
+        let storage = PlayerDataStorage::new(root.clone(), StorageSelection::default_player_file())
+            .await
+            .expect("storage should initialize");
+        let uuid = Uuid::new_v4();
+        let current = PlayerPermissionData {
+            groups: vec!["default".to_owned()],
+            permissions: PermissionSet::default(),
+            values: PermissionValueSet::default(),
+        };
+        let stale = PlayerPermissionData {
+            groups: vec!["op".to_owned()],
+            permissions: PermissionSet::default(),
+            values: PermissionValueSet::default(),
+        };
+
+        assert!(
+            storage
+                .save_player_permissions_if_current(uuid, &current, || true)
+                .await
+                .expect("current player permissions should save")
+        );
+        assert!(
+            !storage
+                .save_player_permissions_if_current(uuid, &stale, || false)
+                .await
+                .expect("stale player permissions should be skipped")
+        );
+
+        let loaded = storage
+            .load_player_permissions(uuid)
+            .await
+            .expect("player permissions should load")
+            .expect("player permissions should exist");
+        assert_eq!(loaded, current);
 
         let _ = fs::remove_dir_all(root).await;
     }

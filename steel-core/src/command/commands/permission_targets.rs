@@ -2,7 +2,7 @@ use crate::command::error::CommandError;
 use crate::command::graph::PermissionTarget;
 use crate::permission::{PermissionSet, PermissionValueSet};
 use crate::player::Player;
-use crate::player::player_data_storage::GlobalPlayerData;
+use crate::player::player_data_storage::PlayerPermissionData;
 use crate::server::Server;
 use std::sync::Arc;
 
@@ -104,17 +104,15 @@ async fn load_offline_state(
     };
     let data = server
         .player_data_storage
-        .load_global(uuid)
+        .load_player_permissions(uuid)
         .await
         .map_err(|error| CommandError::failure(error.to_string()))?;
 
-    let GlobalPlayerData {
+    let PlayerPermissionData {
         groups,
         permissions,
         values,
-        ..
-    } = data.unwrap_or_else(|| GlobalPlayerData {
-        last_active_domain: server.worlds.default_domain().to_owned(),
+    } = data.unwrap_or_else(|| PlayerPermissionData {
         groups: Vec::new(),
         permissions: PermissionSet::default(),
         values: PermissionValueSet::default(),

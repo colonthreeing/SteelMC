@@ -37,7 +37,9 @@ use crate::player::chunk_sender::{ChunkSender, EncodedChunk};
 use crate::player::connection::NetworkConnection;
 use crate::player::known_players::{KnownPlayer, KnownPlayers};
 use crate::player::player_data::{PersistentPlayerData, PersistentRootVehicle};
-use crate::player::player_data_storage::{GlobalPlayerData, PlayerDataStorage};
+use crate::player::player_data_storage::{
+    GlobalPlayerData, PlayerDataStorage, PlayerPermissionData,
+};
 use crate::player::profile_lookup::{ProfileLookupError, lookup_online_profile};
 use crate::player::{GameProfile, Player, ResetReason, is_valid_player_name, offline_uuid};
 use crate::portal::{TeleportTransition, WorldChangeRequest};
@@ -808,20 +810,13 @@ impl Server {
     }
 
     async fn load_join_domain(&self, player: &Player) -> Result<String, String> {
-        match self
+        let domain = match self
             .player_data_storage
             .load_global(player.gameprofile.id)
             .await
         {
             Ok(Some(global)) if self.worlds.has_domain(&global.last_active_domain) => {
-                let GlobalPlayerData {
-                    last_active_domain,
-                    groups,
-                    permissions,
-                    values,
-                } = global;
-                self.apply_global_permission_state(player, groups, permissions, values);
-                Ok(last_active_domain)
+                global.last_active_domain
             }
             Ok(Some(global)) => {
                 log::warn!(
@@ -829,36 +824,28 @@ impl Server {
                     player.gameprofile.name,
                     global.last_active_domain
                 );
-                let GlobalPlayerData {
-                    groups,
-                    permissions,
-                    values,
-                    ..
-                } = global;
-                self.apply_global_permission_state(player, groups, permissions, values);
-                Ok(self.worlds.default_domain().to_owned())
+                self.worlds.default_domain().to_owned()
             }
-            Ok(None) => {
-                let groups = Vec::new();
-                let overrides = PermissionSet::default();
-                let value_overrides = PermissionValueSet::default();
-                let permissions = self
-                    .permission_groups
-                    .effective_permissions(&groups, &overrides);
-                let values = self
-                    .permission_groups
-                    .effective_values(&groups, &value_overrides);
-                player.set_permission_state(
-                    groups,
-                    overrides,
-                    value_overrides,
-                    permissions,
-                    values,
-                );
-                Ok(self.worlds.default_domain().to_owned())
-            }
-            Err(e) => Err(format!("failed to load global player data: {e}")),
+            Ok(None) => self.worlds.default_domain().to_owned(),
+            Err(e) => return Err(format!("failed to load global player data: {e}")),
+        };
+
+        self.apply_cached_or_default_permission_state(player);
+        Ok(domain)
+    }
+
+    fn apply_cached_or_default_permission_state(&self, player: &Player) -> u64 {
+        if let Some(state) = self.global_permission_state(player.gameprofile.id) {
+            let (groups, overrides, value_overrides) = state.into_parts();
+            return self.apply_global_permission_state(player, groups, overrides, value_overrides);
         }
+
+        self.apply_global_permission_state(
+            player,
+            Vec::new(),
+            PermissionSet::default(),
+            PermissionValueSet::default(),
+        )
     }
 
     fn apply_global_permission_state(
@@ -893,7 +880,7 @@ impl Server {
     }
 
     /// Updates a player's global permission state, refreshes client-visible permissions,
-    /// and saves the global playerdata snapshot.
+    /// and saves the player permission snapshot.
     ///
     /// # Errors
     ///
@@ -915,7 +902,7 @@ impl Server {
         let version =
             self.apply_global_permission_state(player, groups, overrides, value_overrides);
         self.resend_player_permission_context(player);
-        self.save_player_global_permissions(Arc::clone(player), version);
+        self.save_player_permissions(Arc::clone(player), version);
 
         Ok(())
     }
@@ -935,22 +922,17 @@ impl Server {
     ) -> Result<(), PlayerPermissionUpdateError> {
         let saved = self
             .player_data_storage
-            .update_global(uuid, |global| {
-                let previous_groups = global
+            .update_player_permissions(uuid, |current| {
+                let previous_groups = current
                     .as_ref()
-                    .map_or_else(Vec::new, |global| global.groups.clone());
+                    .map_or_else(Vec::new, |current| current.groups.clone());
                 validate_player_permission_group_update(
                     &self.permission_groups,
                     &previous_groups,
                     &groups,
                 )?;
-                let last_active_domain = global.map_or_else(
-                    || self.worlds.default_domain().to_owned(),
-                    |global| global.last_active_domain,
-                );
 
-                Ok::<_, PlayerPermissionUpdateError>(GlobalPlayerData {
-                    last_active_domain,
+                Ok::<_, PlayerPermissionUpdateError>(PlayerPermissionData {
                     groups,
                     permissions: overrides,
                     values: value_overrides,
@@ -1033,10 +1015,20 @@ impl Server {
         overrides: PermissionSet,
         value_overrides: PermissionValueSet,
     ) {
-        self.global_permission_states.write().set(
-            uuid,
-            PermissionSubjectState::new_with_values(groups, overrides, value_overrides),
-        );
+        let data = PlayerPermissionData {
+            groups,
+            permissions: overrides,
+            values: value_overrides,
+        };
+        let mut states = self.global_permission_states.write();
+        if data.is_empty() {
+            states.remove(uuid);
+        } else {
+            states.set(
+                uuid,
+                PermissionSubjectState::new_with_values(data.groups, data.permissions, data.values),
+            );
+        }
     }
 
     fn queue_online_global_permission_refresh(
@@ -1054,7 +1046,7 @@ impl Server {
             let version =
                 server.apply_global_permission_state(&player, groups, overrides, value_overrides);
             server.resend_player_permission_context(&player);
-            server.save_player_global_permissions(player, version);
+            server.save_player_permissions(player, version);
         }));
     }
 
@@ -1075,12 +1067,11 @@ impl Server {
         }
     }
 
-    fn save_player_global_permissions(self: &Arc<Self>, player: Arc<Player>, version: u64) {
+    fn save_player_permissions(self: &Arc<Self>, player: Arc<Player>, version: u64) {
         let server = Arc::clone(self);
         let uuid = player.gameprofile.id;
         let name = player.gameprofile.name.clone();
-        let data = GlobalPlayerData {
-            last_active_domain: player.get_world().domain().to_owned(),
+        let data = PlayerPermissionData {
             groups: player.permission_groups(),
             permissions: player.permission_overrides(),
             values: player.permission_value_overrides(),
@@ -1089,7 +1080,7 @@ impl Server {
         tokio::spawn(async move {
             match server
                 .player_data_storage
-                .save_global_if_current(uuid, &data, || {
+                .save_player_permissions_if_current(uuid, &data, || {
                     player.permission_state_version() == version
                 })
                 .await
@@ -1097,7 +1088,7 @@ impl Server {
                 Ok(true) => {}
                 Ok(false) => {}
                 Err(e) => {
-                    log::error!("Failed to save global permission data for {name} ({uuid}): {e}");
+                    log::error!("Failed to save player permission data for {name} ({uuid}): {e}");
                 }
             }
         });
@@ -2046,9 +2037,6 @@ impl Server {
             .update_global(player.gameprofile.id, |global| {
                 let mut global = global.unwrap_or(GlobalPlayerData {
                     last_active_domain: target_domain.clone(),
-                    groups: player.permission_groups(),
-                    permissions: player.permission_overrides(),
-                    values: player.permission_value_overrides(),
                 });
                 global.last_active_domain = target_domain;
                 Ok::<_, io::Error>(global)

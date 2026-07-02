@@ -1557,6 +1557,11 @@ impl PermissionSubjectIndex {
         self.states.insert(uuid, state);
     }
 
+    /// Removes one player's cached permission state.
+    pub fn remove(&mut self, uuid: Uuid) {
+        self.states.remove(&uuid);
+    }
+
     /// Returns all cached entries sorted by UUID.
     pub fn entries(&self) -> impl Iterator<Item = (Uuid, &PermissionSubjectState)> {
         self.states.iter().map(|(uuid, state)| (*uuid, state))
