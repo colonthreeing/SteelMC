@@ -17,7 +17,7 @@ use crate::command::requirement::CommandInputContext;
 use crate::permission::{
     PermissionContextKey, PermissionMetadataCatalog, PermissionMetadataExpression,
     PermissionSegment,
-    parse_permission_value_key,
+    parse_permission_metadata_key,
 };
 
 use super::access::{
@@ -405,7 +405,7 @@ fn metadata_expression_suggestion_texts(
             .map(|suggestion| suggestion.text)
             .collect();
     };
-    let Ok(parsed_key) = parse_permission_value_key(metadata_key) else {
+    let Ok(parsed_key) = parse_permission_metadata_key(metadata_key) else {
         return Vec::new();
     };
     if context_prefix.contains('}') || !can_manage_metadata(context, &parsed_key) {
@@ -612,7 +612,7 @@ impl CommandArgumentParser for PermissionMetadataOverrideParser {
         let values = targets
             .into_iter()
             .filter_map(|target| permission_targets::cached_state(server, &target))
-            .map(|state| state.value_overrides);
+            .map(|state| state.metadata_overrides);
         direct_metadata_override_suggestions(prefix, values, context)
     }
 }

@@ -163,7 +163,7 @@ impl CommandArgumentParser for OpTargetsParser {
         }
         for known in server.known_players().entries() {
             if server
-                .global_permission_state(known.uuid())
+                .player_permission_state(known.uuid())
                 .is_some_and(|state| state.groups().iter().any(|group| group == OP_GROUP))
             {
                 continue;

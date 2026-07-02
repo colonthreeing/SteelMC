@@ -102,7 +102,8 @@ use crate::fluid::get_fluid_state;
 use crate::inventory::{SyncPlayerInv, equipment::EquipmentSlot};
 use crate::level_data::RespawnData;
 use crate::permission::{
-    PermissionContext, PermissionExpr, PermissionSet, PermissionValue, PermissionValueSet,
+    PermissionContext, PermissionExpr, PermissionMetadataSet, PermissionMetadataValue,
+    PermissionSet,
 };
 use crate::physics::MoveResult;
 use crate::player::experience::Experience;
@@ -301,9 +302,9 @@ struct PendingRootVehicleRestore {
 struct PlayerPermissionState {
     groups: Vec<String>,
     overrides: PermissionSet,
-    value_overrides: PermissionValueSet,
+    metadata_overrides: PermissionMetadataSet,
     effective: PermissionSet,
-    effective_values: PermissionValueSet,
+    effective_metadata: PermissionMetadataSet,
     version: u64,
 }
 
@@ -1077,18 +1078,18 @@ impl Player {
         &self,
         groups: Vec<String>,
         overrides: PermissionSet,
-        value_overrides: PermissionValueSet,
+        metadata_overrides: PermissionMetadataSet,
         effective: PermissionSet,
-        effective_values: PermissionValueSet,
+        effective_metadata: PermissionMetadataSet,
     ) -> u64 {
         let mut permissions = self.permissions.lock();
         let version = permissions.version.wrapping_add(1);
         *permissions = PlayerPermissionState {
             groups,
             overrides,
-            value_overrides,
+            metadata_overrides,
             effective,
-            effective_values,
+            effective_metadata,
             version,
         };
         version
@@ -1112,10 +1113,10 @@ impl Player {
         self.permissions.lock().overrides.clone()
     }
 
-    /// Returns the player's direct permission value overrides.
+    /// Returns the player's direct permission metadata overrides.
     #[must_use]
-    pub fn permission_value_overrides(&self) -> PermissionValueSet {
-        self.permissions.lock().value_overrides.clone()
+    pub fn permission_metadata_overrides(&self) -> PermissionMetadataSet {
+        self.permissions.lock().metadata_overrides.clone()
     }
 
     /// Returns the current permission-state version.
@@ -1145,24 +1146,24 @@ impl Player {
             .allows_in(permission, context)
     }
 
-    /// Returns a configured permission value in the player's current world context.
+    /// Returns a configured permission metadata in the player's current world context.
     #[must_use]
-    pub fn permission_value(&self, key: &Identifier) -> Option<PermissionValue> {
+    pub fn permission_metadata(&self, key: &Identifier) -> Option<PermissionMetadataValue> {
         let world = self.get_world();
         let context = PermissionContext::for_world(world.domain().to_owned(), world.key.clone());
-        self.permission_value_in(key, &context)
+        self.permission_metadata_in(key, &context)
     }
 
-    /// Returns a configured permission value in `context`.
+    /// Returns a configured permission metadata in `context`.
     #[must_use]
-    pub fn permission_value_in(
+    pub fn permission_metadata_in(
         &self,
         key: &Identifier,
         context: &PermissionContext,
-    ) -> Option<PermissionValue> {
+    ) -> Option<PermissionMetadataValue> {
         self.permissions
             .lock()
-            .effective_values
+            .effective_metadata
             .resolve_in(key, context)
             .cloned()
     }

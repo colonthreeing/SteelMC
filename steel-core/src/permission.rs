@@ -380,7 +380,7 @@ impl PermissionMetadataExpression {
     pub fn parse(value: impl Into<String>) -> Result<Self, PermissionMetadataExpressionError> {
         let value = value.into();
         let Some(context_start) = value.find('{') else {
-            let key = parse_permission_value_key(value.clone()).map_err(|source| {
+            let key = parse_permission_metadata_key(value.clone()).map_err(|source| {
                 PermissionMetadataExpressionError::InvalidMetadataKey { value, source }
             })?;
             return Ok(Self::new(key, PermissionRuleContext::Global));
@@ -391,7 +391,7 @@ impl PermissionMetadataExpression {
         }
 
         let key_value = &value[..context_start];
-        let key = parse_permission_value_key(key_value.to_owned()).map_err(|source| {
+        let key = parse_permission_metadata_key(key_value.to_owned()).map_err(|source| {
             PermissionMetadataExpressionError::InvalidMetadataKey {
                 value: key_value.to_owned(),
                 source,
@@ -684,7 +684,7 @@ pub enum PermissionMetadataExpressionError {
         /// Invalid metadata key text.
         value: String,
         /// Parse error.
-        source: PermissionValueKeyError,
+        source: PermissionMetadataKeyError,
     },
     /// A context selector started with `{` but did not end with `}`.
     UnclosedContext,
@@ -1116,33 +1116,33 @@ fn validate_permission_segment(segment: &str) -> Result<(), PermissionKeyError> 
 /// # Errors
 ///
 /// Returns an error when the key is not a non-empty `namespace:path` identifier.
-pub fn parse_permission_value_key(
+pub fn parse_permission_metadata_key(
     value: impl Into<String>,
-) -> Result<Identifier, PermissionValueKeyError> {
+) -> Result<Identifier, PermissionMetadataKeyError> {
     let value = value.into();
     let Some((namespace, path)) = value.split_once(':') else {
-        return Err(PermissionValueKeyError::InvalidFormat);
+        return Err(PermissionMetadataKeyError::InvalidFormat);
     };
     if namespace.is_empty() {
-        return Err(PermissionValueKeyError::EmptyNamespace);
+        return Err(PermissionMetadataKeyError::EmptyNamespace);
     }
     if path.is_empty() {
-        return Err(PermissionValueKeyError::EmptyPath);
+        return Err(PermissionMetadataKeyError::EmptyPath);
     }
     if path.contains(':') {
-        return Err(PermissionValueKeyError::InvalidFormat);
+        return Err(PermissionMetadataKeyError::InvalidFormat);
     }
     if namespace.split('.').any(str::is_empty) {
-        return Err(PermissionValueKeyError::InvalidNamespace);
+        return Err(PermissionMetadataKeyError::InvalidNamespace);
     }
     if path.split(['.', '/']).any(str::is_empty) {
-        return Err(PermissionValueKeyError::InvalidPath);
+        return Err(PermissionMetadataKeyError::InvalidPath);
     }
     if !Identifier::validate_namespace(namespace) {
-        return Err(PermissionValueKeyError::InvalidNamespace);
+        return Err(PermissionMetadataKeyError::InvalidNamespace);
     }
     if !Identifier::validate_path(path) {
-        return Err(PermissionValueKeyError::InvalidPath);
+        return Err(PermissionMetadataKeyError::InvalidPath);
     }
 
     Ok(Identifier::new(namespace.to_owned(), path.to_owned()))
@@ -1478,7 +1478,7 @@ impl PermissionContextCatalog {
 pub struct PermissionSubjectState {
     groups: Vec<String>,
     overrides: PermissionSet,
-    value_overrides: PermissionValueSet,
+    metadata_overrides: PermissionMetadataSet,
 }
 
 impl PermissionSubjectState {
@@ -1488,21 +1488,21 @@ impl PermissionSubjectState {
         Self {
             groups,
             overrides,
-            value_overrides: PermissionValueSet::new(),
+            metadata_overrides: PermissionMetadataSet::new(),
         }
     }
 
-    /// Creates a persisted permission-state snapshot with value overrides.
+    /// Creates a persisted permission-state snapshot with metadata overrides.
     #[must_use]
-    pub const fn new_with_values(
+    pub const fn new_with_metadata(
         groups: Vec<String>,
         overrides: PermissionSet,
-        value_overrides: PermissionValueSet,
+        metadata_overrides: PermissionMetadataSet,
     ) -> Self {
         Self {
             groups,
             overrides,
-            value_overrides,
+            metadata_overrides,
         }
     }
 
@@ -1518,16 +1518,16 @@ impl PermissionSubjectState {
         &self.overrides
     }
 
-    /// Returns direct permission value overrides.
+    /// Returns direct permission metadata overrides.
     #[must_use]
-    pub const fn value_overrides(&self) -> &PermissionValueSet {
-        &self.value_overrides
+    pub const fn metadata_overrides(&self) -> &PermissionMetadataSet {
+        &self.metadata_overrides
     }
 
     /// Splits this snapshot into owned groups and overrides.
     #[must_use]
-    pub fn into_parts(self) -> (Vec<String>, PermissionSet, PermissionValueSet) {
-        (self.groups, self.overrides, self.value_overrides)
+    pub fn into_parts(self) -> (Vec<String>, PermissionSet, PermissionMetadataSet) {
+        (self.groups, self.overrides, self.metadata_overrides)
     }
 }
 
@@ -1608,7 +1608,7 @@ impl Error for PermissionKeyError {}
 
 /// Invalid permission metadata identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PermissionValueKeyError {
+pub enum PermissionMetadataKeyError {
     /// The value did not use `namespace:path` form.
     InvalidFormat,
     /// The namespace is empty.
@@ -1621,7 +1621,7 @@ pub enum PermissionValueKeyError {
     InvalidPath,
 }
 
-impl fmt::Display for PermissionValueKeyError {
+impl fmt::Display for PermissionMetadataKeyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidFormat => write!(f, "permission metadata key must be a namespaced id"),
@@ -1643,7 +1643,7 @@ impl fmt::Display for PermissionValueKeyError {
     }
 }
 
-impl Error for PermissionValueKeyError {}
+impl Error for PermissionMetadataKeyError {}
 
 /// A boolean permission expression.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1735,10 +1735,10 @@ pub enum PermissionState {
     Deny,
 }
 
-/// A configured permission value.
+/// A configured permission metadata value.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(untagged)]
-pub enum PermissionValue {
+pub enum PermissionMetadataValue {
     /// Boolean metadata.
     Bool(bool),
     /// Integer metadata.
@@ -1747,7 +1747,7 @@ pub enum PermissionValue {
     String(String),
 }
 
-impl PermissionValue {
+impl PermissionMetadataValue {
     /// Returns this value as a boolean when it has boolean type.
     #[must_use]
     pub const fn as_bool(&self) -> Option<bool> {
@@ -1776,7 +1776,7 @@ impl PermissionValue {
     }
 }
 
-impl fmt::Display for PermissionValue {
+impl fmt::Display for PermissionMetadataValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Bool(value) => write!(f, "{value}"),
@@ -1862,18 +1862,18 @@ impl PermissionEntry {
     }
 }
 
-/// One configured permission value rule.
+/// One configured permission metadata rule.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PermissionValueEntry {
+pub struct PermissionMetadataEntry {
     key: Identifier,
     context: PermissionRuleContext,
-    value: PermissionValue,
+    value: PermissionMetadataValue,
 }
 
-impl PermissionValueEntry {
-    /// Creates one global permission value entry.
+impl PermissionMetadataEntry {
+    /// Creates one global permission metadata entry.
     #[must_use]
-    pub const fn new(key: Identifier, value: PermissionValue) -> Self {
+    pub const fn new(key: Identifier, value: PermissionMetadataValue) -> Self {
         Self {
             key,
             context: PermissionRuleContext::Global,
@@ -1881,12 +1881,12 @@ impl PermissionValueEntry {
         }
     }
 
-    /// Creates one contextual permission value entry.
+    /// Creates one contextual permission metadata entry.
     #[must_use]
     pub const fn new_with_context(
         key: Identifier,
         context: PermissionRuleContext,
-        value: PermissionValue,
+        value: PermissionMetadataValue,
     ) -> Self {
         Self {
             key,
@@ -1909,7 +1909,7 @@ impl PermissionValueEntry {
 
     /// Returns the configured value.
     #[must_use]
-    pub const fn value(&self) -> &PermissionValue {
+    pub const fn value(&self) -> &PermissionMetadataValue {
         &self.value
     }
 }
@@ -2245,15 +2245,15 @@ impl PermissionSet {
     }
 }
 
-/// A flat effective permission value set.
+/// A flat effective permission metadata set.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct PermissionValueSet {
-    entries: Vec<PermissionValueEntry>,
+pub struct PermissionMetadataSet {
+    entries: Vec<PermissionMetadataEntry>,
     sources: Vec<PermissionResolutionSource>,
 }
 
-impl PermissionValueSet {
-    /// Creates an empty permission value set.
+impl PermissionMetadataSet {
+    /// Creates an empty permission metadata set.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -2262,9 +2262,9 @@ impl PermissionValueSet {
         }
     }
 
-    /// Creates a permission value set from entries.
+    /// Creates a permission metadata set from entries.
     #[must_use]
-    pub fn from_entries(entries: impl IntoIterator<Item = PermissionValueEntry>) -> Self {
+    pub fn from_entries(entries: impl IntoIterator<Item = PermissionMetadataEntry>) -> Self {
         let entries = entries.into_iter().collect::<Vec<_>>();
         let sources = vec![PermissionResolutionSource::Subject; entries.len()];
         Self { entries, sources }
@@ -2272,39 +2272,41 @@ impl PermissionValueSet {
 
     /// Returns all entries in insertion order.
     #[must_use]
-    pub fn entries(&self) -> &[PermissionValueEntry] {
+    pub fn entries(&self) -> &[PermissionMetadataEntry] {
         &self.entries
     }
 
-    /// Adds one permission value entry.
-    pub fn push(&mut self, entry: PermissionValueEntry) {
+    /// Adds one permission metadata entry.
+    pub fn push(&mut self, entry: PermissionMetadataEntry) {
         self.push_with_source(entry, PermissionResolutionSource::Subject);
     }
 
-    /// Sets one exact global permission value, replacing any previous exact value.
-    pub fn set(&mut self, key: Identifier, value: PermissionValue) {
+    /// Sets one exact global permission metadata value, replacing any previous exact value.
+    pub fn set(&mut self, key: Identifier, value: PermissionMetadataValue) {
         self.set_in(key, PermissionRuleContext::Global, value);
     }
 
-    /// Sets one exact contextual permission value, replacing any previous exact value in that context.
+    /// Sets one exact contextual permission metadata value, replacing any previous exact value in that context.
     pub fn set_in(
         &mut self,
         key: Identifier,
         context: PermissionRuleContext,
-        value: PermissionValue,
+        value: PermissionMetadataValue,
     ) {
         self.retain_entries(|entry| entry.key != key || entry.context != context);
-        self.push(PermissionValueEntry::new_with_context(key, context, value));
+        self.push(PermissionMetadataEntry::new_with_context(
+            key, context, value,
+        ));
     }
 
-    /// Removes one exact global permission value.
+    /// Removes one exact global permission metadata value.
     ///
     /// Returns true when an entry was removed.
     pub fn unset(&mut self, key: &Identifier) -> bool {
         self.unset_in(key, &PermissionRuleContext::Global)
     }
 
-    /// Removes one exact contextual permission value.
+    /// Removes one exact contextual permission metadata value.
     ///
     /// Returns true when an entry was removed.
     pub fn unset_in(&mut self, key: &Identifier, context: &PermissionRuleContext) -> bool {
@@ -2315,28 +2317,28 @@ impl PermissionValueSet {
 
     /// Resolves one value in the global context.
     #[must_use]
-    pub fn resolve(&self, key: &Identifier) -> Option<&PermissionValue> {
+    pub fn resolve(&self, key: &Identifier) -> Option<&PermissionMetadataValue> {
         self.resolve_in(key, &PermissionContext::global())
     }
 
     /// Resolves one value in a permission context.
     ///
-    /// More specific contexts win. Tied contexts prefer player-level values
-    /// over group values, then group priority, then final insertion order as a
+    /// More specific contexts win. Tied contexts prefer player-level metadata
+    /// over group metadata, then group priority, then final insertion order as a
     /// deterministic fallback.
     #[must_use]
     pub fn resolve_in(
         &self,
         key: &Identifier,
         context: &PermissionContext,
-    ) -> Option<&PermissionValue> {
+    ) -> Option<&PermissionMetadataValue> {
         self.best_value_candidate(key, context)
             .map(|candidate| self.entries[candidate.entry_index].value())
     }
 
     /// Resolves one value in the global context and returns the winning rule.
     #[must_use]
-    pub fn resolve_detailed(&self, key: &Identifier) -> Option<PermissionValueResolution> {
+    pub fn resolve_detailed(&self, key: &Identifier) -> Option<PermissionMetadataResolution> {
         self.resolve_in_detailed(key, &PermissionContext::global())
     }
 
@@ -2346,12 +2348,12 @@ impl PermissionValueSet {
         &self,
         key: &Identifier,
         context: &PermissionContext,
-    ) -> Option<PermissionValueResolution> {
+    ) -> Option<PermissionMetadataResolution> {
         self.best_value_candidate(key, context)
             .map(|candidate| self.value_resolution(candidate))
     }
 
-    fn push_group(&mut self, entry: PermissionValueEntry, group: &str, group_priority: i32) {
+    fn push_group(&mut self, entry: PermissionMetadataEntry, group: &str, group_priority: i32) {
         self.push_with_source(
             entry,
             PermissionResolutionSource::Group {
@@ -2363,14 +2365,14 @@ impl PermissionValueSet {
 
     fn push_with_source(
         &mut self,
-        entry: PermissionValueEntry,
+        entry: PermissionMetadataEntry,
         source: PermissionResolutionSource,
     ) {
         self.entries.push(entry);
         self.sources.push(source);
     }
 
-    fn retain_entries(&mut self, mut keep: impl FnMut(&PermissionValueEntry) -> bool) {
+    fn retain_entries(&mut self, mut keep: impl FnMut(&PermissionMetadataEntry) -> bool) {
         let entries = std::mem::take(&mut self.entries);
         let sources = std::mem::take(&mut self.sources);
         for (entry, source) in entries.into_iter().zip(sources) {
@@ -2385,7 +2387,7 @@ impl PermissionValueSet {
         &self,
         key: &Identifier,
         context: &PermissionContext,
-    ) -> Option<PermissionValueCandidate> {
+    ) -> Option<PermissionMetadataCandidate> {
         let mut best = None;
 
         for (index, (entry, source)) in self.entries.iter().zip(&self.sources).enumerate() {
@@ -2395,7 +2397,7 @@ impl PermissionValueSet {
             let specificity = entry.context.specificity();
             let rank = source.rank();
             let priority = source.tie_priority();
-            let candidate = PermissionValueCandidate {
+            let candidate = PermissionMetadataCandidate {
                 entry_index: index,
                 context_specificity: specificity,
                 source: source.clone(),
@@ -2420,8 +2422,11 @@ impl PermissionValueSet {
         best
     }
 
-    fn value_resolution(&self, candidate: PermissionValueCandidate) -> PermissionValueResolution {
-        PermissionValueResolution {
+    fn value_resolution(
+        &self,
+        candidate: PermissionMetadataCandidate,
+    ) -> PermissionMetadataResolution {
+        PermissionMetadataResolution {
             entry: self.entries[candidate.entry_index].clone(),
             source: candidate.source,
             context_specificity: candidate.context_specificity,
@@ -2531,23 +2536,23 @@ impl PermissionResolution {
     }
 }
 
-/// Detailed winning permission value rule.
+/// Detailed winning permission metadata rule.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PermissionValueResolution {
-    entry: PermissionValueEntry,
+pub struct PermissionMetadataResolution {
+    entry: PermissionMetadataEntry,
     source: PermissionResolutionSource,
     context_specificity: usize,
     insertion_index: usize,
 }
 
-impl PermissionValueResolution {
-    /// Returns the winning permission value entry.
+impl PermissionMetadataResolution {
+    /// Returns the winning permission metadata entry.
     #[must_use]
-    pub const fn entry(&self) -> &PermissionValueEntry {
+    pub const fn entry(&self) -> &PermissionMetadataEntry {
         &self.entry
     }
 
-    /// Returns the source that contributed the winning value.
+    /// Returns the source that contributed the winning metadata value.
     #[must_use]
     pub const fn source(&self) -> &PermissionResolutionSource {
         &self.source
@@ -2555,7 +2560,7 @@ impl PermissionValueResolution {
 
     /// Returns the configured value.
     #[must_use]
-    pub const fn value(&self) -> &PermissionValue {
+    pub const fn value(&self) -> &PermissionMetadataValue {
         self.entry.value()
     }
 
@@ -2565,7 +2570,7 @@ impl PermissionValueResolution {
         self.entry.key()
     }
 
-    /// Returns the winning value context.
+    /// Returns the winning metadata value context.
     #[must_use]
     pub const fn context(&self) -> &PermissionRuleContext {
         self.entry.context()
@@ -2605,7 +2610,7 @@ impl PermissionCandidate {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct PermissionValueCandidate {
+struct PermissionMetadataCandidate {
     entry_index: usize,
     context_specificity: usize,
     source: PermissionResolutionSource,
@@ -2693,7 +2698,7 @@ pub struct PermissionMetadataRuleConfig {
     /// Permission metadata expression affected by this rule.
     pub key: String,
     /// Configured value.
-    pub value: PermissionValue,
+    pub value: PermissionMetadataValue,
 }
 
 fn parse_loaded_world_identifier(value: &str) -> Option<Identifier> {
@@ -2903,17 +2908,17 @@ impl PermissionGroupManager {
             .effective_permissions(assigned_groups, player_permissions)
     }
 
-    /// Builds an effective permission value set from defaults, assigned groups, and player overrides.
+    /// Builds an effective permission metadata set from defaults, assigned groups, and player overrides.
     #[must_use]
-    pub fn effective_values(
+    pub fn effective_metadata(
         &self,
         assigned_groups: &[String],
-        player_values: &PermissionValueSet,
-    ) -> PermissionValueSet {
+        player_metadata: &PermissionMetadataSet,
+    ) -> PermissionMetadataSet {
         self.state
             .read()
             .groups
-            .effective_values(assigned_groups, player_values)
+            .effective_metadata(assigned_groups, player_metadata)
     }
 
     /// Replaces the complete group config after validation and optional persistence.
@@ -3005,7 +3010,7 @@ impl Default for PermissionGroups {
             PermissionGroup {
                 priority: 0,
                 permissions: PermissionSet::new(),
-                values: PermissionValueSet::new(),
+                metadata: PermissionMetadataSet::new(),
             },
         );
         groups.insert(
@@ -3013,7 +3018,7 @@ impl Default for PermissionGroups {
             PermissionGroup {
                 priority: 0,
                 permissions: op_permissions,
-                values: PermissionValueSet::new(),
+                metadata: PermissionMetadataSet::new(),
             },
         );
 
@@ -3047,7 +3052,7 @@ impl PermissionGroups {
         for (name, group) in config.groups {
             validate_group_name(&name)?;
             let mut permissions = PermissionSet::new();
-            let mut values = PermissionValueSet::new();
+            let mut metadata = PermissionMetadataSet::new();
             for permission in group.allow {
                 let expression = PermissionRuleExpression::parse(permission).map_err(|source| {
                     PermissionConfigError::InvalidPermissionExpression {
@@ -3077,7 +3082,7 @@ impl PermissionGroups {
                         }
                     })?;
                 let (key, context) = expression.into_parts();
-                values.push(PermissionValueEntry::new_with_context(
+                metadata.push(PermissionMetadataEntry::new_with_context(
                     key,
                     context,
                     value.value,
@@ -3088,7 +3093,7 @@ impl PermissionGroups {
                 PermissionGroup {
                     priority: group.priority,
                     permissions,
-                    values,
+                    metadata,
                 },
             );
         }
@@ -3129,7 +3134,7 @@ impl PermissionGroups {
     /// Adds configured group metadata keys to a discovery catalog.
     pub fn register_metadata_catalog_entries(&self, catalog: &mut PermissionMetadataCatalog) {
         for group in self.groups.values() {
-            for entry in group.values.entries() {
+            for entry in group.metadata.entries() {
                 catalog.insert(entry.key.clone(), PermissionMetadataCatalogSource::Config);
             }
         }
@@ -3141,7 +3146,7 @@ impl PermissionGroups {
             for entry in group.permissions.entries() {
                 register_context_catalog_entry(entry.context(), catalog);
             }
-            for entry in group.values.entries() {
+            for entry in group.metadata.entries() {
                 register_context_catalog_entry(entry.context(), catalog);
             }
         }
@@ -3172,25 +3177,25 @@ impl PermissionGroups {
         effective
     }
 
-    /// Builds an effective permission value set from default groups, assigned groups,
-    /// and player-level value overrides.
+    /// Builds an effective permission metadata set from default groups, assigned groups,
+    /// and player-level metadata overrides.
     ///
     /// Assigned groups that are not configured have no effect.
     #[must_use]
-    pub fn effective_values(
+    pub fn effective_metadata(
         &self,
         assigned_groups: &[String],
-        player_values: &PermissionValueSet,
-    ) -> PermissionValueSet {
-        let mut effective = PermissionValueSet::new();
+        player_metadata: &PermissionMetadataSet,
+    ) -> PermissionMetadataSet {
+        let mut effective = PermissionMetadataSet::new();
 
         for group in &self.default_groups {
-            self.append_group_values(group, &mut effective);
+            self.append_group_metadata(group, &mut effective);
         }
         for group in assigned_groups {
-            self.append_group_values(group, &mut effective);
+            self.append_group_metadata(group, &mut effective);
         }
-        for entry in player_values.entries() {
+        for entry in player_metadata.entries() {
             effective.push(entry.clone());
         }
 
@@ -3207,12 +3212,12 @@ impl PermissionGroups {
         }
     }
 
-    fn append_group_values(&self, group_name: &str, effective: &mut PermissionValueSet) {
+    fn append_group_metadata(&self, group_name: &str, effective: &mut PermissionMetadataSet) {
         let Some(group) = self.groups.get(group_name) else {
             return;
         };
 
-        for entry in group.values.entries() {
+        for entry in group.metadata.entries() {
             effective.push_group(entry.clone(), group_name, group.priority);
         }
     }
@@ -3258,7 +3263,7 @@ fn validate_group_name(group: &str) -> Result<(), PermissionConfigError> {
 pub struct PermissionGroup {
     priority: i32,
     permissions: PermissionSet,
-    values: PermissionValueSet,
+    metadata: PermissionMetadataSet,
 }
 
 impl PermissionGroup {
@@ -3274,10 +3279,10 @@ impl PermissionGroup {
         &self.permissions
     }
 
-    /// Returns this group's permission value entries.
+    /// Returns this group's permission metadata entries.
     #[must_use]
-    pub const fn values(&self) -> &PermissionValueSet {
-        &self.values
+    pub const fn metadata(&self) -> &PermissionMetadataSet {
+        &self.metadata
     }
 }
 
@@ -3350,11 +3355,11 @@ mod tests {
         PermissionContextCatalogSource, PermissionContextKey, PermissionEntry, PermissionExpr,
         PermissionGroupManager, PermissionGroupManagerError, PermissionGroups,
         PermissionGroupsConfig, PermissionKey, PermissionKeyError, PermissionMetadataCatalog,
-        PermissionMetadataCatalogSource, PermissionMetadataExpression,
-        PermissionMetadataExpressionError, PermissionResolutionSource, PermissionRuleContext,
+        PermissionMetadataCatalogSource, PermissionMetadataEntry, PermissionMetadataExpression,
+        PermissionMetadataExpressionError, PermissionMetadataKeyError, PermissionMetadataSet,
+        PermissionMetadataValue, PermissionResolutionSource, PermissionRuleContext,
         PermissionRuleExpression, PermissionRuleExpressionError, PermissionSegment, PermissionSet,
-        PermissionState, PermissionValue, PermissionValueEntry, PermissionValueKeyError,
-        PermissionValueSet, parse_permission_value_key,
+        PermissionState, parse_permission_metadata_key,
     };
     use steel_utils::Identifier;
     use steel_utils::locks::SyncMutex;
@@ -3400,7 +3405,7 @@ mod tests {
     }
 
     fn value_key(value: &str) -> Identifier {
-        parse_permission_value_key(value).expect("metadata key parses")
+        parse_permission_metadata_key(value).expect("metadata key parses")
     }
 
     fn context_key(value: &str) -> PermissionContextKey {
@@ -3445,69 +3450,71 @@ mod tests {
     }
 
     #[test]
-    fn permission_value_keys_reject_invalid_identifiers() {
+    fn permission_metadata_keys_reject_invalid_identifiers() {
         assert_eq!(
-            parse_permission_value_key("steel:homes*").err(),
-            Some(PermissionValueKeyError::InvalidPath)
+            parse_permission_metadata_key("steel:homes*").err(),
+            Some(PermissionMetadataKeyError::InvalidPath)
         );
         assert_eq!(
-            parse_permission_value_key("*").err(),
-            Some(PermissionValueKeyError::InvalidFormat)
+            parse_permission_metadata_key("*").err(),
+            Some(PermissionMetadataKeyError::InvalidFormat)
         );
         assert_eq!(
-            parse_permission_value_key(":homes").err(),
-            Some(PermissionValueKeyError::EmptyNamespace)
+            parse_permission_metadata_key(":homes").err(),
+            Some(PermissionMetadataKeyError::EmptyNamespace)
         );
         assert_eq!(
-            parse_permission_value_key("steel:").err(),
-            Some(PermissionValueKeyError::EmptyPath)
+            parse_permission_metadata_key("steel:").err(),
+            Some(PermissionMetadataKeyError::EmptyPath)
         );
         assert_eq!(
-            parse_permission_value_key("steel:homes:limit").err(),
-            Some(PermissionValueKeyError::InvalidFormat)
+            parse_permission_metadata_key("steel:homes:limit").err(),
+            Some(PermissionMetadataKeyError::InvalidFormat)
         );
         assert_eq!(
-            parse_permission_value_key("steel.:homes").err(),
-            Some(PermissionValueKeyError::InvalidNamespace)
+            parse_permission_metadata_key("steel.:homes").err(),
+            Some(PermissionMetadataKeyError::InvalidNamespace)
         );
         assert_eq!(
-            parse_permission_value_key("steel:homes//limit").err(),
-            Some(PermissionValueKeyError::InvalidPath)
+            parse_permission_metadata_key("steel:homes//limit").err(),
+            Some(PermissionMetadataKeyError::InvalidPath)
         );
     }
 
     #[test]
-    fn permission_values_resolve_by_context_then_order() {
+    fn permission_metadata_resolves_by_context_then_order() {
         let limit = value_key("steel:homes");
-        let values = PermissionValueSet::from_entries([
-            PermissionValueEntry::new(limit.clone(), PermissionValue::Integer(5)),
-            PermissionValueEntry::new(limit.clone(), PermissionValue::Integer(10)),
-            PermissionValueEntry::new_with_context(
+        let values = PermissionMetadataSet::from_entries([
+            PermissionMetadataEntry::new(limit.clone(), PermissionMetadataValue::Integer(5)),
+            PermissionMetadataEntry::new(limit.clone(), PermissionMetadataValue::Integer(10)),
+            PermissionMetadataEntry::new_with_context(
                 limit.clone(),
                 PermissionRuleContext::domain("lobby"),
-                PermissionValue::Integer(3),
+                PermissionMetadataValue::Integer(3),
             ),
-            PermissionValueEntry::new_with_context(
+            PermissionMetadataEntry::new_with_context(
                 limit.clone(),
                 PermissionRuleContext::world(Identifier::new("lobby", "spawn")),
-                PermissionValue::Integer(2),
+                PermissionMetadataValue::Integer(2),
             ),
         ]);
 
         assert_eq!(
-            values.resolve(&limit).and_then(PermissionValue::as_i64),
+            values
+                .resolve(&limit)
+                .and_then(PermissionMetadataValue::as_i64),
             Some(10)
         );
         assert_eq!(
             values
                 .resolve_in(&limit, &world_context("lobby", "creative"))
-                .and_then(PermissionValue::as_i64),
+                .and_then(PermissionMetadataValue::as_i64),
             Some(3)
         );
         assert_eq!(
             values
                 .resolve_in(&limit, &world_context("lobby", "spawn"))
-                .and_then(PermissionValue::as_i64),
+                .and_then(PermissionMetadataValue::as_i64),
             Some(2)
         );
     }
@@ -3639,7 +3646,7 @@ mod tests {
             error,
             PermissionMetadataExpressionError::InvalidMetadataKey { value, source }
                 if value == "steel:homes:limit"
-                    && source == PermissionValueKeyError::InvalidFormat
+                    && source == PermissionMetadataKeyError::InvalidFormat
         ));
     }
 
@@ -4179,7 +4186,7 @@ mod tests {
             .metadata
             .push(super::PermissionMetadataRuleConfig {
                 key: "plugin:homes".to_owned(),
-                value: PermissionValue::Integer(10),
+                value: PermissionMetadataValue::Integer(10),
             });
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
         let mut catalog = PermissionMetadataCatalog::new();
@@ -4208,7 +4215,7 @@ mod tests {
             .metadata
             .push(super::PermissionMetadataRuleConfig {
                 key: "plugin:homes{region=market}".to_owned(),
-                value: PermissionValue::Integer(5),
+                value: PermissionMetadataValue::Integer(5),
             });
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
         let mut catalog = PermissionContextCatalog::new();
@@ -4397,7 +4404,7 @@ mod tests {
     }
 
     #[test]
-    fn groups_support_contextual_values() {
+    fn groups_support_contextual_metadata() {
         let mut config = PermissionGroupsConfig::default();
         let default_group = config
             .groups
@@ -4407,46 +4414,48 @@ mod tests {
             .metadata
             .push(super::PermissionMetadataRuleConfig {
                 key: "steel:homes".to_owned(),
-                value: PermissionValue::Integer(5),
+                value: PermissionMetadataValue::Integer(5),
             });
         default_group
             .metadata
             .push(super::PermissionMetadataRuleConfig {
                 key: "steel:homes{domain=lobby}".to_owned(),
-                value: PermissionValue::Integer(3),
+                value: PermissionMetadataValue::Integer(3),
             });
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
-        let player_values = PermissionValueSet::from_entries([PermissionValueEntry::new(
+        let player_metadata = PermissionMetadataSet::from_entries([PermissionMetadataEntry::new(
             value_key("steel:homes"),
-            PermissionValue::Integer(10),
+            PermissionMetadataValue::Integer(10),
         )]);
-        let effective = groups.effective_values(&[], &player_values);
+        let effective = groups.effective_metadata(&[], &player_metadata);
         let limit = value_key("steel:homes");
 
         assert_eq!(
-            effective.resolve(&limit).and_then(PermissionValue::as_i64),
+            effective
+                .resolve(&limit)
+                .and_then(PermissionMetadataValue::as_i64),
             Some(10)
         );
         assert_eq!(
             effective
                 .resolve_in(&limit, &world_context("lobby", "spawn"))
-                .and_then(PermissionValue::as_i64),
+                .and_then(PermissionMetadataValue::as_i64),
             Some(3)
         );
 
-        let player_values = PermissionValueSet::from_entries([
-            PermissionValueEntry::new(limit.clone(), PermissionValue::Integer(10)),
-            PermissionValueEntry::new_with_context(
+        let player_metadata = PermissionMetadataSet::from_entries([
+            PermissionMetadataEntry::new(limit.clone(), PermissionMetadataValue::Integer(10)),
+            PermissionMetadataEntry::new_with_context(
                 limit.clone(),
                 PermissionRuleContext::domain("lobby"),
-                PermissionValue::Integer(20),
+                PermissionMetadataValue::Integer(20),
             ),
         ]);
-        let effective = groups.effective_values(&[], &player_values);
+        let effective = groups.effective_metadata(&[], &player_metadata);
         assert_eq!(
             effective
                 .resolve_in(&limit, &world_context("lobby", "spawn"))
-                .and_then(PermissionValue::as_i64),
+                .and_then(PermissionMetadataValue::as_i64),
             Some(20)
         );
     }
@@ -4586,7 +4595,7 @@ mod tests {
                 deny: Vec::new(),
                 metadata: vec![super::PermissionMetadataRuleConfig {
                     key: "steel:homes".to_owned(),
-                    value: PermissionValue::Integer(5),
+                    value: PermissionMetadataValue::Integer(5),
                 }],
             },
         );
@@ -4598,19 +4607,21 @@ mod tests {
                 deny: Vec::new(),
                 metadata: vec![super::PermissionMetadataRuleConfig {
                     key: "steel:homes".to_owned(),
-                    value: PermissionValue::Integer(10),
+                    value: PermissionMetadataValue::Integer(10),
                 }],
             },
         );
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
-        let effective = groups.effective_values(
+        let effective = groups.effective_metadata(
             &["high".to_owned(), "low".to_owned()],
-            &PermissionValueSet::new(),
+            &PermissionMetadataSet::new(),
         );
         let limit = value_key("steel:homes");
 
         assert_eq!(
-            effective.resolve(&limit).and_then(PermissionValue::as_i64),
+            effective
+                .resolve(&limit)
+                .and_then(PermissionMetadataValue::as_i64),
             Some(10)
         );
         let resolution = effective
@@ -4622,7 +4633,7 @@ mod tests {
     }
 
     #[test]
-    fn group_values_reject_wildcard_keys() {
+    fn group_metadata_rejects_wildcard_keys() {
         let mut config = PermissionGroupsConfig::default();
         let default_group = config
             .groups
@@ -4632,7 +4643,7 @@ mod tests {
             .metadata
             .push(super::PermissionMetadataRuleConfig {
                 key: "steel:homes*".to_owned(),
-                value: PermissionValue::Integer(5),
+                value: PermissionMetadataValue::Integer(5),
             });
 
         assert!(matches!(
@@ -4640,7 +4651,7 @@ mod tests {
             Err(super::PermissionConfigError::InvalidMetadataExpression {
                 group,
                 source: super::PermissionMetadataExpressionError::InvalidMetadataKey {
-                    source: PermissionValueKeyError::InvalidPath,
+                    source: PermissionMetadataKeyError::InvalidPath,
                     ..
                 },
             }) if group == "default"
@@ -4672,7 +4683,7 @@ mod tests {
     }
 
     #[test]
-    fn group_values_support_chained_contexts() {
+    fn group_metadata_supports_chained_contexts() {
         let mut config = PermissionGroupsConfig::default();
         let default_group = config
             .groups
@@ -4682,10 +4693,10 @@ mod tests {
             .metadata
             .push(super::PermissionMetadataRuleConfig {
                 key: "steel:homes{domain=lobby,world=lobby:spawn,region=spawn}".to_owned(),
-                value: PermissionValue::Integer(5),
+                value: PermissionMetadataValue::Integer(5),
             });
         let groups = PermissionGroups::from_config(config).expect("groups config is valid");
-        let effective = groups.effective_values(&[], &PermissionValueSet::new());
+        let effective = groups.effective_metadata(&[], &PermissionMetadataSet::new());
         let homes = value_key("steel:homes");
         let matching_context = world_context("lobby", "spawn")
             .with_custom_context(context_key("region"), "spawn")
@@ -4694,13 +4705,13 @@ mod tests {
         assert_eq!(
             effective
                 .resolve_in(&homes, &matching_context)
-                .and_then(PermissionValue::as_i64),
+                .and_then(PermissionMetadataValue::as_i64),
             Some(5)
         );
         assert_eq!(
             effective
                 .resolve_in(&homes, &world_context("lobby", "spawn"))
-                .and_then(PermissionValue::as_i64),
+                .and_then(PermissionMetadataValue::as_i64),
             None
         );
     }

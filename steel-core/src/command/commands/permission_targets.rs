@@ -1,6 +1,6 @@
 use crate::command::error::CommandError;
 use crate::command::graph::PermissionTarget;
-use crate::permission::{PermissionSet, PermissionValueSet};
+use crate::permission::{PermissionMetadataSet, PermissionSet};
 use crate::player::Player;
 use crate::player::player_data_storage::PlayerPermissionData;
 use crate::server::Server;
@@ -10,7 +10,7 @@ use std::sync::Arc;
 pub(super) struct PermissionTargetState {
     pub(super) groups: Vec<String>,
     pub(super) overrides: PermissionSet,
-    pub(super) value_overrides: PermissionValueSet,
+    pub(super) metadata_overrides: PermissionMetadataSet,
 }
 
 pub(super) struct LoadedPermissionTargetState {
@@ -111,17 +111,17 @@ async fn load_offline_state(
     let PlayerPermissionData {
         groups,
         permissions,
-        values,
+        metadata,
     } = data.unwrap_or_else(|| PlayerPermissionData {
         groups: Vec::new(),
         permissions: PermissionSet::default(),
-        values: PermissionValueSet::default(),
+        metadata: PermissionMetadataSet::default(),
     });
 
     Ok(PermissionTargetState {
         groups,
         overrides: permissions,
-        value_overrides: values,
+        metadata_overrides: metadata,
     })
 }
 
@@ -133,7 +133,7 @@ pub(super) fn online_state(
     let state = PermissionTargetState {
         groups: player.permission_groups(),
         overrides: player.permission_overrides(),
-        value_overrides: player.permission_value_overrides(),
+        metadata_overrides: player.permission_metadata_overrides(),
     };
     Some((player, state))
 }
@@ -145,12 +145,12 @@ pub(super) fn cached_state(
     if let Some((_, state)) = online_state(server, target) {
         return Some(state);
     }
-    let state = server.global_permission_state(target.uuid()?)?;
-    let (groups, overrides, value_overrides) = state.into_parts();
+    let state = server.player_permission_state(target.uuid()?)?;
+    let (groups, overrides, metadata_overrides) = state.into_parts();
     Some(PermissionTargetState {
         groups,
         overrides,
-        value_overrides,
+        metadata_overrides,
     })
 }
 
@@ -166,11 +166,11 @@ async fn save_offline_state(
         )));
     };
     server
-        .update_offline_player_global_permissions(
+        .update_offline_player_permissions(
             uuid,
             state.groups,
             state.overrides,
-            state.value_overrides,
+            state.metadata_overrides,
         )
         .await
         .map_err(|error| CommandError::failure(error.to_string()))
@@ -182,11 +182,11 @@ pub(super) fn save_online_state(
     state: PermissionTargetState,
 ) -> Result<(), CommandError> {
     server
-        .update_player_global_permissions(
+        .update_player_permissions(
             player,
             state.groups,
             state.overrides,
-            state.value_overrides,
+            state.metadata_overrides,
         )
         .map_err(|error| CommandError::failure(error.to_string()))
 }

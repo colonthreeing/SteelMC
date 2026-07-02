@@ -7,7 +7,7 @@ use steel_utils::Identifier;
 use crate::permission::{
     OP_GROUP, PermissionGroupConfig, PermissionGroupsConfig, PermissionKey,
     PermissionMetadataExpression, PermissionMetadataRuleConfig, PermissionRuleContext,
-    PermissionRuleExpression, PermissionState, PermissionValue,
+    PermissionRuleExpression, PermissionState, PermissionMetadataValue,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -133,7 +133,7 @@ pub(super) fn set_group_config_metadata(
     config: &mut PermissionGroupsConfig,
     group: &str,
     key: &Identifier,
-    value: &PermissionValue,
+    value: &PermissionMetadataValue,
     rule_context: &PermissionRuleContext,
 ) -> Result<bool, PermissionGroupEditError> {
     let Some(group_config) = config.groups.get_mut(group) else {
@@ -198,7 +198,7 @@ fn push_group_config_permission(
 fn push_group_config_metadata(
     group_config: &mut PermissionGroupConfig,
     key: &Identifier,
-    value: &PermissionValue,
+    value: &PermissionMetadataValue,
     rule_context: &PermissionRuleContext,
 ) -> Result<(), PermissionGroupEditError> {
     group_config.metadata.push(PermissionMetadataRuleConfig {
@@ -236,7 +236,7 @@ pub(super) fn group_config_metadata_value<'a>(
     group_config: &'a PermissionGroupConfig,
     key: &Identifier,
     rule_context: &PermissionRuleContext,
-) -> Option<&'a PermissionValue> {
+) -> Option<&'a PermissionMetadataValue> {
     group_config
         .metadata
         .iter()

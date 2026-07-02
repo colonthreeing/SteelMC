@@ -21,9 +21,9 @@ use super::player_data::{
 use crate::chunk_saver::PersistentEntity;
 use crate::config::StorageSelection;
 use crate::permission::{
-    PermissionEntry, PermissionMetadataExpression, PermissionRuleExpression, PermissionSet,
-    PermissionState, PermissionSubjectIndex, PermissionSubjectState, PermissionValue,
-    PermissionValueEntry, PermissionValueSet,
+    PermissionEntry, PermissionMetadataEntry, PermissionMetadataExpression, PermissionMetadataSet,
+    PermissionMetadataValue, PermissionRuleExpression, PermissionSet, PermissionState,
+    PermissionSubjectIndex, PermissionSubjectState,
 };
 use crate::player::Player;
 use crate::player::known_players::{KnownPlayer, KnownPlayers};
@@ -54,8 +54,8 @@ pub struct PlayerPermissionData {
     pub groups: Vec<String>,
     /// Player-level permission overrides.
     pub permissions: PermissionSet,
-    /// Player-level permission value overrides.
-    pub values: PermissionValueSet,
+    /// Player-level permission metadata overrides.
+    pub metadata: PermissionMetadataSet,
 }
 
 impl PlayerPermissionData {
@@ -64,7 +64,7 @@ impl PlayerPermissionData {
     pub fn is_empty(&self) -> bool {
         self.groups.is_empty()
             && self.permissions.entries().is_empty()
-            && self.values.entries().is_empty()
+            && self.metadata.entries().is_empty()
     }
 }
 
@@ -162,7 +162,7 @@ struct PlayerPermissionEntryFile {
 #[serde(deny_unknown_fields)]
 struct PlayerPermissionMetadataEntryFile {
     key: String,
-    value: PermissionValue,
+    value: PermissionMetadataValue,
 }
 
 #[derive(SchemaWrite, SchemaRead)]
@@ -245,10 +245,10 @@ impl PlayerDataStorage {
     }
 
     /// Loads cached permission state for all persisted player permission data.
-    pub async fn load_global_permission_states(&self) -> io::Result<PermissionSubjectIndex> {
+    pub async fn load_player_permission_states(&self) -> io::Result<PermissionSubjectIndex> {
         match &self.backend {
             PlayerDataStorageBackend::File(storage) => {
-                storage.load_global_permission_states().await
+                storage.load_player_permission_states().await
             }
         }
     }
@@ -436,13 +436,17 @@ impl FilePlayerDataStorage {
         file.into_global_data().map(Some)
     }
 
-    async fn load_global_permission_states(&self) -> io::Result<PermissionSubjectIndex> {
+    async fn load_player_permission_states(&self) -> io::Result<PermissionSubjectIndex> {
         let mut states = PermissionSubjectIndex::new();
         let file = self.load_player_permissions_file().await?;
         for (uuid, data) in file.into_player_permission_data()? {
             states.set(
                 uuid,
-                PermissionSubjectState::new_with_values(data.groups, data.permissions, data.values),
+                PermissionSubjectState::new_with_metadata(
+                    data.groups,
+                    data.permissions,
+                    data.metadata,
+                ),
             );
         }
         Ok(states)
@@ -863,7 +867,7 @@ impl PlayerPermissionEntryFile {
             allow,
             deny,
             metadata: data
-                .values
+                .metadata
                 .entries()
                 .iter()
                 .map(|entry| PlayerPermissionMetadataEntryFile {
@@ -891,11 +895,11 @@ impl PlayerPermissionEntryFile {
             permissions.push(PermissionEntry::deny_with_context(key, context));
         }
 
-        let mut values = PermissionValueSet::new();
+        let mut metadata = PermissionMetadataSet::new();
         for entry in self.metadata {
             let expression = parse_player_metadata_expression(uuid, &entry.key)?;
             let (key, context) = expression.into_parts();
-            values.push(PermissionValueEntry::new_with_context(
+            metadata.push(PermissionMetadataEntry::new_with_context(
                 key,
                 context,
                 entry.value,
@@ -905,7 +909,7 @@ impl PlayerPermissionEntryFile {
         Ok(PlayerPermissionData {
             groups: self.groups,
             permissions,
-            values,
+            metadata,
         })
     }
 }
@@ -1017,7 +1021,7 @@ fn push_permission_metadata_entries(
         output.push_str("    { key = ");
         output.push_str(&toml_value(&entry.key)?);
         output.push_str(", value = ");
-        output.push_str(&permission_value_toml(&entry.value)?);
+        output.push_str(&permission_metadata_value_toml(&entry.value)?);
         output.push_str(" },\n");
     }
     output.push_str("]\n");
@@ -1038,11 +1042,13 @@ fn toml_value<T: Serialize + ?Sized>(value: &T) -> Result<String, toml::ser::Err
         .to_owned())
 }
 
-fn permission_value_toml(value: &PermissionValue) -> Result<String, toml::ser::Error> {
+fn permission_metadata_value_toml(
+    value: &PermissionMetadataValue,
+) -> Result<String, toml::ser::Error> {
     match value {
-        PermissionValue::Bool(value) => toml_value(value),
-        PermissionValue::Integer(value) => toml_value(value),
-        PermissionValue::String(value) => toml_value(value),
+        PermissionMetadataValue::Bool(value) => toml_value(value),
+        PermissionMetadataValue::Integer(value) => toml_value(value),
+        PermissionMetadataValue::String(value) => toml_value(value),
     }
 }
 
@@ -1321,7 +1327,7 @@ mod tests {
     use super::*;
     use crate::entity::DEFAULT_MAX_AIR_SUPPLY;
     use crate::permission::{
-        PermissionContextKey, PermissionKey, PermissionRuleContext, parse_permission_value_key,
+        PermissionContextKey, PermissionKey, PermissionRuleContext, parse_permission_metadata_key,
     };
     use steel_registry::test_support::init_test_registry;
     use steel_registry::vanilla_items::ITEMS;
@@ -1479,15 +1485,15 @@ mod tests {
     #[test]
     fn player_permissions_file_roundtrip_preserves_permissions() {
         let uuid = Uuid::from_u128(1);
-        let values = PermissionValueSet::from_entries([
-            PermissionValueEntry::new(
-                parse_permission_value_key("steel:homes").expect("metadata key parses"),
-                PermissionValue::Integer(10),
+        let values = PermissionMetadataSet::from_entries([
+            PermissionMetadataEntry::new(
+                parse_permission_metadata_key("steel:homes").expect("metadata key parses"),
+                PermissionMetadataValue::Integer(10),
             ),
-            PermissionValueEntry::new_with_context(
-                parse_permission_value_key("steel:chat_color").expect("metadata key parses"),
+            PermissionMetadataEntry::new_with_context(
+                parse_permission_metadata_key("steel:chat_color").expect("metadata key parses"),
                 PermissionRuleContext::domain("lobby"),
-                PermissionValue::String("green".to_owned()),
+                PermissionMetadataValue::String("green".to_owned()),
             ),
         ]);
         let data = PlayerPermissionData {
@@ -1513,7 +1519,7 @@ mod tests {
                     PermissionRuleContext::world(Identifier::new("lobby", "spawn")),
                 ),
             ]),
-            values,
+            metadata: values,
         };
 
         let mut file = PlayerPermissionsFile::default();
@@ -1563,7 +1569,7 @@ mod tests {
             deny: Vec::new(),
             metadata: vec![PlayerPermissionMetadataEntryFile {
                 key: "steel:homes:limit".to_owned(),
-                value: PermissionValue::Integer(10),
+                value: PermissionMetadataValue::Integer(10),
             }],
         };
 
@@ -1612,7 +1618,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn global_permission_index_loads_persisted_permission_state() {
+    async fn player_permission_index_loads_persisted_permission_state() {
         let root = temp_storage_root("global-permissions");
         let storage = PlayerDataStorage::new(root.clone(), StorageSelection::default_player_file())
             .await
@@ -1629,10 +1635,10 @@ mod tests {
                 &PlayerPermissionData {
                     groups: vec!["op".to_owned()],
                     permissions: op_permissions.clone(),
-                    values: PermissionValueSet::from_entries([PermissionValueEntry::new(
-                        parse_permission_value_key("steel:homes")
+                    metadata: PermissionMetadataSet::from_entries([PermissionMetadataEntry::new(
+                        parse_permission_metadata_key("steel:homes")
                             .expect("permission metadata key parses"),
-                        PermissionValue::Integer(10),
+                        PermissionMetadataValue::Integer(10),
                     )]),
                 },
                 || true,
@@ -1645,7 +1651,7 @@ mod tests {
                 &PlayerPermissionData {
                     groups: Vec::new(),
                     permissions: PermissionSet::default(),
-                    values: PermissionValueSet::default(),
+                    metadata: PermissionMetadataSet::default(),
                 },
                 || true,
             )
@@ -1653,7 +1659,7 @@ mod tests {
             .expect("default player permissions should save");
 
         let index = storage
-            .load_global_permission_states()
+            .load_player_permission_states()
             .await
             .expect("permission index should load");
 
@@ -1662,12 +1668,12 @@ mod tests {
         assert_eq!(op_state.overrides(), &op_permissions);
         assert_eq!(
             op_state
-                .value_overrides()
+                .metadata_overrides()
                 .resolve(
-                    &parse_permission_value_key("steel:homes")
+                    &parse_permission_metadata_key("steel:homes")
                         .expect("permission metadata key parses")
                 )
-                .and_then(PermissionValue::as_i64),
+                .and_then(PermissionMetadataValue::as_i64),
             Some(10)
         );
         assert!(index.get(default_uuid).is_none());
@@ -1744,12 +1750,12 @@ mod tests {
         let current = PlayerPermissionData {
             groups: vec!["default".to_owned()],
             permissions: PermissionSet::default(),
-            values: PermissionValueSet::default(),
+            metadata: PermissionMetadataSet::default(),
         };
         let stale = PlayerPermissionData {
             groups: vec!["op".to_owned()],
             permissions: PermissionSet::default(),
-            values: PermissionValueSet::default(),
+            metadata: PermissionMetadataSet::default(),
         };
 
         assert!(

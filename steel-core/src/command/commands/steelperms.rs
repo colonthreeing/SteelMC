@@ -10,7 +10,7 @@ use crate::command::graph::{CommandNodeBuilder, CommandResult, ParsedArguments, 
 use crate::command::sender::CommandSender;
 use crate::command::CommandRegistrationSpec;
 use crate::permission::{
-    PermissionContext, PermissionKey, PermissionRuleContext, PermissionState, PermissionValue,
+    PermissionContext, PermissionKey, PermissionRuleContext, PermissionState, PermissionMetadataValue,
 };
 use crate::server::Server;
 use steel_utils::Identifier;
@@ -588,7 +588,7 @@ fn set_metadata(
             permission_targets::online_state(&context.server, &target)
         {
             target_state
-                .value_overrides
+                .metadata_overrides
                 .set_in(key.clone(), rule_context.clone(), value.clone());
             permission_targets::save_online_state(&context.server, &player, target_state)?;
             changed += 1;
@@ -630,7 +630,7 @@ fn unset_metadata(
         if let Some((player, mut target_state)) =
             permission_targets::online_state(&context.server, &target)
         {
-            if !target_state.value_overrides.unset_in(&key, &rule_context) {
+            if !target_state.metadata_overrides.unset_in(&key, &rule_context) {
                 continue;
             }
 
@@ -675,7 +675,7 @@ fn check_metadata(
             let effective = context
                 .server
                 .permission_groups
-                .effective_values(&state.groups, &state.value_overrides);
+                .effective_metadata(&state.groups, &state.metadata_overrides);
             let resolution = effective.resolve_in_detailed(&key, &check_context);
             send_metadata_check(
                 &context.sender,
@@ -713,7 +713,7 @@ fn send_visible_user_info(
 ) {
     let groups = manageable_assigned_groups(&state.groups, visibility);
     let overrides = manageable_permission_entries(state.overrides.entries(), visibility);
-    let metadata = manageable_metadata_entries(state.value_overrides.entries(), visibility);
+    let metadata = manageable_metadata_entries(state.metadata_overrides.entries(), visibility);
     send_user_info(sender, target, &groups, &overrides, &metadata);
 }
 
@@ -780,7 +780,7 @@ fn spawn_check_metadata(
             let state = loaded.state();
             let effective = server
                 .permission_groups
-                .effective_values(&state.groups, &state.value_overrides);
+                .effective_metadata(&state.groups, &state.metadata_overrides);
             let resolution = effective.resolve_in_detailed(&key, &check_context);
             send_metadata_check(
                 &sender,
@@ -961,7 +961,7 @@ fn spawn_set_group_metadata(
     sender: CommandSender,
     group: String,
     key: Identifier,
-    value: PermissionValue,
+    value: PermissionMetadataValue,
     rule_context: PermissionRuleContext,
 ) {
     tokio::spawn(async move {
@@ -1142,7 +1142,7 @@ fn spawn_set_metadata(
     sender: CommandSender,
     targets: Vec<PermissionTarget>,
     key: Identifier,
-    value: PermissionValue,
+    value: PermissionMetadataValue,
     rule_context: PermissionRuleContext,
 ) {
     tokio::spawn(async move {
@@ -1153,7 +1153,7 @@ fn spawn_set_metadata(
             };
             let target_state = loaded.state_mut();
             target_state
-                .value_overrides
+                .metadata_overrides
                 .set_in(key.clone(), rule_context.clone(), value.clone());
 
             if save_or_report(&server, &sender, loaded).await {
@@ -1179,7 +1179,7 @@ fn spawn_unset_metadata(
                 continue;
             };
             let target_state = loaded.state_mut();
-            if !target_state.value_overrides.unset_in(&key, &rule_context) {
+            if !target_state.metadata_overrides.unset_in(&key, &rule_context) {
                 continue;
             }
 

@@ -26,9 +26,9 @@
         PermissionContextKey, PermissionEntry, PermissionGroupConfig, PermissionGroupsConfig,
         PermissionKey, PermissionMetadataCatalog, PermissionMetadataCatalogSource,
         PermissionMetadataRuleConfig, PermissionResolutionSource, PermissionRuleContext,
-        PermissionRuleExpression, PermissionSet, PermissionState, PermissionValue,
-        PermissionValueEntry, PermissionValueSet, PermissionCatalog, PermissionCatalogSource,
-        parse_permission_value_key,
+        PermissionRuleExpression, PermissionSet, PermissionState, PermissionMetadataValue,
+        PermissionMetadataEntry, PermissionMetadataSet, PermissionCatalog, PermissionCatalogSource,
+        parse_permission_metadata_key,
     };
     use steel_protocol::packets::game::{
         ArgumentStringTypeBehavior, ArgumentType, SuggestionType,
@@ -93,7 +93,7 @@
     }
 
     fn metadata_key(value: &str) -> Identifier {
-        parse_permission_value_key(value).expect("metadata key parses")
+        parse_permission_metadata_key(value).expect("metadata key parses")
     }
 
     fn context_key(value: &str) -> PermissionContextKey {
@@ -409,10 +409,10 @@
     #[test]
     fn metadata_resolution_text_describes_winning_value_rule() {
         let homes = metadata_key("plugin:homes");
-        let values = PermissionValueSet::from_entries([PermissionValueEntry::new_with_context(
+        let values = PermissionMetadataSet::from_entries([PermissionMetadataEntry::new_with_context(
             homes.clone(),
             PermissionRuleContext::domain("lobby"),
-            PermissionValue::Integer(10),
+            PermissionMetadataValue::Integer(10),
         )]);
         let resolution = values
             .resolve_in_detailed(&homes, &PermissionContext::for_domain("lobby"))
@@ -523,8 +523,8 @@
             PermissionEntry::deny(key("minecraft.command.op")),
         ];
         let metadata = vec![
-            PermissionValueEntry::new(metadata_key("plugin:homes"), PermissionValue::Integer(10)),
-            PermissionValueEntry::new(metadata_key("other:homes"), PermissionValue::Integer(20)),
+            PermissionMetadataEntry::new(metadata_key("plugin:homes"), PermissionMetadataValue::Integer(10)),
+            PermissionMetadataEntry::new(metadata_key("other:homes"), PermissionMetadataValue::Integer(20)),
         ];
 
         assert_eq!(
@@ -561,11 +561,11 @@
         let values = vec![
             PermissionMetadataRuleConfig {
                 key: "plugin:homes".to_owned(),
-                value: PermissionValue::Integer(10),
+                value: PermissionMetadataValue::Integer(10),
             },
             PermissionMetadataRuleConfig {
                 key: "other:homes".to_owned(),
-                value: PermissionValue::Integer(20),
+                value: PermissionMetadataValue::Integer(20),
             },
         ];
 
@@ -621,13 +621,13 @@
 
     #[test]
     fn direct_metadata_suggestions_only_include_manageable_overrides() {
-        let values = PermissionValueSet::from_entries([
-            PermissionValueEntry::new_with_context(
+        let values = PermissionMetadataSet::from_entries([
+            PermissionMetadataEntry::new_with_context(
                 metadata_key("plugin:homes"),
                 PermissionRuleContext::domain("lobby"),
-                PermissionValue::Integer(10),
+                PermissionMetadataValue::Integer(10),
             ),
-            PermissionValueEntry::new(metadata_key("other:homes"), PermissionValue::Integer(20)),
+            PermissionMetadataEntry::new(metadata_key("other:homes"), PermissionMetadataValue::Integer(20)),
         ]);
 
         assert_eq!(
@@ -839,7 +839,7 @@
                 &mut config,
                 "default",
                 &homes,
-                &PermissionValue::Integer(10),
+                &PermissionMetadataValue::Integer(10),
                 &PermissionRuleContext::Global,
             ),
             Ok(true)
@@ -849,7 +849,7 @@
                 &mut config,
                 "default",
                 &homes,
-                &PermissionValue::Integer(5),
+                &PermissionMetadataValue::Integer(5),
                 &lobby,
             ),
             Ok(true)
@@ -858,11 +858,11 @@
         assert_eq!(default.metadata.len(), 2);
         assert_eq!(
             group_config_metadata_value(default, &homes, &PermissionRuleContext::Global),
-            Some(&PermissionValue::Integer(10))
+            Some(&PermissionMetadataValue::Integer(10))
         );
         assert_eq!(
             group_config_metadata_value(default, &homes, &lobby),
-            Some(&PermissionValue::Integer(5))
+            Some(&PermissionMetadataValue::Integer(5))
         );
 
         assert_eq!(
@@ -870,7 +870,7 @@
                 &mut config,
                 "default",
                 &homes,
-                &PermissionValue::Integer(5),
+                &PermissionMetadataValue::Integer(5),
                 &lobby,
             ),
             Ok(false)
@@ -888,7 +888,7 @@
                 &mut config,
                 "default",
                 &homes,
-                &PermissionValue::Integer(10),
+                &PermissionMetadataValue::Integer(10),
                 &spawn_region,
             ),
             Ok(true)
@@ -897,10 +897,10 @@
         let default = config.groups.get("default").expect("default group exists");
         assert_eq!(default.metadata.len(), 1);
         assert_eq!(default.metadata[0].key, "plugin:homes{region=spawn}");
-        assert_eq!(default.metadata[0].value, PermissionValue::Integer(10));
+        assert_eq!(default.metadata[0].value, PermissionMetadataValue::Integer(10));
         assert_eq!(
             group_config_metadata_value(default, &homes, &spawn_region),
-            Some(&PermissionValue::Integer(10))
+            Some(&PermissionMetadataValue::Integer(10))
         );
     }
 
@@ -918,7 +918,7 @@
                 &mut config,
                 "default",
                 &homes,
-                &PermissionValue::Integer(10),
+                &PermissionMetadataValue::Integer(10),
                 &context,
             ),
             Ok(true)
@@ -927,10 +927,10 @@
         let default = config.groups.get("default").expect("default group exists");
         assert_eq!(default.metadata.len(), 1);
         assert_eq!(default.metadata[0].key, "plugin:homes{domain=lobby,region=spawn}");
-        assert_eq!(default.metadata[0].value, PermissionValue::Integer(10));
+        assert_eq!(default.metadata[0].value, PermissionMetadataValue::Integer(10));
         assert_eq!(
             group_config_metadata_value(default, &homes, &context),
-            Some(&PermissionValue::Integer(10))
+            Some(&PermissionMetadataValue::Integer(10))
         );
 
         assert_eq!(
@@ -952,7 +952,7 @@
             &mut config,
             "default",
             &homes,
-            &PermissionValue::Integer(10),
+            &PermissionMetadataValue::Integer(10),
             &global,
         )
         .expect("global metadata stores");
@@ -960,7 +960,7 @@
             &mut config,
             "default",
             &homes,
-            &PermissionValue::Integer(5),
+            &PermissionMetadataValue::Integer(5),
             &lobby,
         )
         .expect("contextual metadata stores");
@@ -973,7 +973,7 @@
         assert_eq!(default.metadata.len(), 1);
         assert_eq!(
             group_config_metadata_value(default, &homes, &lobby),
-            Some(&PermissionValue::Integer(5))
+            Some(&PermissionMetadataValue::Integer(5))
         );
     }
 
@@ -1154,7 +1154,7 @@
     }
 
     #[test]
-    fn group_metadata_suggestions_only_include_manageable_group_values() {
+    fn group_metadata_suggestions_only_include_manageable_group_metadata() {
         let group = PermissionGroupConfig {
             priority: 0,
             allow: Vec::new(),
@@ -1162,11 +1162,11 @@
             metadata: vec![
                 PermissionMetadataRuleConfig {
                     key: "plugin:homes{domain=lobby}".to_owned(),
-                    value: PermissionValue::Integer(10),
+                    value: PermissionMetadataValue::Integer(10),
                 },
                 PermissionMetadataRuleConfig {
                     key: "other:homes".to_owned(),
-                    value: PermissionValue::Integer(20),
+                    value: PermissionMetadataValue::Integer(20),
                 },
             ],
         };

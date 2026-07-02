@@ -8,8 +8,8 @@ use crate::command::graph::{CommandResult, PermissionTarget};
 use crate::command::sender::CommandSender;
 use crate::permission::{
     PermissionEntry, PermissionKey, PermissionResolution, PermissionResolutionSource,
-    PermissionMetadataRuleConfig, PermissionRuleContext, PermissionState, PermissionValue,
-    PermissionValueEntry, PermissionValueResolution,
+    PermissionMetadataRuleConfig, PermissionRuleContext, PermissionState, PermissionMetadataValue,
+    PermissionMetadataEntry, PermissionMetadataResolution,
 };
 
 use super::config::PermissionGroupEditError;
@@ -18,7 +18,7 @@ pub(super) fn send_user_info(
     target: &PermissionTarget,
     groups: &[String],
     overrides: &[PermissionEntry],
-    metadata: &[PermissionValueEntry],
+    metadata: &[PermissionMetadataEntry],
 ) {
     let groups = group_list_text(groups);
     let overrides = permission_entries_text(overrides);
@@ -56,10 +56,10 @@ pub(super) fn send_metadata_check(
     target: &PermissionTarget,
     key: &Identifier,
     rule_context: &PermissionRuleContext,
-    resolution: Option<&PermissionValueResolution>,
+    resolution: Option<&PermissionMetadataResolution>,
 ) {
     let value = resolution
-        .map(|resolution| permission_value_text(resolution.value()))
+        .map(|resolution| permission_metadata_value_text(resolution.value()))
         .unwrap_or_else(|| "unset".to_owned());
     let detail = resolution.map_or_else(|| "unset".to_owned(), metadata_resolution_text);
     sender.send_message(&TextComponent::plain(format!(
@@ -101,14 +101,14 @@ pub(super) fn send_unset_permission_summary(
 pub(super) fn send_set_metadata_summary(
     sender: &CommandSender,
     key: &Identifier,
-    value: &PermissionValue,
+    value: &PermissionMetadataValue,
     rule_context: &PermissionRuleContext,
     count: usize,
 ) {
     sender.send_message(&TextComponent::plain(format!(
         "Set metadata '{key}'{} = {} for {}",
         permission_rule_context_suffix(rule_context),
-        permission_value_text(value),
+        permission_metadata_value_text(value),
         target_count_text(count)
     )));
 }
@@ -181,13 +181,13 @@ pub(super) fn send_set_group_metadata_summary(
     sender: &CommandSender,
     group: &str,
     key: &Identifier,
-    value: &PermissionValue,
+    value: &PermissionMetadataValue,
     rule_context: &PermissionRuleContext,
 ) {
     sender.send_message(&TextComponent::plain(format!(
         "Set metadata '{key}'{} = {} for group '{group}'",
         permission_rule_context_suffix(rule_context),
-        permission_value_text(value)
+        permission_metadata_value_text(value)
     )));
 }
 
@@ -195,13 +195,13 @@ pub(super) fn send_group_metadata_unchanged_summary(
     sender: &CommandSender,
     group: &str,
     key: &Identifier,
-    value: &PermissionValue,
+    value: &PermissionMetadataValue,
     rule_context: &PermissionRuleContext,
 ) {
     sender.send_message(&TextComponent::plain(format!(
         "Group '{group}' already sets metadata '{key}'{} = {}",
         permission_rule_context_suffix(rule_context),
-        permission_value_text(value)
+        permission_metadata_value_text(value)
     )));
 }
 
@@ -308,7 +308,7 @@ pub(super) fn group_metadata_list_text(values: &[PermissionMetadataRuleConfig]) 
             format!(
                 "{} = {}",
                 value.key,
-                permission_value_text(&value.value),
+                permission_metadata_value_text(&value.value),
             )
         })
         .collect::<Vec<_>>()
@@ -334,7 +334,7 @@ fn permission_entries_text(entries: &[PermissionEntry]) -> String {
         .join(", ")
 }
 
-fn metadata_entries_text(entries: &[PermissionValueEntry]) -> String {
+fn metadata_entries_text(entries: &[PermissionMetadataEntry]) -> String {
     if entries.is_empty() {
         return "none".to_owned();
     }
@@ -345,7 +345,7 @@ fn metadata_entries_text(entries: &[PermissionValueEntry]) -> String {
             format!(
                 "{} = {}{}",
                 entry.key(),
-                permission_value_text(entry.value()),
+                permission_metadata_value_text(entry.value()),
                 permission_rule_context_suffix(entry.context())
             )
         })
@@ -353,11 +353,11 @@ fn metadata_entries_text(entries: &[PermissionValueEntry]) -> String {
         .join(", ")
 }
 
-fn permission_value_text(value: &PermissionValue) -> String {
+fn permission_metadata_value_text(value: &PermissionMetadataValue) -> String {
     match value {
-        PermissionValue::Bool(value) => value.to_string(),
-        PermissionValue::Integer(value) => value.to_string(),
-        PermissionValue::String(value) => format!("{value:?}"),
+        PermissionMetadataValue::Bool(value) => value.to_string(),
+        PermissionMetadataValue::Integer(value) => value.to_string(),
+        PermissionMetadataValue::String(value) => format!("{value:?}"),
     }
 }
 
@@ -412,12 +412,12 @@ pub(super) fn permission_resolution_source_text(source: &PermissionResolutionSou
     }
 }
 
-pub(super) fn metadata_resolution_text(resolution: &PermissionValueResolution) -> String {
+pub(super) fn metadata_resolution_text(resolution: &PermissionMetadataResolution) -> String {
     format!(
         "set by {}, rule {} = {}{}, context specificity {}, insertion {}",
         permission_resolution_source_text(resolution.source()),
         resolution.key(),
-        permission_value_text(resolution.value()),
+        permission_metadata_value_text(resolution.value()),
         permission_rule_context_suffix(resolution.context()),
         resolution.context_specificity(),
         resolution.insertion_index()

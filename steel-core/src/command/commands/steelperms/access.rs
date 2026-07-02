@@ -10,8 +10,8 @@ use crate::command::requirement::{PermissionExpr, RequirementContext};
 use crate::permission::{
     PermissionEntry, PermissionGroupConfig, PermissionKey, PermissionKeyError,
     PermissionMetadataCatalog, PermissionMetadataExpression, PermissionMetadataRuleConfig,
-    PermissionRuleExpression, PermissionSegment, PermissionSet, PermissionValueEntry,
-    PermissionValueSet, parse_permission_value_key,
+    PermissionRuleExpression, PermissionSegment, PermissionSet, PermissionMetadataEntry,
+    PermissionMetadataSet, parse_permission_metadata_key,
 };
 
 pub(super) fn direct_permission_override_suggestions(
@@ -36,7 +36,7 @@ pub(super) fn direct_permission_override_suggestions(
 
 pub(super) fn direct_metadata_override_suggestions(
     prefix: &str,
-    values: impl IntoIterator<Item = PermissionValueSet>,
+    values: impl IntoIterator<Item = PermissionMetadataSet>,
     context: &dyn RequirementContext,
 ) -> Vec<SuggestionEntry> {
     let mut keys = BTreeSet::new();
@@ -93,9 +93,9 @@ pub(super) fn manageable_permission_entries(
 }
 
 pub(super) fn manageable_metadata_entries(
-    entries: &[PermissionValueEntry],
+    entries: &[PermissionMetadataEntry],
     context: &dyn RequirementContext,
-) -> Vec<PermissionValueEntry> {
+) -> Vec<PermissionMetadataEntry> {
     entries
         .iter()
         .filter(|entry| can_manage_metadata(context, entry.key()))
@@ -159,7 +159,7 @@ pub(super) fn metadata_catalog_suggestions(
         .suggestions(prefix)
         .into_iter()
         .filter_map(|key| {
-            let Ok(parsed_key) = parse_permission_value_key(key.clone()) else {
+            let Ok(parsed_key) = parse_permission_metadata_key(key.clone()) else {
                 return None;
             };
             can_manage_metadata(context, &parsed_key).then(|| SuggestionEntry::new(key))

@@ -21,7 +21,7 @@ use steel_core::config::{
 };
 use steel_core::permission::{
     PermissionGroupConfig, PermissionGroupStore, PermissionGroupStoreError, PermissionGroups,
-    PermissionGroupsConfig, PermissionMetadataRuleConfig, PermissionValue,
+    PermissionGroupsConfig, PermissionMetadataRuleConfig, PermissionMetadataValue,
 };
 
 #[cfg(feature = "stand-alone")]
@@ -160,7 +160,7 @@ fn push_metadata_rules(
         output.push_str("    { key = ");
         output.push_str(&toml_value(&entry.key)?);
         output.push_str(", value = ");
-        output.push_str(&permission_value_toml(&entry.value)?);
+        output.push_str(&permission_metadata_value_toml(&entry.value)?);
         output.push_str(" },\n");
     }
     output.push_str("]\n");
@@ -193,11 +193,13 @@ fn toml_value<T: Serialize + ?Sized>(value: &T) -> Result<String, toml::ser::Err
         .to_owned())
 }
 
-fn permission_value_toml(value: &PermissionValue) -> Result<String, toml::ser::Error> {
+fn permission_metadata_value_toml(
+    value: &PermissionMetadataValue,
+) -> Result<String, toml::ser::Error> {
     match value {
-        PermissionValue::Bool(value) => toml_value(value),
-        PermissionValue::Integer(value) => toml_value(value),
-        PermissionValue::String(value) => toml_value(value),
+        PermissionMetadataValue::Bool(value) => toml_value(value),
+        PermissionMetadataValue::Integer(value) => toml_value(value),
+        PermissionMetadataValue::String(value) => toml_value(value),
     }
 }
 

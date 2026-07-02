@@ -8,7 +8,7 @@ use crate::command::graph::{ParsedArguments, PermissionTarget};
 use crate::command::parsers::resolve_required_permission_targets;
 use crate::permission::{
     PermissionContext, PermissionKey, PermissionMetadataExpression, PermissionRuleContext,
-    PermissionRuleExpression, PermissionValue,
+    PermissionRuleExpression, PermissionMetadataValue,
 };
 
 pub(super) fn targets(
@@ -47,15 +47,15 @@ pub(super) fn metadata_key(arguments: &ParsedArguments) -> Result<Identifier, Co
     Ok(expression.key().clone())
 }
 
-pub(super) fn metadata_value(arguments: &ParsedArguments) -> Result<PermissionValue, CommandError> {
+pub(super) fn metadata_value(arguments: &ParsedArguments) -> Result<PermissionMetadataValue, CommandError> {
     if let Ok(value) = arguments.get::<i64>("metadata_int_value") {
-        return Ok(PermissionValue::Integer(value));
+        return Ok(PermissionMetadataValue::Integer(value));
     }
     if let Ok(value) = arguments.get::<bool>("metadata_bool_value") {
-        return Ok(PermissionValue::Bool(value));
+        return Ok(PermissionMetadataValue::Bool(value));
     }
     if let Ok(value) = arguments.get::<String>("metadata_string_value") {
-        return Ok(PermissionValue::String(value));
+        return Ok(PermissionMetadataValue::String(value));
     }
 
     Err(CommandError::failure("Missing metadata value"))

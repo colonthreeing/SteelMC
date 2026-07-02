@@ -30,8 +30,8 @@ use crate::chunk_saver::{ChunkStorage, registry::WorldStorageRegistry};
 use crate::level_data::{LevelDataManager, RespawnData, WorldGenerationSettings};
 use crate::permission::{
     PermissionGroupManager, PermissionGroupManagerError, PermissionGroupUpdateError,
-    PermissionGroupsConfig, PermissionSet, PermissionSubjectIndex, PermissionSubjectState,
-    PermissionValueSet,
+    PermissionGroupsConfig, PermissionMetadataSet, PermissionSet, PermissionSubjectIndex,
+    PermissionSubjectState,
 };
 use crate::player::chunk_sender::{ChunkSender, EncodedChunk};
 use crate::player::connection::NetworkConnection;
@@ -262,7 +262,7 @@ struct DomainSwitchRequest {
     restore_saved_location: bool,
 }
 
-/// Error returned when updating a player's global permission state.
+/// Error returned when updating a player's permission state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlayerPermissionUpdateError {
     /// The requested assigned group is not configured in `groups.toml`.
@@ -502,8 +502,8 @@ pub struct Server {
     profile_lookup_client: reqwest::Client,
     /// Monotonic version for suppressing stale known-player snapshot saves.
     known_players_version: SyncMutex<u64>,
-    /// Persisted global permission state keyed by player UUID.
-    global_permission_states: SyncRwLock<PermissionSubjectIndex>,
+    /// Persisted player permission state keyed by player UUID.
+    player_permission_states: SyncRwLock<PermissionSubjectIndex>,
     /// Player joins prepared by async I/O and finalized at the game tick safe point.
     pending_player_joins: PlayerJoinQueue,
     /// Queued world changes to process after the tick.
@@ -578,10 +578,10 @@ impl Server {
             .load_known_players()
             .await
             .map_err(|e| format!("failed to load known player index: {e}"))?;
-        let global_permission_states = player_data_storage
-            .load_global_permission_states()
+        let player_permission_states = player_data_storage
+            .load_player_permission_states()
             .await
-            .map_err(|e| format!("failed to load global permission index: {e}"))?;
+            .map_err(|e| format!("failed to load player permission index: {e}"))?;
         let stopwatches = Stopwatches::load(&resolved_worlds.save_path)
             .await
             .map_err(|e| format!("failed to load stopwatches: {e}"))?;
@@ -675,7 +675,7 @@ impl Server {
             known_players: SyncRwLock::new(known_players),
             profile_lookup_client: reqwest::Client::new(),
             known_players_version: SyncMutex::new(0),
-            global_permission_states: SyncRwLock::new(global_permission_states),
+            player_permission_states: SyncRwLock::new(player_permission_states),
             pending_player_joins: PlayerJoinQueue::new(),
             pending_world_changes: SyncMutex::new(vec![]),
             pending_domain_switches: SyncMutex::new(vec![]),
@@ -835,25 +835,30 @@ impl Server {
     }
 
     fn apply_cached_or_default_permission_state(&self, player: &Player) -> u64 {
-        if let Some(state) = self.global_permission_state(player.gameprofile.id) {
-            let (groups, overrides, value_overrides) = state.into_parts();
-            return self.apply_global_permission_state(player, groups, overrides, value_overrides);
+        if let Some(state) = self.player_permission_state(player.gameprofile.id) {
+            let (groups, overrides, metadata_overrides) = state.into_parts();
+            return self.apply_player_permission_state(
+                player,
+                groups,
+                overrides,
+                metadata_overrides,
+            );
         }
 
-        self.apply_global_permission_state(
+        self.apply_player_permission_state(
             player,
             Vec::new(),
             PermissionSet::default(),
-            PermissionValueSet::default(),
+            PermissionMetadataSet::default(),
         )
     }
 
-    fn apply_global_permission_state(
+    fn apply_player_permission_state(
         &self,
         player: &Player,
         groups: Vec<String>,
         overrides: PermissionSet,
-        value_overrides: PermissionValueSet,
+        metadata_overrides: PermissionMetadataSet,
     ) -> u64 {
         for group in &groups {
             if !self.permission_groups.contains_group(group) {
@@ -869,28 +874,28 @@ impl Server {
             .effective_permissions(&groups, &overrides);
         let values = self
             .permission_groups
-            .effective_values(&groups, &value_overrides);
-        self.set_cached_global_permission_state(
+            .effective_metadata(&groups, &metadata_overrides);
+        self.set_cached_player_permission_state(
             player.gameprofile.id,
             groups.clone(),
             overrides.clone(),
-            value_overrides.clone(),
+            metadata_overrides.clone(),
         );
-        player.set_permission_state(groups, overrides, value_overrides, permissions, values)
+        player.set_permission_state(groups, overrides, metadata_overrides, permissions, values)
     }
 
-    /// Updates a player's global permission state, refreshes client-visible permissions,
+    /// Updates a player's permission state, refreshes client-visible permissions,
     /// and saves the player permission snapshot.
     ///
     /// # Errors
     ///
     /// Returns an error if the update adds an unconfigured group.
-    pub fn update_player_global_permissions(
+    pub fn update_player_permissions(
         self: &Arc<Self>,
         player: &Arc<Player>,
         groups: Vec<String>,
         overrides: PermissionSet,
-        value_overrides: PermissionValueSet,
+        metadata_overrides: PermissionMetadataSet,
     ) -> Result<(), PlayerPermissionUpdateError> {
         let previous_groups = player.permission_groups();
         validate_player_permission_group_update(
@@ -900,25 +905,25 @@ impl Server {
         )?;
 
         let version =
-            self.apply_global_permission_state(player, groups, overrides, value_overrides);
+            self.apply_player_permission_state(player, groups, overrides, metadata_overrides);
         self.resend_player_permission_context(player);
         self.save_player_permissions(Arc::clone(player), version);
 
         Ok(())
     }
 
-    /// Updates an offline player's global permission state.
+    /// Updates an offline player's permission state.
     ///
     /// # Errors
     ///
     /// Returns an error if the update adds an unconfigured group or the player data
     /// cannot be read or written.
-    pub async fn update_offline_player_global_permissions(
+    pub async fn update_offline_player_permissions(
         self: &Arc<Self>,
         uuid: Uuid,
         groups: Vec<String>,
         overrides: PermissionSet,
-        value_overrides: PermissionValueSet,
+        metadata_overrides: PermissionMetadataSet,
     ) -> Result<(), PlayerPermissionUpdateError> {
         let saved = self
             .player_data_storage
@@ -935,22 +940,22 @@ impl Server {
                 Ok::<_, PlayerPermissionUpdateError>(PlayerPermissionData {
                     groups,
                     permissions: overrides,
-                    values: value_overrides,
+                    metadata: metadata_overrides,
                 })
             })
             .await?;
 
-        self.set_cached_global_permission_state(
+        self.set_cached_player_permission_state(
             uuid,
             saved.groups.clone(),
             saved.permissions.clone(),
-            saved.values.clone(),
+            saved.metadata.clone(),
         );
-        self.queue_online_global_permission_refresh(
+        self.queue_online_player_permission_refresh(
             uuid,
             saved.groups,
             saved.permissions,
-            saved.values,
+            saved.metadata,
         );
         Ok(())
     }
@@ -1008,43 +1013,51 @@ impl Server {
         Ok(result)
     }
 
-    fn set_cached_global_permission_state(
+    fn set_cached_player_permission_state(
         &self,
         uuid: Uuid,
         groups: Vec<String>,
         overrides: PermissionSet,
-        value_overrides: PermissionValueSet,
+        metadata_overrides: PermissionMetadataSet,
     ) {
         let data = PlayerPermissionData {
             groups,
             permissions: overrides,
-            values: value_overrides,
+            metadata: metadata_overrides,
         };
-        let mut states = self.global_permission_states.write();
+        let mut states = self.player_permission_states.write();
         if data.is_empty() {
             states.remove(uuid);
         } else {
             states.set(
                 uuid,
-                PermissionSubjectState::new_with_values(data.groups, data.permissions, data.values),
+                PermissionSubjectState::new_with_metadata(
+                    data.groups,
+                    data.permissions,
+                    data.metadata,
+                ),
             );
         }
     }
 
-    fn queue_online_global_permission_refresh(
+    fn queue_online_player_permission_refresh(
         self: &Arc<Self>,
         uuid: Uuid,
         groups: Vec<String>,
         overrides: PermissionSet,
-        value_overrides: PermissionValueSet,
+        metadata_overrides: PermissionMetadataSet,
     ) {
         let server = Arc::clone(self);
         self.jobs.spawn(FnServerJob::new(move || {
             let Some(player) = server.get_player_by_uuid(&uuid) else {
                 return;
             };
-            let version =
-                server.apply_global_permission_state(&player, groups, overrides, value_overrides);
+            let version = server.apply_player_permission_state(
+                &player,
+                groups,
+                overrides,
+                metadata_overrides,
+            );
             server.resend_player_permission_context(&player);
             server.save_player_permissions(player, version);
         }));
@@ -1061,8 +1074,8 @@ impl Server {
         for player in self.get_players() {
             let groups = player.permission_groups();
             let overrides = player.permission_overrides();
-            let value_overrides = player.permission_value_overrides();
-            self.apply_global_permission_state(&player, groups, overrides, value_overrides);
+            let metadata_overrides = player.permission_metadata_overrides();
+            self.apply_player_permission_state(&player, groups, overrides, metadata_overrides);
             self.resend_player_permission_context(&player);
         }
     }
@@ -1074,7 +1087,7 @@ impl Server {
         let data = PlayerPermissionData {
             groups: player.permission_groups(),
             permissions: player.permission_overrides(),
-            values: player.permission_value_overrides(),
+            metadata: player.permission_metadata_overrides(),
         };
 
         tokio::spawn(async move {
@@ -1100,10 +1113,10 @@ impl Server {
         self.known_players.read().clone()
     }
 
-    /// Returns cached global permission state for one player.
+    /// Returns cached player permission state for one player.
     #[must_use]
-    pub fn global_permission_state(&self, uuid: Uuid) -> Option<PermissionSubjectState> {
-        self.global_permission_states.read().get(uuid).cloned()
+    pub fn player_permission_state(&self, uuid: Uuid) -> Option<PermissionSubjectState> {
+        self.player_permission_states.read().get(uuid).cloned()
     }
 
     /// Records a player profile in the known-player index and persists it if changed.

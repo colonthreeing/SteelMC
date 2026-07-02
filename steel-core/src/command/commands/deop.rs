@@ -171,7 +171,7 @@ impl CommandArgumentParser for DeOpTargetsParser {
                 continue;
             }
             if server
-                .global_permission_state(known.uuid())
+                .player_permission_state(known.uuid())
                 .is_some_and(|state| state.groups().iter().any(|group| group == OP_GROUP))
             {
                 suggestions.push(SuggestionEntry::new(known.last_known_name().to_owned()));
