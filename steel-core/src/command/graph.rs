@@ -25,12 +25,12 @@ pub use crate::command::parsers::{
     BiomeArgumentValue, BlockPredicateArgumentValue, CommandFunctionArgumentValue,
     DoubleRangeArgumentValue, IntRangeArgumentValue, ItemPredicateArgumentValue,
     ItemPredicateCondition, ItemPredicateMatchError, ItemPredicateTarget, ItemPredicateTerm,
-    ItemSlotRangeArgumentValue, LootPredicateArgumentValue, ScoreHolderArgumentValue,
-    ScoreboardObjectiveName, StructureArgumentValue,
+    ItemSlotRangeArgumentValue, LootPredicateArgumentValue, PermissionTarget,
+    ScoreHolderArgumentValue, ScoreboardObjectiveName, StructureArgumentValue,
 };
 pub use arguments::{
     CommandPermissionArgument, FromParsedArgument, ParsedArgument, ParsedArgumentError,
-    ParsedArguments, PermissionTarget,
+    ParsedArguments,
 };
 pub use builder::{CommandNodeBuilder, argument, literal};
 use node::{CommandNode, CommandNodeKind, collect_ambiguities, merge_or_push_node};

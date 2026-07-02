@@ -42,8 +42,8 @@ pub use scoreboard::{
 pub(crate) use scoreboard::{ScoreHolderWildcardExpansion, resolve_score_holders};
 pub use slot::{ItemSlotRangeArgumentValue, ItemSlotsParser};
 pub use target::{
-    EntityParser, EntityTargetArgumentValue, PermissionTargetArgumentValue, PermissionTargetParser,
-    PlayerParser, PlayerTargetArgumentValue,
+    EntityParser, EntityTargetArgumentValue, PermissionTarget, PermissionTargetArgumentValue,
+    PermissionTargetParser, PlayerParser, PlayerTargetArgumentValue,
 };
 pub(crate) use target::{
     resolve_optional_entity_targets, resolve_optional_permission_targets,

@@ -1,6 +1,6 @@
 //! Target command argument parsers.
 
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use steel_protocol::packets::game::{ArgumentType, SuggestionEntry, SuggestionType};
 use steel_utils::translations::{
@@ -16,7 +16,7 @@ use crate::{
         error::CommandError,
         graph::{
             CommandArgumentClientParser, CommandArgumentParser, CommandParseError,
-            CommandParseErrorKind, ParsedArgument, ParsedArguments, PermissionTarget,
+            CommandParseErrorKind, ParsedArgument, ParsedArguments,
         },
         parsers::selector::{
             EntitySelector, parse_entity_selector_argument, parse_player_selector_argument,
@@ -257,6 +257,69 @@ impl CommandArgumentParser for PlayerParser {
         }
 
         suggestions
+    }
+}
+
+/// Player target for permission-management commands.
+#[derive(Clone)]
+pub struct PermissionTarget {
+    uuid: Option<Uuid>,
+    name: String,
+}
+
+impl PermissionTarget {
+    /// Creates a target from an online player.
+    #[must_use]
+    pub fn online(player: &Player) -> Self {
+        Self {
+            uuid: Some(player.gameprofile.id),
+            name: player.gameprofile.name.clone(),
+        }
+    }
+
+    /// Creates a target from a known offline profile.
+    #[must_use]
+    pub fn offline(uuid: Uuid, name: impl Into<String>) -> Self {
+        Self {
+            uuid: Some(uuid),
+            name: name.into(),
+        }
+    }
+
+    /// Creates a target from a name that still needs profile resolution.
+    #[must_use]
+    pub fn unresolved(name: impl Into<String>) -> Self {
+        Self {
+            uuid: None,
+            name: name.into(),
+        }
+    }
+
+    /// Returns the target UUID when the profile has already been resolved.
+    #[must_use]
+    pub const fn uuid(&self) -> Option<Uuid> {
+        self.uuid
+    }
+
+    /// Returns whether the target already has a resolved UUID.
+    #[must_use]
+    pub const fn is_resolved(&self) -> bool {
+        self.uuid.is_some()
+    }
+
+    /// Returns the target display name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl fmt::Debug for PermissionTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PermissionTarget")
+            .field("uuid", &self.uuid)
+            .field("name", &self.name)
+            .finish()
     }
 }
 
