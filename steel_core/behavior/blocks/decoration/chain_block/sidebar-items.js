@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["AXIS","WATERLOGGED"],"fn":["schedule_water_tick_if_waterlogged"],"struct":["ChainBlock","WeatheringCopperChainBlock"]};

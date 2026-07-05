@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["EAST","NORTH","SOUTH","WATERLOGGED","WEST"],"fn":["connects_to","get_connection_state","schedule_water_tick_if_waterlogged","update_shape"],"struct":["IronBarsBlock","WeatheringCopperBarsBlock"]};
